@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 from tg_codex_bridge import BotConfig, TelegramBridge, normalize_whitespace, truncate_text
 
 
-DEFAULT_API_HOST = os.getenv('JARVIS_MOBILE_API_HOST', '127.0.0.1').strip() or '127.0.0.1'
+DEFAULT_API_HOST = os.getenv('JARVIS_MOBILE_API_HOST', '0.0.0.0').strip() or '0.0.0.0'
 DEFAULT_API_PORT = int((os.getenv('JARVIS_MOBILE_API_PORT', '8787') or '8787').strip())
 DEFAULT_MOBILE_CHAT_ID = int((os.getenv('JARVIS_MOBILE_DEFAULT_CHAT_ID', '910000001') or '910000001').strip())
 
