@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jarvis-ai",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-23",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jarvis_ai_db",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+    }
+  ],
+  "vars": {
+    "BOT_NAME": "Jarvis AI",
+    "TELEGRAM_BOT_USERNAME": "",
+    "BOT_MODE_DEFAULT": "selective",
+    "MEMORY_MODE": "d1",
+    "SEARCH_MODE": "auto",
+    "ALLOW_PUBLIC_ACCESS": "false",
+    "WORKERS_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "SYSTEM_BRAND_NAME": "Jarvis AI",
+    "CREATOR_NAME": "Дмитрий",
+    "OPTIONAL_ALLOWED_USER_IDS": "",
+    "OPTIONAL_ALLOWED_CHAT_IDS": "",
+    "VOICE_MODE": "disabled",
+    "DOCUMENT_TEXT_MAX_BYTES": "262144"
+  }
+}

@@ -1,0 +1,51 @@
+Jarvis Portable Package
+
+Что внутри:
+- tg_codex_bridge.py: основной Telegram <-> Codex bridge
+- run_jarvis_supervisor.sh: supervisor, который держит бота живым
+- start_jarvis_on_termux.sh: фоновый запуск supervisor
+- jarvis_memory.db: текущая база памяти SQLite
+- legacy_jarvis_adapter.py: мост к старой базе Jarvis для рейтинга, ачивок и апелляций
+- src/, sql/, package.json: исходники Cloudflare Worker части проекта
+- local/: дополнительные локальные утилиты без тяжёлого whisper.cpp
+
+Что нужно на новом устройстве для запуска именно tg_codex_bridge.py:
+1. Termux или Linux shell
+2. Python 3
+3. Пакет requests для Python
+4. Установленный Codex CLI, доступный как команда codex
+5. BOT_TOKEN в окружении или в .env
+6. Старый файл jarvis.db, если нужны рейтинг, достижения, top и appeal
+7. Для голосовых сообщений дополнительно нужен ffmpeg и один из backend whisper
+
+Быстрый запуск в Termux:
+1. Распакуй архив
+2. Перейди в папку проекта
+3. Выполни:
+   pkg update
+   pkg install python
+   python -m pip install requests
+   cp .env.example .env
+   nano .env
+4. Проверь, что команда codex работает:
+   codex --help
+5. Запусти бота:
+   sh run_jarvis_supervisor.sh
+
+Ручной запуск без supervisor:
+   BOT_TOKEN=твой_токен LEGACY_JARVIS_DB_PATH=/путь/к/jarvis.db python tg_codex_bridge.py
+
+Проверка синтаксиса:
+   python -m py_compile tg_codex_bridge.py
+
+Логи:
+- tg_codex_bridge.log
+- tg_supervisor.out
+
+Важно:
+- В этот переносимый архив не включён local/whisper.cpp, чтобы архив оставался компактным
+- Без whisper/ffmpeg бот будет работать, но голосовые сообщения могут не распознаваться
+- Если нужен полный офлайн voice-стек, отдельно перенеси папку local/whisper.cpp или установи whisper backend на новом устройстве
+- Основная рабочая точка входа: tg_codex_bridge.py
+- Legacy launcher в `jarvis_legacy_data` не нужен для запуска админки и модерации
+- Старую базу jarvis.db подключай только как источник рейтинга, ачивок, top и appeal

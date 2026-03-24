@@ -1,0 +1,11 @@
+.env
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.lock
+__pycache__/
+*.pyc
+node_modules/
+local/__pycache__/
+tg_supervisor.out
