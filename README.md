@@ -19,6 +19,11 @@
 Именно он покрывает ручное администрирование, модерацию, warn/welcome-команды и bridge к Codex.
 Старая `jarvis.db` нужна только как legacy-источник пользовательской статистики: рейтинг, достижения, топы и апелляции.
 
+Для отдельного mobile-клиента добавлен локальный API entrypoint:
+
+- `jarvis_mobile_api.py`
+- `run_jarvis_mobile_api.sh`
+
 Важно:
 
 - токены и секреты не хардкодятся
@@ -35,6 +40,35 @@
 - личные сообщения: бот отвечает всегда
 - группы: отвечает только на команды, reply, упоминание или активный режим чата
 - режим `silent`: можно полностью заглушить обычные ответы в конкретном чате
+- mobile API: отдельный текстовый chat-клиент поверх того же Jarvis/Codex ядра
+
+## Mobile API
+
+Новый слой нужен для Flutter-клиента `jarvis_mobile`, чтобы не завязывать приложение на Telegram transport.
+
+Поддерживаемые endpoints:
+
+- `GET /health`
+- `GET /v1/conversations`
+- `POST /v1/conversations`
+- `GET /v1/conversations/<chat_id>/messages`
+- `POST /v1/chat/send`
+
+Запуск локально:
+
+```bash
+sh run_jarvis_mobile_api.sh
+```
+
+По умолчанию API слушает:
+
+- `127.0.0.1:8787`
+
+Переопределение через env:
+
+- `JARVIS_MOBILE_API_HOST`
+- `JARVIS_MOBILE_API_PORT`
+- `JARVIS_MOBILE_DEFAULT_CHAT_ID`
 
 ### Интеллектуальная логика
 
