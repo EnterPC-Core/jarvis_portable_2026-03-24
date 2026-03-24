@@ -106,6 +106,28 @@ class MobileApiService:
             )
         return messages
 
+    def get_conversation(self, chat_id: int, limit: int = 80) -> Dict[str, Any]:
+        messages = self.get_messages(chat_id, limit=limit)
+        preview = messages[-1]['text'] if messages else ''
+        return {
+            'id': str(chat_id),
+            'chat_id': chat_id,
+            'title': self._build_conversation_title(chat_id, preview),
+            'mode': self.bridge.state.get_mode(chat_id),
+            'summary': self.bridge.state.get_summary(chat_id),
+            'messages': messages,
+        }
+
+    def get_memory_context(self, chat_id: int, limit: int = 12) -> Dict[str, Any]:
+        facts = self.bridge.state.get_facts(chat_id, limit=limit)
+        summary = self.bridge.state.get_summary(chat_id)
+        return {
+            'chat_id': chat_id,
+            'summary': summary,
+            'facts': facts,
+            'fact_count': len(facts),
+        }
+
     def send_message(self, chat_id: int, text: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         cleaned = normalize_whitespace(text)
         if not cleaned:
@@ -181,10 +203,20 @@ class MobileApiHandler(BaseHTTPRequestHandler):
                 limit = self._int_query(query, 'limit', default=30, minimum=1, maximum=100)
                 self._send_json({'items': self.service.list_conversations(limit=limit)})
                 return
+            if path.startswith('/v1/conversations/') and len(path.split('/')) == 4:
+                chat_id = int(path.split('/')[3])
+                limit = self._int_query(query, 'limit', default=80, minimum=1, maximum=200)
+                self._send_json(self.service.get_conversation(chat_id, limit=limit))
+                return
             if path.startswith('/v1/conversations/') and path.endswith('/messages'):
                 chat_id = int(path.split('/')[3])
                 limit = self._int_query(query, 'limit', default=80, minimum=1, maximum=200)
                 self._send_json({'items': self.service.get_messages(chat_id, limit=limit)})
+                return
+            if path.startswith('/v1/memory/'):
+                chat_id = int(path.split('/')[3])
+                limit = self._int_query(query, 'limit', default=12, minimum=1, maximum=30)
+                self._send_json(self.service.get_memory_context(chat_id, limit=limit))
                 return
             self._send_json({'error': 'Not found'}, status=HTTPStatus.NOT_FOUND)
         except Exception as error:

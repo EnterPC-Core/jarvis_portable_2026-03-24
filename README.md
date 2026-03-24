@@ -50,9 +50,11 @@
 
 - `GET /health`
 - `GET /v1/conversations`
+- `GET /v1/conversations/<chat_id>`
 - `POST /v1/conversations`
 - `GET /v1/conversations/<chat_id>/messages`
 - `POST /v1/chat/send`
+- `GET /v1/memory/<chat_id>`
 
 Запуск локально:
 
