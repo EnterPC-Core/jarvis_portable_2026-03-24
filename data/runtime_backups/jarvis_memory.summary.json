@@ -1,6 +1,6 @@
 {
   "database": "/home/userland/projects/bots/jarvis_portable_2026-03-24/jarvis_memory.db",
-  "generated_at_utc": "2026-03-25T04:30:48+00:00",
+  "generated_at_utc": "2026-03-25T04:38:20+00:00",
   "tables": [
     "achievement_catalog",
     "appeal_events",
@@ -16,6 +16,7 @@
     "chat_modes",
     "chat_summaries",
     "memory_facts",
+    "memory_refresh_state",
     "moderation_actions",
     "moderation_journal",
     "progression_profiles",
@@ -34,22 +35,23 @@
     "appeal_events": 2,
     "appeals": 2,
     "bot_meta": 6,
-    "chat_events": 682,
-    "chat_events_fts": 682,
+    "chat_events": 683,
+    "chat_events_fts": 683,
     "chat_events_fts_config": 1,
-    "chat_events_fts_data": 14,
-    "chat_events_fts_docsize": 682,
-    "chat_events_fts_idx": 12,
+    "chat_events_fts_data": 15,
+    "chat_events_fts_docsize": 683,
+    "chat_events_fts_idx": 13,
     "chat_history": 181,
     "chat_modes": 1,
     "chat_summaries": 4,
     "memory_facts": 0,
+    "memory_refresh_state": 3,
     "moderation_actions": 0,
     "moderation_journal": 0,
     "progression_profiles": 999,
     "request_diagnostics": 0,
-    "score_events": 2095,
-    "summary_snapshots": 0,
+    "score_events": 2096,
+    "summary_snapshots": 4,
     "ui_sessions": 2,
     "user_achievement_state": 16932,
     "user_memory_profiles": 0,
@@ -69,7 +71,7 @@
       },
       {
         "key": "last_update_id",
-        "value": "955148006"
+        "value": "955148007"
       },
       {
         "key": "pending_restart_chat_id",
@@ -109,7 +111,7 @@
       "content_exported": false
     },
     "chat_events": {
-      "rows": 682,
+      "rows": 683,
       "content_exported": false
     },
     "chat_history": {

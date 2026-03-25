@@ -32,6 +32,16 @@
 
 Это важно: бот теперь строит prompt не только из последних сообщений, а из нескольких memory layers сразу.
 
+## Routing Contract
+
+В текущей версии orchestration стандартизирован:
+
+- `RouteDecision` — определяет, идёт ли запрос в `live_*`, `codex_chat` или `codex_workspace`
+- `ContextBundle` — собирает memory/context слои для prompt
+- `SelfCheckReport` — финальный self-check после ответа
+
+Это упрощает отладку, делает `/routes` полезнее и снижает риск случайных route-расхождений между модулями.
+
 ## Минимальные требования
 
 - Linux shell, UserLAnd или Termux

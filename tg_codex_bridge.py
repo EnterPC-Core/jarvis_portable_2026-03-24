@@ -12,6 +12,7 @@ import time
 import traceback
 import xml.etree.ElementTree as ET
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
 from threading import Lock, Thread
@@ -609,6 +610,44 @@ class BotConfig:
         self.enterprise_task_timeout = read_int_env("ENTERPRISE_TASK_TIMEOUT", DEFAULT_ENTERPRISE_TASK_TIMEOUT, minimum=60, maximum=1200)
         self.owner_daily_digest_hour_utc = read_int_env("OWNER_DAILY_DIGEST_HOUR_UTC", DEFAULT_OWNER_DAILY_DIGEST_HOUR_UTC, minimum=0, maximum=23)
         self.owner_weekly_digest_weekday_utc = read_int_env("OWNER_WEEKLY_DIGEST_WEEKDAY_UTC", DEFAULT_OWNER_WEEKLY_DIGEST_WEEKDAY_UTC, minimum=0, maximum=6)
+
+
+@dataclass(frozen=True)
+class RouteDecision:
+    persona: str
+    intent: str
+    chat_type: str
+    route_kind: str
+    source_label: str
+    use_live: bool
+    use_web: bool
+    use_events: bool
+    use_database: bool
+    use_reply: bool
+    use_workspace: bool
+    guardrails: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ContextBundle:
+    summary_text: str = ""
+    facts_text: str = ""
+    event_context: str = ""
+    database_context: str = ""
+    reply_context: str = ""
+    user_memory_text: str = ""
+    chat_memory_text: str = ""
+    summary_memory_text: str = ""
+    web_context: str = ""
+    route_summary: str = ""
+    guardrail_note: str = ""
+
+
+@dataclass(frozen=True)
+class SelfCheckReport:
+    outcome: str
+    answer: str
+    flags: Tuple[str, ...]
 
 
 class BridgeState:
@@ -5081,86 +5120,60 @@ class TelegramBridge:
     def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "", message: Optional[dict] = None) -> str:
         started_at = time.perf_counter()
         reply_context = self.build_reply_context(chat_id, message)
-        route_info = analyze_request_route(
+        route_decision = analyze_request_route(
             user_text,
             assistant_persona=assistant_persona,
             chat_type=chat_type,
             user_id=user_id,
             reply_context=reply_context,
         )
-        live_answer = self.try_handle_live_data_query(user_text)
-        if live_answer:
-            answer = postprocess_answer(live_answer)
-            self.state.record_request_diagnostic(
-                chat_id=chat_id,
-                user_id=user_id,
-                chat_type=chat_type,
-                persona=str(route_info.get("persona") or assistant_persona or "jarvis"),
-                intent=str(route_info.get("intent") or detect_intent(user_text)),
-                route_kind=str(route_info.get("live_route") or "live"),
-                source_label=str(route_info.get("source_label") or "live"),
-                used_live=True,
-                used_web=bool(route_info.get("use_web")),
-                used_events=bool(route_info.get("use_events")),
-                used_database=bool(route_info.get("use_database")),
-                used_reply=bool(route_info.get("use_reply")),
-                used_workspace=bool(route_info.get("use_workspace")),
-                guardrails=", ".join(list(route_info.get("guardrails") or [])),
-                outcome=classify_answer_outcome(answer),
-                latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
-                query_text=user_text,
-            )
-            return answer
-        summary_text = self.state.get_summary(chat_id)
-        facts_text = self.state.render_facts(chat_id, query=user_text, limit=10)
-        event_context = ""
-        database_context = ""
-        persona_note = ""
-        identity_label = "Jarvis"
-        include_identity_prompt = True
-        web_context = ""
-        if assistant_persona == "jarvis":
-            persona_note = JARVIS_ASSISTANT_PERSONA_NOTE
-            if bool(route_info.get("use_web")):
-                web_context = self.build_web_search_context(user_text)
-        elif assistant_persona == "enterprise":
-            identity_label = "Enterprise"
-            persona_note = ENTERPRISE_ASSISTANT_PERSONA_NOTE
-            if bool(route_info.get("use_web")):
-                web_context = self.build_web_search_context(user_text)
-        if bool(route_info.get("use_events")):
-            event_context = self.state.get_event_context(chat_id, user_text)
-        if bool(route_info.get("use_database")):
-            database_context = self.state.get_database_context(chat_id, user_text)
-        reply_to = ((message or {}).get("reply_to_message") or {}).get("from") or {}
-        user_memory_text = self.state.get_user_memory_context(
-            chat_id,
+
+        if route_decision.use_live:
+            live_answer = self.try_handle_live_data_query(user_text, route_decision)
+            if live_answer:
+                report = apply_self_check_contract(postprocess_answer(live_answer), route_decision)
+                self.record_route_diagnostic(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    route_decision=route_decision,
+                    report=report,
+                    started_at=started_at,
+                    query_text=user_text,
+                )
+                return report.answer
+
+        context_bundle = self.build_text_context_bundle(
+            chat_id=chat_id,
+            user_text=user_text,
+            route_decision=route_decision,
             user_id=user_id,
-            reply_to_user_id=reply_to.get("id"),
+            message=message,
+            reply_context=reply_context,
         )
-        chat_memory_text = self.state.get_chat_memory_context(chat_id, query=user_text)
-        summary_memory_text = self.state.get_summary_memory_context(chat_id, limit=3)
+        identity_label = "Enterprise" if route_decision.persona == "enterprise" else "Jarvis"
+        persona_note = ENTERPRISE_ASSISTANT_PERSONA_NOTE if route_decision.persona == "enterprise" else JARVIS_ASSISTANT_PERSONA_NOTE
         prompt = build_prompt(
             mode=self.state.get_mode(chat_id),
             history=list(self.state.get_history(chat_id)),
             user_text=user_text,
-            summary_text=summary_text,
-            facts_text=facts_text,
-            event_context=event_context,
-            database_context=database_context,
-            reply_context=reply_context,
+            summary_text=context_bundle.summary_text,
+            facts_text=context_bundle.facts_text,
+            event_context=context_bundle.event_context,
+            database_context=context_bundle.database_context,
+            reply_context=context_bundle.reply_context,
             identity_label=identity_label,
-            include_identity_prompt=include_identity_prompt,
+            include_identity_prompt=True,
             persona_note=persona_note,
-            web_context=web_context,
-            route_summary=build_route_summary_text(route_info),
-            guardrail_note=build_guardrail_note(route_info),
-            user_memory_text=user_memory_text,
-            chat_memory_text=chat_memory_text,
-            summary_memory_text=summary_memory_text,
+            web_context=context_bundle.web_context,
+            route_summary=context_bundle.route_summary,
+            guardrail_note=context_bundle.guardrail_note,
+            user_memory_text=context_bundle.user_memory_text,
+            chat_memory_text=context_bundle.chat_memory_text,
+            summary_memory_text=context_bundle.summary_memory_text,
         )
-        if bool(route_info.get("use_workspace")):
-            answer = self.run_codex_with_progress(
+
+        if route_decision.use_workspace:
+            raw_answer = self.run_codex_with_progress(
                 chat_id,
                 prompt,
                 initial_status=OWNER_AGENT_RUNNING_TEXT,
@@ -5170,58 +5183,27 @@ class TelegramBridge:
                 progress_style="enterprise",
                 replace_status_with_answer=True,
             )
-            self.state.record_request_diagnostic(
-                chat_id=chat_id,
-                user_id=user_id,
-                chat_type=chat_type,
-                persona=str(route_info.get("persona") or assistant_persona or "jarvis"),
-                intent=str(route_info.get("intent") or detect_intent(user_text)),
-                route_kind="workspace_codex",
-                source_label="codex",
-                used_live=False,
-                used_web=bool(route_info.get("use_web")),
-                used_events=bool(route_info.get("use_events")),
-                used_database=bool(route_info.get("use_database")),
-                used_reply=bool(route_info.get("use_reply")),
-                used_workspace=True,
-                guardrails=", ".join(list(route_info.get("guardrails") or [])),
-                outcome=classify_answer_outcome(answer),
-                latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
-                query_text=user_text,
+        else:
+            initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
+            progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
+            raw_answer = self.run_codex_with_progress(
+                chat_id,
+                prompt,
+                initial_status=initial_status,
+                progress_style=progress_style,
+                replace_status_with_answer=True,
             )
-            return answer
-        jarvis_status = JARVIS_AGENT_RUNNING_TEXT
-        progress_style = "jarvis"
-        if assistant_persona == "enterprise":
-            jarvis_status = OWNER_AGENT_RUNNING_TEXT
-            progress_style = "enterprise"
-        answer = self.run_codex_with_progress(
-            chat_id,
-            prompt,
-            initial_status=jarvis_status,
-            progress_style=progress_style,
-            replace_status_with_answer=True,
-        )
-        self.state.record_request_diagnostic(
+
+        report = apply_self_check_contract(raw_answer, route_decision)
+        self.record_route_diagnostic(
             chat_id=chat_id,
             user_id=user_id,
-            chat_type=chat_type,
-            persona=str(route_info.get("persona") or assistant_persona or "jarvis"),
-            intent=str(route_info.get("intent") or detect_intent(user_text)),
-            route_kind="codex",
-            source_label="codex",
-            used_live=False,
-            used_web=bool(route_info.get("use_web")),
-            used_events=bool(route_info.get("use_events")),
-            used_database=bool(route_info.get("use_database")),
-            used_reply=bool(route_info.get("use_reply")),
-            used_workspace=False,
-            guardrails=", ".join(list(route_info.get("guardrails") or [])),
-            outcome=classify_answer_outcome(answer),
-            latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+            route_decision=route_decision,
+            report=report,
+            started_at=started_at,
             query_text=user_text,
         )
-        return answer
+        return report.answer
 
     def build_reply_context(self, chat_id: int, message: Optional[dict]) -> str:
         source = message or {}
@@ -5255,24 +5237,104 @@ class TelegramBridge:
                     lines.append(f"- [{stamp}] {event_actor} ({message_type}): {truncate_text(content, 180)}")
         return "\n".join(lines)
 
-    def try_handle_live_data_query(self, user_text: str) -> Optional[str]:
+    def build_text_context_bundle(
+        self,
+        *,
+        chat_id: int,
+        user_text: str,
+        route_decision: RouteDecision,
+        user_id: Optional[int],
+        message: Optional[dict],
+        reply_context: str,
+    ) -> ContextBundle:
+        web_context = self.build_web_search_context(user_text) if route_decision.use_web else ""
+        event_context = self.state.get_event_context(chat_id, user_text) if route_decision.use_events else ""
+        database_context = self.state.get_database_context(chat_id, user_text) if route_decision.use_database else ""
+        reply_to = ((message or {}).get("reply_to_message") or {}).get("from") or {}
+        return ContextBundle(
+            summary_text=self.state.get_summary(chat_id),
+            facts_text=self.state.render_facts(chat_id, query=user_text, limit=10),
+            event_context=event_context,
+            database_context=database_context,
+            reply_context=reply_context,
+            user_memory_text=self.state.get_user_memory_context(chat_id, user_id=user_id, reply_to_user_id=reply_to.get("id")),
+            chat_memory_text=self.state.get_chat_memory_context(chat_id, query=user_text),
+            summary_memory_text=self.state.get_summary_memory_context(chat_id, limit=3),
+            web_context=web_context,
+            route_summary=build_route_summary_text(route_decision),
+            guardrail_note=build_guardrail_note(route_decision),
+        )
+
+    def build_attachment_context_bundle(
+        self,
+        *,
+        chat_id: int,
+        prompt_text: str,
+        message: Optional[dict],
+        reply_context: str,
+    ) -> ContextBundle:
+        from_user = (message or {}).get("from") or {}
+        reply_to_user = (((message or {}).get("reply_to_message") or {}).get("from") or {})
+        return ContextBundle(
+            summary_text=self.state.get_summary(chat_id),
+            facts_text=self.state.render_facts(chat_id, query=prompt_text, limit=10),
+            event_context=self.state.get_event_context(chat_id, prompt_text) if should_include_event_context(prompt_text) else "",
+            database_context=self.state.get_database_context(chat_id, prompt_text) if should_include_database_context(prompt_text) else "",
+            reply_context=reply_context,
+            user_memory_text=self.state.get_user_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id")),
+            chat_memory_text=self.state.get_chat_memory_context(chat_id, query=prompt_text),
+            summary_memory_text=self.state.get_summary_memory_context(chat_id, limit=3),
+        )
+
+    def record_route_diagnostic(
+        self,
+        *,
+        chat_id: int,
+        user_id: Optional[int],
+        route_decision: RouteDecision,
+        report: SelfCheckReport,
+        started_at: float,
+        query_text: str,
+    ) -> None:
+        self.state.record_request_diagnostic(
+            chat_id=chat_id,
+            user_id=user_id,
+            chat_type=route_decision.chat_type,
+            persona=route_decision.persona,
+            intent=route_decision.intent,
+            route_kind=route_decision.route_kind,
+            source_label=route_decision.source_label,
+            used_live=route_decision.use_live,
+            used_web=route_decision.use_web,
+            used_events=route_decision.use_events,
+            used_database=route_decision.use_database,
+            used_reply=route_decision.use_reply,
+            used_workspace=route_decision.use_workspace,
+            guardrails=", ".join(route_decision.guardrails),
+            outcome=report.outcome,
+            latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+            query_text=query_text,
+        )
+
+    def try_handle_live_data_query(self, user_text: str, route_decision: Optional[RouteDecision] = None) -> Optional[str]:
+        route_kind = route_decision.route_kind if route_decision is not None else ""
         weather_location = detect_weather_location(user_text)
-        if weather_location:
+        if weather_location and route_kind in {"", "live_weather"}:
             return self.fetch_weather_answer(weather_location)
         currency_pair = detect_currency_pair(user_text)
-        if currency_pair:
+        if currency_pair and route_kind in {"", "live_fx"}:
             return self.fetch_exchange_rate_answer(currency_pair[0], currency_pair[1])
         crypto_id = detect_crypto_asset(user_text)
-        if crypto_id:
+        if crypto_id and route_kind in {"", "live_crypto"}:
             return self.fetch_crypto_price_answer(crypto_id)
         stock_symbol = detect_stock_symbol(user_text)
-        if stock_symbol:
+        if stock_symbol and route_kind in {"", "live_stocks"}:
             return self.fetch_stock_price_answer(stock_symbol)
         current_fact_query = detect_current_fact_query(user_text)
-        if current_fact_query:
+        if current_fact_query and route_kind in {"", "live_current_fact"}:
             return self.fetch_current_fact_answer(current_fact_query)
         news_query = detect_news_query(user_text)
-        if news_query:
+        if news_query and route_kind in {"", "live_news"}:
             return self.fetch_news_answer(news_query)
         return None
 
@@ -5581,33 +5643,26 @@ class TelegramBridge:
 
     def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str, message: Optional[dict] = None) -> str:
         prompt_text = caption or DEFAULT_IMAGE_PROMPT
-        summary_text = self.state.get_summary(chat_id)
-        facts_text = self.state.render_facts(chat_id, query=prompt_text, limit=10)
-        event_context = ""
-        database_context = ""
         reply_context = self.build_reply_context(chat_id, message)
-        from_user = (message or {}).get("from") or {}
-        reply_to_user = (((message or {}).get("reply_to_message") or {}).get("from") or {})
-        user_memory_text = self.state.get_user_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id"))
-        chat_memory_text = self.state.get_chat_memory_context(chat_id, query=prompt_text)
-        summary_memory_text = self.state.get_summary_memory_context(chat_id, limit=3)
-        if should_include_event_context(prompt_text):
-            event_context = self.state.get_event_context(chat_id, prompt_text)
-        if should_include_database_context(prompt_text):
-            database_context = self.state.get_database_context(chat_id, prompt_text)
+        context_bundle = self.build_attachment_context_bundle(
+            chat_id=chat_id,
+            prompt_text=prompt_text,
+            message=message,
+            reply_context=reply_context,
+        )
         prompt = build_prompt(
             mode=self.state.get_mode(chat_id),
             history=list(self.state.get_history(chat_id)),
             user_text=prompt_text,
             attachment_note="Пользователь прислал изображение. Анализируй само изображение и подпись вместе.",
-            summary_text=summary_text,
-            facts_text=facts_text,
-            event_context=event_context,
-            database_context=database_context,
-            reply_context=reply_context,
-            user_memory_text=user_memory_text,
-            chat_memory_text=chat_memory_text,
-            summary_memory_text=summary_memory_text,
+            summary_text=context_bundle.summary_text,
+            facts_text=context_bundle.facts_text,
+            event_context=context_bundle.event_context,
+            database_context=context_bundle.database_context,
+            reply_context=context_bundle.reply_context,
+            user_memory_text=context_bundle.user_memory_text,
+            chat_memory_text=context_bundle.chat_memory_text,
+            summary_memory_text=context_bundle.summary_memory_text,
         )
         return self.run_codex(prompt, image_path=image_path)
 
@@ -5624,20 +5679,13 @@ class TelegramBridge:
         mime_type = document.get("mime_type") or "application/octet-stream"
         file_size = document.get("file_size") or 0
         prompt_text = caption or f"Разбери документ {file_name} и кратко скажи, что в нём важно."
-        summary_text = self.state.get_summary(chat_id)
-        facts_text = self.state.render_facts(chat_id, query=prompt_text, limit=10)
-        event_context = ""
-        database_context = ""
         reply_context = self.build_reply_context(chat_id, message)
-        from_user = (message or {}).get("from") or {}
-        reply_to_user = (((message or {}).get("reply_to_message") or {}).get("from") or {})
-        user_memory_text = self.state.get_user_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id"))
-        chat_memory_text = self.state.get_chat_memory_context(chat_id, query=prompt_text)
-        summary_memory_text = self.state.get_summary_memory_context(chat_id, limit=3)
-        if should_include_event_context(prompt_text):
-            event_context = self.state.get_event_context(chat_id, prompt_text)
-        if should_include_database_context(prompt_text):
-            database_context = self.state.get_database_context(chat_id, prompt_text)
+        context_bundle = self.build_attachment_context_bundle(
+            chat_id=chat_id,
+            prompt_text=prompt_text,
+            message=message,
+            reply_context=reply_context,
+        )
         attachment_lines = [
             "Пользователь прислал документ.",
             f"Имя файла: {file_name}",
@@ -5654,14 +5702,14 @@ class TelegramBridge:
             history=list(self.state.get_history(chat_id)),
             user_text=prompt_text,
             attachment_note="\n".join(attachment_lines),
-            summary_text=summary_text,
-            facts_text=facts_text,
-            event_context=event_context,
-            database_context=database_context,
-            reply_context=reply_context,
-            user_memory_text=user_memory_text,
-            chat_memory_text=chat_memory_text,
-            summary_memory_text=summary_memory_text,
+            summary_text=context_bundle.summary_text,
+            facts_text=context_bundle.facts_text,
+            event_context=context_bundle.event_context,
+            database_context=context_bundle.database_context,
+            reply_context=context_bundle.reply_context,
+            user_memory_text=context_bundle.user_memory_text,
+            chat_memory_text=context_bundle.chat_memory_text,
+            summary_memory_text=context_bundle.summary_memory_text,
         )
         return self.run_codex(prompt)
 
@@ -8411,42 +8459,46 @@ def should_use_web_research(text: str) -> bool:
     return any(trigger in lowered for trigger in triggers)
 
 
+ROUTE_KIND_LIVE_MAP = {
+    "live_weather": ("open-meteo", detect_weather_location),
+    "live_fx": ("frankfurter", detect_currency_pair),
+    "live_crypto": ("coingecko", detect_crypto_asset),
+    "live_stocks": ("yahoo-finance", detect_stock_symbol),
+    "live_current_fact": ("duckduckgo+codex", detect_current_fact_query),
+    "live_news": ("google-news-rss", detect_news_query),
+}
+ALLOWED_ROUTE_KINDS = {
+    "codex_chat",
+    "codex_workspace",
+    *ROUTE_KIND_LIVE_MAP.keys(),
+}
+
+
 def analyze_request_route(
     user_text: str,
     assistant_persona: str,
     chat_type: str,
     user_id: Optional[int] = None,
     reply_context: str = "",
-) -> Dict[str, object]:
+) -> RouteDecision:
     normalized_text = normalize_whitespace(user_text)
     intent = detect_intent(normalized_text)
-    live_route = ""
-    source_label = ""
-    if detect_weather_location(normalized_text):
-        live_route = "weather"
-        source_label = "open-meteo"
-    elif detect_currency_pair(normalized_text):
-        live_route = "fx"
-        source_label = "frankfurter"
-    elif detect_crypto_asset(normalized_text):
-        live_route = "crypto"
-        source_label = "coingecko"
-    elif detect_stock_symbol(normalized_text):
-        live_route = "stocks"
-        source_label = "yahoo-finance"
-    elif detect_current_fact_query(normalized_text):
-        live_route = "current_fact"
-        source_label = "duckduckgo+codex"
-    elif detect_news_query(normalized_text):
-        live_route = "news"
-        source_label = "google-news-rss"
-    use_web = should_use_web_research(normalized_text) and not live_route
+    route_kind = "codex_workspace" if can_owner_use_workspace_mode(user_id, chat_type, assistant_persona) else "codex_chat"
+    source_label = "codex"
+    for candidate_kind, (candidate_source, detector) in ROUTE_KIND_LIVE_MAP.items():
+        detected_value = detector(normalized_text)
+        if detected_value:
+            route_kind = candidate_kind
+            source_label = candidate_source
+            break
+    use_live = route_kind.startswith("live_")
+    use_web = should_use_web_research(normalized_text) and not use_live
     use_events = should_include_event_context(normalized_text)
     use_database = should_include_database_context(normalized_text)
     use_reply = bool(reply_context.strip())
-    use_workspace = can_owner_use_workspace_mode(user_id, chat_type, assistant_persona)
+    use_workspace = route_kind == "codex_workspace"
     guardrails: List[str] = []
-    if live_route:
+    if use_live:
         guardrails.append("freshness")
     if use_web:
         guardrails.append("external-web")
@@ -8456,54 +8508,67 @@ def analyze_request_route(
         guardrails.append("be-explicit-about-assumptions")
     if is_dangerous_request(normalized_text):
         guardrails.append("no-system-actions")
-    return {
-        "intent": intent,
-        "persona": assistant_persona or "jarvis",
-        "chat_type": chat_type,
-        "live_route": live_route,
-        "source_label": source_label,
-        "use_web": use_web,
-        "use_events": use_events,
-        "use_database": use_database,
-        "use_reply": use_reply,
-        "use_workspace": use_workspace,
-        "guardrails": guardrails,
-    }
+    decision = RouteDecision(
+        persona=assistant_persona or "jarvis",
+        intent=intent,
+        chat_type=chat_type,
+        route_kind=route_kind,
+        source_label=source_label,
+        use_live=use_live,
+        use_web=use_web,
+        use_events=use_events,
+        use_database=use_database,
+        use_reply=use_reply,
+        use_workspace=use_workspace,
+        guardrails=tuple(guardrails),
+    )
+    validate_route_decision(decision)
+    return decision
 
 
-def build_route_summary_text(route_info: Dict[str, object]) -> str:
+def validate_route_decision(decision: RouteDecision) -> None:
+    if decision.route_kind not in ALLOWED_ROUTE_KINDS:
+        raise ValueError(f"unsupported route_kind: {decision.route_kind}")
+    if decision.use_live != decision.route_kind.startswith("live_"):
+        raise ValueError(f"route/live contract mismatch: {decision.route_kind}")
+    if decision.use_workspace != (decision.route_kind == "codex_workspace"):
+        raise ValueError(f"route/workspace contract mismatch: {decision.route_kind}")
+
+
+def build_route_summary_text(route_info: RouteDecision) -> str:
     active_layers: List[str] = []
-    if route_info.get("use_reply"):
+    if route_info.use_reply:
         active_layers.append("reply-context")
-    if route_info.get("use_events"):
+    if route_info.use_events:
         active_layers.append("event-context")
-    if route_info.get("use_database"):
+    if route_info.use_database:
         active_layers.append("database-context")
-    if route_info.get("use_web"):
+    if route_info.use_web:
         active_layers.append("web-context")
-    if route_info.get("live_route"):
-        active_layers.append(f"live:{route_info.get('live_route')}")
+    if route_info.use_live:
+        active_layers.append(f"live:{route_info.route_kind.replace('live_', '')}")
     if not active_layers:
         active_layers.append("history+summary+facts")
     return (
-        f"intent={route_info.get('intent')}; persona={route_info.get('persona')}; "
-        f"chat_type={route_info.get('chat_type')}; "
-        f"workspace_mode={'yes' if route_info.get('use_workspace') else 'no'}; "
+        f"intent={route_info.intent}; persona={route_info.persona}; "
+        f"chat_type={route_info.chat_type}; "
+        f"route={route_info.route_kind}; "
+        f"workspace_mode={'yes' if route_info.use_workspace else 'no'}; "
         f"active_layers={', '.join(active_layers)}"
     )
 
 
-def build_guardrail_note(route_info: Dict[str, object]) -> str:
+def build_guardrail_note(route_info: RouteDecision) -> str:
     lines = [
         "- перед финальным ответом проверь, что ответ опирается только на доступные контекстные слои и источники",
         "- не заявляй о выполненных действиях, если действие не было реально выполнено маршрутом или инструментом",
     ]
-    if route_info.get("live_route") or route_info.get("use_web"):
+    if route_info.use_live or route_info.use_web:
         lines.append("- если данные могли устареть или не подтверждаются уверенно, прямо скажи это")
         lines.append("- не выдавай косвенные сниппеты за окончательно подтверждённый факт")
-    if route_info.get("use_events") or route_info.get("use_database") or route_info.get("use_reply"):
+    if route_info.use_events or route_info.use_database or route_info.use_reply:
         lines.append("- не придумывай детали вне chat history, memory facts, reply context, archived events и database context")
-    if "no-system-actions" in list(route_info.get("guardrails") or []):
+    if "no-system-actions" in route_info.guardrails:
         lines.append("- не выполняй системные действия и не описывай их как выполненные")
     lines.append("- если уверенности мало, честно обозначь ограничение и предложи следующий безопасный шаг")
     return "\n".join(lines)
@@ -8518,6 +8583,35 @@ def classify_answer_outcome(answer: str) -> str:
     if "не подтверж" in lowered or "не уверен" in lowered or "предполож" in lowered:
         return "uncertain"
     return "ok"
+
+
+def apply_self_check_contract(answer: str, route_decision: RouteDecision) -> SelfCheckReport:
+    cleaned = normalize_whitespace(answer)
+    flags: List[str] = []
+    final_answer = cleaned
+    if not cleaned:
+        return SelfCheckReport(outcome="empty", answer="Пустой ответ. Переформулируй запрос.", flags=("empty-answer",))
+
+    if route_decision.use_live or route_decision.use_web:
+        lowered = cleaned.lower()
+        if route_decision.route_kind == "live_current_fact" and "подтверждение:" not in lowered and "не подтверж" not in lowered:
+            final_answer = cleaned + "\n\nПроверка: это вывод по найденным внешним источникам, а не абсолютная гарантия факта."
+            flags.append("added-current-fact-disclaimer")
+        if route_decision.route_kind == "live_news" and "источник" not in lowered and "http" not in lowered:
+            flags.append("news-without-source-marker")
+
+    if "no-system-actions" in route_decision.guardrails:
+        lowered = final_answer.lower()
+        action_markers = ("создал", "удалил", "установил", "запустил", "перезапустил", "выполнил")
+        if any(marker in lowered for marker in action_markers):
+            final_answer += "\n\nПроверка: этот маршрут не подтверждает выполнение системных действий."
+            flags.append("added-no-action-disclaimer")
+
+    return SelfCheckReport(
+        outcome=classify_answer_outcome(final_answer),
+        answer=final_answer,
+        flags=tuple(flags),
+    )
 
 
 def render_route_diagnostics_rows(rows: List[sqlite3.Row]) -> str:

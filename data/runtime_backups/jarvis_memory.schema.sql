@@ -98,6 +98,14 @@ CREATE TABLE chat_summaries (chat_id INTEGER PRIMARY KEY, summary TEXT NOT NULL,
 
 CREATE TABLE memory_facts (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, created_by_user_id INTEGER, fact TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')));
 
+CREATE TABLE memory_refresh_state (
+                    chat_id INTEGER PRIMARY KEY,
+                    last_event_id INTEGER NOT NULL DEFAULT 0,
+                    last_run_at INTEGER NOT NULL DEFAULT 0,
+                    last_user_refresh_at INTEGER NOT NULL DEFAULT 0,
+                    last_summary_refresh_at INTEGER NOT NULL DEFAULT 0
+                );
+
 CREATE TABLE moderation_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), expires_at INTEGER, active INTEGER NOT NULL DEFAULT 1, completed_at INTEGER);
 
 CREATE TABLE moderation_journal (
@@ -223,7 +231,7 @@ CREATE TABLE user_memory_profiles (
                     style_notes TEXT NOT NULL DEFAULT '',
                     topics TEXT NOT NULL DEFAULT '',
                     last_message_at INTEGER NOT NULL DEFAULT 0,
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), ai_summary TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(chat_id, user_id)
                 );
 

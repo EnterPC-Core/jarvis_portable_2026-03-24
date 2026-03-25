@@ -68,6 +68,16 @@
 - bot обновляет `summary memory` через короткий AI-rollup
 - bot дожимает верхние `user memory` профили для самых активных участников
 
+### Routing And Contracts
+
+Теперь orchestration держится на стандартизированных контрактах:
+
+- `RouteDecision` — жёсткое решение роутера: `live_*`, `codex_chat`, `codex_workspace`
+- `ContextBundle` — единая сборка контекста для prompt layer
+- `SelfCheckReport` — post-response self-check перед финальной диагностикой и выдачей
+
+Это нужно, чтобы routing, prompt-building, diagnostics и guardrails жили по одному контракту, а не по разрозненным dict-эвристикам.
+
 Эти слои не заменяют `chat_history`, а дополняют его и подаются в prompt отдельно.
 
 ### Локальный runtime
