@@ -101,7 +101,6 @@ BOT_TOKEN=...
 OWNER_USER_ID=...
 ADMIN_ID=...
 OWNER_USERNAME=@...
-ALLOWED_USER_ID=...
 DB_PATH=/home/userland/projects/bots/jarvis_portable_2026-03-24/jarvis_memory.db
 LOCK_PATH=/home/userland/projects/bots/jarvis_portable_2026-03-24/tg_codex_bridge.lock
 LEGACY_JARVIS_DB_PATH=/home/userland/projects/bots/jarvis_legacy_data/jarvis.db
@@ -221,13 +220,13 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 
 ### В личке
 
-- `Jarvis` отвечает всегда
+- `Jarvis` отвечает только владельцу
 - `Enterprise` для владельца может идти в расширенный локальный режим
 - для runtime/system вопросов `Enterprise` использует прямой local probe вместо свободного ответа модели
 
 ### В группах
 
-- ответы только по trigger/reply/упоминанию
+- ответы только на обращения владельца через trigger/reply/упоминание
 - `Enterprise` тоже может работать, если маршрут явно вызван
 - reply на чужое сообщение теперь попадает в prompt как отдельный контекст вместе с коротким thread history
 - вопросы вида `что тут происходит`, `кто в чате`, `изучи этот чат`, `что между ними` теперь должны опираться на локальные `chat_events`, `user memory`, `relation memory`, `participant registry` и chat-dynamics слой

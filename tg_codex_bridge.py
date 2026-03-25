@@ -19,6 +19,7 @@ from threading import Event, Lock, Thread
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from requests import Response, Session
@@ -72,7 +73,6 @@ from utils.text_utils import (
 )
 from utils.runtime_utils import (
     cleanup_temp_file as _cleanup_temp_file,
-    parse_allowed_user_ids as _parse_allowed_user_ids,
     prepare_tmp_dir as _prepare_tmp_dir,
     read_bool_env as _read_bool_env,
     read_int_env as _read_int_env,
@@ -191,6 +191,14 @@ DEFAULT_TRIGGER_NAME = "jarvis"
 DEFAULT_DB_PATH = "jarvis_memory.db"
 DEFAULT_LOCK_PATH = "tg_codex_bridge.lock"
 DEFAULT_HEARTBEAT_PATH = "tg_codex_bridge.heartbeat"
+DOC_RUNTIME_DRIFT_MARKERS = (
+    "README.md",
+    "PROJECT_RUN_INSTRUCTIONS.md",
+    "PORTABLE_RUN_INSTRUCTIONS.md",
+    "BOT_UI_GUIDE.md",
+    "COMMANDS.md",
+    "data/runtime_backups/",
+)
 DEFAULT_BACKUP_INTERVAL_DAYS = 7
 DEFAULT_BACKUP_PART_SIZE_MB = 45
 DEFAULT_OWNER_AUTOFIX = True
@@ -203,7 +211,6 @@ DEFAULT_LEGACY_JARVIS_DB_PATH = str((Path(__file__).resolve().parent.parent / "j
 DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
 OWNER_USER_ID = int((os.getenv("OWNER_USER_ID", os.getenv("ADMIN_ID", "6102780373")) or "6102780373").strip())
 OWNER_USERNAME = (os.getenv("OWNER_USERNAME", "@DmitryUnboxing") or "@DmitryUnboxing").strip()
-DEFAULT_ACCESS_PASSWORD = "change-me"
 ACCESS_DENIED_TEXT = (
     "Этот раздел недоступен."
 )
@@ -427,7 +434,6 @@ COMMANDS_LIST_TEXT = (
     "/start\n"
     "/help\n"
     "/commands\n"
-    "/password <пароль>\n"
     "/reset\n"
     "/ping\n"
     "/restart\n"
@@ -812,8 +818,6 @@ class BotConfig:
             maximum=MAX_HISTORY_LIMIT,
         )
         self.default_mode = normalize_mode(os.getenv("DEFAULT_MODE", DEFAULT_MODE_NAME))
-        self.allowed_user_ids = parse_allowed_user_ids(os.getenv("ALLOWED_USER_ID", ""))
-        self.access_password = os.getenv("ACCESS_PASSWORD", DEFAULT_ACCESS_PASSWORD).strip()
         self.safe_chat_only = read_bool_env("SAFE_CHAT_ONLY", DEFAULT_SAFE_CHAT_ONLY)
         self.bot_username = (os.getenv("BOT_USERNAME", DEFAULT_BOT_USERNAME).strip().lstrip("@")).lower()
         self.trigger_name = (os.getenv("TRIGGER_NAME", DEFAULT_TRIGGER_NAME).strip() or DEFAULT_TRIGGER_NAME).lower()
@@ -3553,7 +3557,7 @@ class TelegramBridge:
                 )
                 time.sleep(ERROR_BACKOFF_SECONDS)
             except Exception as error:
-                log(f"unexpected main loop error: {error}")
+                log_exception("unexpected main loop error", error, limit=12)
                 self.refresh_world_state_registry("runtime_error")
                 self.recompute_drive_scores()
                 self.state.record_autobiographical_event(
@@ -4469,8 +4473,7 @@ class TelegramBridge:
             log(f"telegram error while handling message chat={chat_id}: {error}")
             self.safe_send_text(chat_id, "Не удалось обработать сообщение из-за ошибки Telegram API.")
         except Exception as error:
-            details = traceback.format_exc(limit=6)
-            log(f"message handling error chat={chat_id}: {error}\n{details}")
+            log_exception(f"message handling error chat={chat_id}", error, limit=6)
             self.safe_send_text(chat_id, "Не удалось обработать сообщение. Попробуй еще раз.")
 
     def record_incoming_event(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
@@ -4679,7 +4682,7 @@ class TelegramBridge:
                 text=text,
             )
         except Exception as error:
-            log(f"legacy jarvis sync failed chat={chat_id} user={user_id}: {error}")
+            log_exception(f"legacy jarvis sync failed chat={chat_id} user={user_id}", error, limit=6)
 
     def handle_reaction_update(self, reaction_update: dict) -> None:
         chat = reaction_update.get("chat") or {}
@@ -4726,7 +4729,7 @@ class TelegramBridge:
                 reaction_delta = max(len(reaction_update.get("new_reaction") or []), len(reaction_update.get("reactions") or []), 1)
                 self.legacy.sync_reaction(int(chat_id), int(user_id), int(message_id or 0), reactions_added=reaction_delta)
             except Exception as error:
-                log(f"legacy reaction sync failed chat={chat_id} user={user_id}: {error}")
+                log_exception(f"legacy reaction sync failed chat={chat_id} user={user_id}", error, limit=6)
         log(f"incoming reaction chat={chat_id} user={user_id} message_id={message_id} value={shorten_for_log(content)}")
 
     def handle_text_message(self, chat_id: int, user_id: Optional[int], message: dict, chat_type: str = "private") -> None:
@@ -4956,8 +4959,8 @@ class TelegramBridge:
                 daemon=True,
             )
             worker.start()
-        except Exception:
-            log(f"voice handler failed chat={chat_id} traceback={traceback.format_exc()}")
+        except Exception as error:
+            log_exception(f"voice handler failed chat={chat_id}", error, limit=8)
             self.safe_send_text(chat_id, "Ошибка при обработке голосового. Детали записаны в лог.")
 
     def build_voice_initial_prompt(self, chat_id: int, strict_trigger: bool = False) -> str:
@@ -5000,21 +5003,7 @@ class TelegramBridge:
             return self.handle_owner_autofix_command(chat_id, user_id, owner_autofix_payload)
         password_value = parse_password_command(text)
         if password_value is not None:
-            if user_id == OWNER_USER_ID:
-                self.safe_send_text(chat_id, "Доступ владельца уже активен.")
-                return True
-            if not password_value:
-                self.safe_send_text(chat_id, "Используй: /password <пароль>")
-                return True
-            if self.config.access_password == DEFAULT_ACCESS_PASSWORD:
-                self.safe_send_text(chat_id, f"Пароль ещё не настроен. Получить доступ можно только у Создателя {OWNER_USERNAME}")
-                return True
-            if password_value == self.config.access_password:
-                if user_id is not None:
-                    self.state.authorized_user_ids.add(user_id)
-                self.safe_send_text(chat_id, "Доступ разрешён.")
-                return True
-            self.safe_send_text(chat_id, f"Неверный пароль. Пароль можно получить только у Создателя {OWNER_USERNAME}")
+            self.safe_send_text(chat_id, f"Вход по паролю отключён. Бот отвечает только владельцу {OWNER_USERNAME}.")
             return True
         if not has_access:
             if text == "/rating" and user_id is not None:
@@ -5194,6 +5183,9 @@ class TelegramBridge:
             self.state.append_history(chat_id, "user", text)
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
+        except Exception as error:
+            log_exception(f"text task failed chat={chat_id}", error, limit=10)
+            self.safe_send_text(chat_id, "Не удалось обработать запрос. Ошибка записана в лог.")
         finally:
             self.state.finish_chat_task(chat_id)
 
@@ -5793,7 +5785,7 @@ class TelegramBridge:
                 log(f"ui callback telegram error chat={chat_id} message_id={message_id}: {error}")
                 return
             except Exception as error:
-                log(f"ui callback error chat={chat_id} message_id={message_id}: {error}")
+                log_exception(f"ui callback error chat={chat_id} message_id={message_id}", error, limit=8)
                 self.safe_send_text(chat_id, "Не удалось обновить окно.")
                 return
         if not data.startswith("help:") or user_id is None:
@@ -6243,7 +6235,7 @@ class TelegramBridge:
         try:
             self.download_telegram_file(file_path, destination)
         except Exception as error:
-            log(f"sd save failed target={destination} error={error}")
+            log_exception(f"sd save failed target={destination}", error, limit=8)
             self.safe_send_text(chat_id, f"Не удалось сохранить файл:\n{error}")
             return True
         self.safe_send_text(chat_id, f"Сохранено:\n{destination}")
@@ -6688,10 +6680,6 @@ class TelegramBridge:
             self.safe_send_text(chat_id, "Запрос отклонён по соображениям безопасности")
             return True
 
-        if not can_use_upgrade_write(self.config.allowed_user_ids, user_id):
-            self.safe_send_text(chat_id, "Запрос отклонён по соображениям безопасности")
-            return True
-
         if not self.state.try_start_upgrade(chat_id):
             self.safe_send_text(chat_id, UPGRADE_ALREADY_RUNNING_TEXT)
             return True
@@ -6834,6 +6822,11 @@ class TelegramBridge:
             active_constraints=active_constraints,
             last_route_kind=route_decision.route_kind,
         )
+        early_status_message_id: Optional[int] = None
+        if route_decision.use_live or route_decision.use_web:
+            initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
+            status_note = "Проверяю актуальные данные..." if route_decision.persona != "enterprise" else "Проверяю актуальные данные через Enterprise..."
+            early_status_message_id = self.send_status_message(chat_id, f"{initial_status}\n\n{status_note}")
         if detect_local_chat_query(user_text) and drive_scores.get("stale_memory_pressure", 0.0) >= 35.0:
             self.state.refresh_relation_memory(chat_id)
 
@@ -6866,7 +6859,8 @@ class TelegramBridge:
             return report.answer
 
         if route_decision.use_live:
-            live_answer = self.try_handle_live_data_query(user_text, route_decision)
+            with HeartbeatGuard(self):
+                live_answer = self.try_handle_live_data_query(user_text, route_decision)
             if live_answer:
                 report = apply_self_check_contract(postprocess_answer(live_answer), route_decision)
                 self.state.update_self_model_state(last_outcome=report.outcome)
@@ -6878,9 +6872,7 @@ class TelegramBridge:
                     report=report,
                     source="live_route",
                 )
-                initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
-                status_note = "Проверяю актуальные данные..." if route_decision.persona != "enterprise" else "Проверяю актуальные данные через Enterprise..."
-                status_message_id = self.send_status_message(chat_id, f"{initial_status}\n\n{status_note}")
+                status_message_id = early_status_message_id
                 delivered_via_status = False
                 if status_message_id is not None:
                     delivered_via_status = self.edit_status_message(chat_id, status_message_id, report.answer)
@@ -6896,14 +6888,54 @@ class TelegramBridge:
                 )
                 return report.answer
 
-        context_bundle = self.build_text_context_bundle(
-            chat_id=chat_id,
-            user_text=user_text,
-            route_decision=route_decision,
-            user_id=user_id,
-            message=message,
-            reply_context=reply_context,
-        )
+        if route_decision.use_web and not route_decision.use_workspace:
+            progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
+            with HeartbeatGuard(self), ProgressStatusGuard(
+                self,
+                chat_id=chat_id,
+                status_message_id=early_status_message_id,
+                initial_status=OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT,
+                progress_style=progress_style,
+            ):
+                web_context = self.build_web_search_context(user_text)
+                summarized_web_answer = self.summarize_web_context(user_text, web_context)
+            if not summarized_web_answer:
+                summarized_web_answer = self.build_web_route_fallback_answer(user_text, web_context)
+            report = apply_self_check_contract(summarized_web_answer, route_decision)
+            self.state.update_self_model_state(last_outcome=report.outcome)
+            self.run_post_task_reflection(
+                chat_id=chat_id,
+                user_id=user_id,
+                route_decision=route_decision,
+                user_text=user_text,
+                report=report,
+                source="web_route",
+            )
+            status_message_id = early_status_message_id
+            delivered_via_status = False
+            if status_message_id is not None:
+                delivered_via_status = self.edit_status_message(chat_id, status_message_id, report.answer)
+            if not delivered_via_status:
+                self.safe_send_text(chat_id, report.answer)
+            self.record_route_diagnostic(
+                chat_id=chat_id,
+                user_id=user_id,
+                route_decision=route_decision,
+                report=report,
+                started_at=started_at,
+                query_text=user_text,
+            )
+            return report.answer
+
+        with HeartbeatGuard(self):
+            context_bundle = self.build_text_context_bundle(
+                chat_id=chat_id,
+                user_text=user_text,
+                route_decision=route_decision,
+                user_id=user_id,
+                message=message,
+                reply_context=reply_context,
+            )
         identity_label = "Enterprise" if route_decision.persona == "enterprise" else "Jarvis"
         persona_note = ENTERPRISE_ASSISTANT_PERSONA_NOTE if route_decision.persona == "enterprise" else JARVIS_ASSISTANT_PERSONA_NOTE
         prompt = build_prompt(
@@ -6942,17 +6974,30 @@ class TelegramBridge:
                 timeout_seconds=self.config.enterprise_task_timeout,
                 progress_style="enterprise",
                 replace_status_with_answer=True,
+                status_message_id=early_status_message_id,
             )
         else:
             initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
             progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
+            web_timeout_seconds: Optional[int] = None
+            if route_decision.use_web:
+                web_timeout_seconds = min(self.config.codex_timeout, 60)
             raw_answer = self.run_codex_with_progress(
                 chat_id,
                 prompt,
                 initial_status=initial_status,
                 progress_style=progress_style,
                 replace_status_with_answer=True,
+                status_message_id=early_status_message_id,
+                timeout_seconds=web_timeout_seconds,
             )
+
+        if route_decision.use_web and raw_answer in {
+            JARVIS_NETWORK_ERROR_TEXT,
+            JARVIS_OFFLINE_TEXT,
+            "Слишком долгий ответ. Повтори короче или уточни запрос.",
+        }:
+            raw_answer = self.build_web_route_fallback_answer(user_text, context_bundle.web_context)
 
         report = apply_self_check_contract(raw_answer, route_decision)
         self.state.update_self_model_state(last_outcome=report.outcome)
@@ -6962,7 +7007,7 @@ class TelegramBridge:
             route_decision=route_decision,
             user_text=user_text,
             report=report,
-            source="codex_route",
+            source="enterprise_route",
         )
         self.record_route_diagnostic(
             chat_id=chat_id,
@@ -7141,14 +7186,17 @@ class TelegramBridge:
         last_error: Optional[RequestException] = None
         for attempt in range(1, max(1, attempts) + 1):
             try:
+                self.beat_heartbeat()
                 if method.lower() == "get":
                     response = self.session.get(url, **kwargs)
                 else:
                     response = self.session.post(url, **kwargs)
                 response.raise_for_status()
+                self.beat_heartbeat()
                 return response.text
             except RequestException as error:
                 last_error = error
+                self.beat_heartbeat()
                 if attempt >= max(1, attempts):
                     break
                 time.sleep(retry_delay_seconds)
@@ -7436,21 +7484,64 @@ class TelegramBridge:
         )
         return self.run_codex_short(prompt, timeout_seconds=25)
 
-    def build_web_search_context(self, query: str, limit: int = 5) -> str:
-        normalized_query = normalize_whitespace(query)
-        if not normalized_query:
+    def build_direct_url_context(self, query: str, limit_chars: int = 3500) -> str:
+        urls = extract_urls(query)
+        if not urls:
             return ""
+        url = urls[0]
         try:
             response_text = self.request_text_with_retry(
-                "post",
-                "https://html.duckduckgo.com/html/",
-                data={"q": normalized_query},
+                "get",
+                url,
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=20,
             )
         except RequestException as error:
-            log(f"web search failed query={shorten_for_log(normalized_query)} error={error}")
+            log(f"url fetch failed url={shorten_for_log(url, 240)} error={error}")
             return ""
+
+        cleaned_html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\\1>", " ", response_text)
+        title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", cleaned_html)
+        title = normalize_whitespace(html.unescape(re.sub(r"<.*?>", " ", title_match.group(1) if title_match else "")))
+        meta_match = re.search(
+            r"""(?is)<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["'](.*?)["']""",
+            cleaned_html,
+        )
+        meta_description = normalize_whitespace(html.unescape(re.sub(r"<.*?>", " ", meta_match.group(1) if meta_match else "")))
+        text_content = normalize_whitespace(html.unescape(re.sub(r"<[^>]+>", " ", cleaned_html)))
+        excerpt = truncate_text(text_content, limit_chars)
+        host = urlparse(url).netloc or url
+        lines = [f"Прямой контекст страницы: {host}"]
+        if title:
+            lines.append(f"Title: {title}")
+        if meta_description:
+            lines.append(f"Description: {truncate_text(meta_description, 500)}")
+        if excerpt:
+            lines.append(f"Page excerpt: {excerpt}")
+        lines.append(f"URL: {truncate_text(url, 400)}")
+        return "\n".join(lines)
+
+    def build_web_search_context(self, query: str, limit: int = 5) -> str:
+        normalized_query = normalize_whitespace(query)
+        if not normalized_query:
+            return ""
+        direct_url_context = self.build_direct_url_context(normalized_query)
+        search_query = remove_urls_from_text(normalized_query)
+        if direct_url_context and not search_query:
+            return direct_url_context
+        if not search_query:
+            return direct_url_context
+        try:
+            response_text = self.request_text_with_retry(
+                "post",
+                "https://html.duckduckgo.com/html/",
+                data={"q": search_query},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=20,
+            )
+        except RequestException as error:
+            log(f"web search failed query={shorten_for_log(search_query)} error={error}")
+            return direct_url_context
 
         pattern = re.compile(
             r'<a[^>]*class="result__a"[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
@@ -7475,8 +7566,39 @@ class TelegramBridge:
             if len(items) >= limit:
                 break
         if not items:
+            return direct_url_context
+        web_context = f"Свежий веб-контекст по запросу «{truncate_text(search_query, 180)}»:\n" + "\n".join(items)
+        if direct_url_context:
+            return direct_url_context + "\n\n" + web_context
+        return web_context
+
+    def build_web_route_fallback_answer(self, query: str, web_context: str) -> str:
+        normalized_query = truncate_text(normalize_whitespace(query), 180)
+        cleaned_context = (web_context or "").strip()
+        if not cleaned_context:
+            return "Не удалось собрать внешний контекст по запросу."
+        return (
+            f"Собрал внешний контекст по запросу «{normalized_query}», "
+            "но финальный AI-разбор не успел завершиться. Ниже то, что уже подтверждено источниками.\n\n"
+            f"{cleaned_context}"
+        )
+
+    def summarize_web_context(self, query: str, web_context: str) -> str:
+        cleaned_context = (web_context or "").strip()
+        if not cleaned_context:
             return ""
-        return f"Свежий веб-контекст по запросу «{truncate_text(normalized_query, 180)}»:\n" + "\n".join(items)
+        prompt = (
+            "Ниже есть внешний веб-контекст по запросу пользователя.\n"
+            "Сделай короткий полезный ответ на русском.\n"
+            "Требования:\n"
+            "- сначала дай прямой вывод по сути запроса\n"
+            "- не выдумывай то, чего нет в источниках\n"
+            "- если данных мало или они косвенные, прямо скажи это\n"
+            "- если есть ссылки/источники в контексте, кратко укажи, на чём основан вывод\n\n"
+            f"Запрос пользователя: {normalize_whitespace(query)}\n\n"
+            f"Веб-контекст:\n{truncate_text(cleaned_context, 5000)}"
+        )
+        return self.run_codex_short(prompt, timeout_seconds=20)
 
     def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str, message: Optional[dict] = None) -> str:
         prompt_text = caption or DEFAULT_IMAGE_PROMPT
@@ -7567,14 +7689,15 @@ class TelegramBridge:
         stdin_command = command + ["-"]
         started_at = time.perf_counter()
         try:
-            result = subprocess.run(
-                stdin_command,
-                capture_output=True,
-                text=True,
-                input=prompt,
-                timeout=self.config.codex_timeout,
-                env=build_subprocess_env(),
-            )
+            with HeartbeatGuard(self):
+                result = subprocess.run(
+                    stdin_command,
+                    capture_output=True,
+                    text=True,
+                    input=prompt,
+                    timeout=self.config.codex_timeout,
+                    env=build_subprocess_env(),
+                )
         except subprocess.TimeoutExpired:
             if approval_policy == "never" and sandbox_mode == "workspace-write":
                 return UPGRADE_TIMEOUT_TEXT
@@ -7589,13 +7712,14 @@ class TelegramBridge:
         if result.returncode != 0 and "No prompt provided" in stderr:
             log("codex stdin prompt rejected, retrying with prompt argument")
             try:
-                result = subprocess.run(
-                    command + [prompt],
-                    capture_output=True,
-                    text=True,
-                    timeout=self.config.codex_timeout,
-                    env=build_subprocess_env(),
-                )
+                with HeartbeatGuard(self):
+                    result = subprocess.run(
+                        command + [prompt],
+                        capture_output=True,
+                        text=True,
+                        timeout=self.config.codex_timeout,
+                        env=build_subprocess_env(),
+                    )
                 stdout = normalize_whitespace(result.stdout or "")
                 stderr = normalize_whitespace(result.stderr or "")
             except subprocess.TimeoutExpired:
@@ -7630,6 +7754,7 @@ class TelegramBridge:
         prompt: str,
         *,
         initial_status: str,
+        status_message_id: Optional[int] = None,
         image_path: Optional[Path] = None,
         sandbox_mode: Optional[str] = None,
         approval_policy: Optional[str] = None,
@@ -7639,7 +7764,8 @@ class TelegramBridge:
         progress_style: str = "jarvis",
         replace_status_with_answer: bool = False,
     ) -> str:
-        status_message_id = self.send_status_message(chat_id, initial_status)
+        if status_message_id is None:
+            status_message_id = self.send_status_message(chat_id, initial_status)
         command = self.build_codex_command(
             image_path=image_path,
             sandbox_mode=sandbox_mode,
@@ -7651,47 +7777,49 @@ class TelegramBridge:
         effective_timeout = timeout_seconds or self.config.codex_timeout
 
         try:
-            with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_handle, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_handle:
-                process = subprocess.Popen(
-                    stdin_command,
-                    stdin=subprocess.PIPE,
-                    stdout=stdout_handle,
-                    stderr=stderr_handle,
-                    text=True,
-                    env=build_subprocess_env(),
-                )
-                assert process.stdin is not None
-                process.stdin.write(prompt)
-                process.stdin.close()
+            with HeartbeatGuard(self):
+                with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_handle, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_handle:
+                    process = subprocess.Popen(
+                        stdin_command,
+                        stdin=subprocess.PIPE,
+                        stdout=stdout_handle,
+                        stderr=stderr_handle,
+                        text=True,
+                        env=build_subprocess_env(),
+                    )
+                    assert process.stdin is not None
+                    process.stdin.write(prompt)
+                    process.stdin.close()
 
-                phase_index = 0
-                next_update_at = 0.0
-                while True:
-                    return_code = process.poll()
-                    elapsed = int(max(1, time.perf_counter() - started_at))
-                    if return_code is not None:
-                        break
-                    now = time.perf_counter()
-                    if now >= next_update_at:
-                        self.send_chat_action(chat_id, "typing")
-                        self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style)
-                        phase_index += 1
-                        next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
-                    if elapsed >= effective_timeout:
-                        process.kill()
-                        process.wait(timeout=5)
-                        if status_message_id is not None:
-                            self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.")
-                        if approval_policy == "never" and sandbox_mode == "workspace-write":
-                            return UPGRADE_TIMEOUT_TEXT
-                        return "Слишком долгий ответ. Повтори короче или уточни запрос."
-                    time.sleep(0.5)
+                    phase_index = 0
+                    next_update_at = 0.0
+                    while True:
+                        return_code = process.poll()
+                        elapsed = int(max(1, time.perf_counter() - started_at))
+                        if return_code is not None:
+                            break
+                        now = time.perf_counter()
+                        if now >= next_update_at:
+                            self.beat_heartbeat()
+                            self.send_chat_action(chat_id, "typing")
+                            self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style)
+                            phase_index += 1
+                            next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
+                        if elapsed >= effective_timeout:
+                            process.kill()
+                            process.wait(timeout=5)
+                            if status_message_id is not None:
+                                self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.")
+                            if approval_policy == "never" and sandbox_mode == "workspace-write":
+                                return UPGRADE_TIMEOUT_TEXT
+                            return "Слишком долгий ответ. Повтори короче или уточни запрос."
+                        time.sleep(0.5)
 
-                stdout_handle.seek(0)
-                stderr_handle.seek(0)
-                stdout = normalize_whitespace(stdout_handle.read() or "")
-                stderr = normalize_whitespace(stderr_handle.read() or "")
-                result_code = process.returncode or 0
+                    stdout_handle.seek(0)
+                    stderr_handle.seek(0)
+                    stdout = normalize_whitespace(stdout_handle.read() or "")
+                    stderr = normalize_whitespace(stderr_handle.read() or "")
+                    result_code = process.returncode or 0
         except OSError as error:
             log(f"failed to start codex with progress: {error}")
             if status_message_id is not None:
@@ -7742,42 +7870,44 @@ class TelegramBridge:
         started_at = time.perf_counter()
         effective_timeout = timeout_seconds or self.config.codex_timeout
         try:
-            with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_handle, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_handle:
-                process = subprocess.Popen(
-                    command,
-                    stdout=stdout_handle,
-                    stderr=stderr_handle,
-                    text=True,
-                    env=build_subprocess_env(),
-                )
-                phase_index = 0
-                next_update_at = 0.0
-                while True:
-                    return_code = process.poll()
-                    elapsed = int(max(1, time.perf_counter() - started_at))
-                    if return_code is not None:
-                        break
-                    now = time.perf_counter()
-                    if now >= next_update_at:
-                        self.send_chat_action(chat_id, "typing")
-                        self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style)
-                        phase_index += 1
-                        next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
-                    if elapsed >= effective_timeout:
-                        process.kill()
-                        process.wait(timeout=5)
-                        if status_message_id is not None:
-                            self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.")
-                        if approval_policy == "never" and sandbox_mode == "workspace-write":
-                            return UPGRADE_TIMEOUT_TEXT
-                        return "Слишком долгий ответ. Повтори короче или уточни запрос."
-                    time.sleep(0.5)
+            with HeartbeatGuard(self):
+                with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_handle, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_handle:
+                    process = subprocess.Popen(
+                        command,
+                        stdout=stdout_handle,
+                        stderr=stderr_handle,
+                        text=True,
+                        env=build_subprocess_env(),
+                    )
+                    phase_index = 0
+                    next_update_at = 0.0
+                    while True:
+                        return_code = process.poll()
+                        elapsed = int(max(1, time.perf_counter() - started_at))
+                        if return_code is not None:
+                            break
+                        now = time.perf_counter()
+                        if now >= next_update_at:
+                            self.beat_heartbeat()
+                            self.send_chat_action(chat_id, "typing")
+                            self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style)
+                            phase_index += 1
+                            next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
+                        if elapsed >= effective_timeout:
+                            process.kill()
+                            process.wait(timeout=5)
+                            if status_message_id is not None:
+                                self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.")
+                            if approval_policy == "never" and sandbox_mode == "workspace-write":
+                                return UPGRADE_TIMEOUT_TEXT
+                            return "Слишком долгий ответ. Повтори короче или уточни запрос."
+                        time.sleep(0.5)
 
-                stdout_handle.seek(0)
-                stderr_handle.seek(0)
-                stdout = normalize_whitespace(stdout_handle.read() or "")
-                stderr = normalize_whitespace(stderr_handle.read() or "")
-                result_code = process.returncode or 0
+                    stdout_handle.seek(0)
+                    stderr_handle.seek(0)
+                    stdout = normalize_whitespace(stdout_handle.read() or "")
+                    stderr = normalize_whitespace(stderr_handle.read() or "")
+                    result_code = process.returncode or 0
         except OSError as error:
             log(f"failed to restart codex with prompt argument during progress run: {error}")
             if status_message_id is not None:
@@ -7913,14 +8043,15 @@ class TelegramBridge:
         command = self.build_codex_command(sandbox_mode="read-only", approval_policy="never")
         stdin_command = command + ["-"]
         try:
-            result = subprocess.run(
-                stdin_command,
-                capture_output=True,
-                text=True,
-                input=prompt,
-                timeout=max(10, timeout_seconds),
-                env=build_subprocess_env(),
-            )
+            with HeartbeatGuard(self):
+                result = subprocess.run(
+                    stdin_command,
+                    capture_output=True,
+                    text=True,
+                    input=prompt,
+                    timeout=max(10, timeout_seconds),
+                    env=build_subprocess_env(),
+                )
         except (subprocess.TimeoutExpired, OSError) as error:
             log(f"short codex failed: {shorten_for_log(str(error))}")
             return ""
@@ -8129,7 +8260,7 @@ class TelegramBridge:
         except RequestException as error:
             log(f"owner autofix telegram error chat={chat_id} message_id={message_id}: {error}")
         except Exception as error:
-            log(f"owner autofix failed chat={chat_id} message_id={message_id}: {error}")
+            log_exception(f"owner autofix failed chat={chat_id} message_id={message_id}", error, limit=8)
 
     def maybe_start_weekly_backup(self) -> None:
         now = time.time()
@@ -8166,7 +8297,7 @@ class TelegramBridge:
                 self.state.set_meta("last_backup_ts", str(time.time()))
                 log(f"weekly backup sent parts={total_parts}")
         except Exception as error:
-            log(f"weekly backup failed: {error}")
+            log_exception("weekly backup failed", error, limit=10)
         finally:
             with self.backup_lock:
                 self.backup_in_progress = False
@@ -8185,7 +8316,7 @@ class TelegramBridge:
             self.maybe_send_daily_owner_digest(now)
             self.maybe_send_weekly_owner_report(now)
         except Exception as error:
-            log(f"scheduled reports failed: {error}")
+            log_exception("scheduled reports failed", error, limit=10)
 
     def maybe_start_memory_refresh(self) -> None:
         now = time.time()
@@ -8218,7 +8349,7 @@ class TelegramBridge:
                     f"users={'yes' if users_done else 'no'}"
                 )
         except Exception as error:
-            log(f"memory refresh failed: {error}")
+            log_exception("memory refresh failed", error, limit=10)
         finally:
             with self.memory_refresh_lock:
                 self.memory_refresh_in_progress = False
@@ -8234,14 +8365,15 @@ class TelegramBridge:
                 timeout=20,
             )
             dirty_lines = [line.strip() for line in git_status.stdout.splitlines() if line.strip()]
-        except Exception:
+        except Exception as error:
+            log_exception("world-state git status failed", error, limit=6)
             dirty_lines = []
         recent_errors = read_recent_log_highlights(self.log_path, limit=12)
         recent_events = read_recent_operational_highlights(self.log_path, limit=12, category="all")
         memory_due = len(self.state.get_chats_due_for_memory_refresh(limit=20))
         docs_drift_lines = [
             line for line in dirty_lines
-            if any(marker in line for marker in ("README.md", "PROJECT_RUN_INSTRUCTIONS.md", "PORTABLE_RUN_INSTRUCTIONS.md", "data/runtime_backups/"))
+            if any(marker in line for marker in DOC_RUNTIME_DRIFT_MARKERS)
         ]
         with self.state.db_lock:
             live_failures = self.state.db.execute(
@@ -8643,7 +8775,62 @@ class HeartbeatGuard:
                 try:
                     self.bridge.beat_heartbeat()
                 except Exception as error:
-                    log(f"heartbeat guard failed: {error}")
+                    log_exception("heartbeat guard failed", error, limit=4)
+
+        self._thread = Thread(target=worker, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+
+class ProgressStatusGuard:
+    def __init__(
+        self,
+        bridge: "TelegramBridge",
+        *,
+        chat_id: int,
+        status_message_id: Optional[int],
+        initial_status: str,
+        progress_style: str = "jarvis",
+        interval_seconds: int = CODEX_PROGRESS_UPDATE_SECONDS,
+    ) -> None:
+        self.bridge = bridge
+        self.chat_id = chat_id
+        self.status_message_id = status_message_id
+        self.initial_status = initial_status
+        self.progress_style = progress_style
+        self.interval_seconds = max(3, interval_seconds)
+        self._stop = Event()
+        self._thread: Optional[Thread] = None
+        self._started_at = 0.0
+
+    def __enter__(self):
+        if self.status_message_id is None:
+            return self
+        self._started_at = time.perf_counter()
+
+        def worker() -> None:
+            phase_index = 0
+            while not self._stop.wait(self.interval_seconds):
+                elapsed = int(max(1, time.perf_counter() - self._started_at))
+                try:
+                    self.bridge.beat_heartbeat()
+                    self.bridge.send_chat_action(self.chat_id, "typing")
+                    self.bridge._update_progress_status(
+                        self.chat_id,
+                        self.status_message_id,
+                        self.initial_status,
+                        elapsed,
+                        phase_index,
+                        self.progress_style,
+                    )
+                except Exception as error:
+                    log_exception("progress guard failed", error, limit=4)
+                phase_index += 1
 
         self._thread = Thread(target=worker, daemon=True)
         self._thread.start()
@@ -8669,10 +8856,6 @@ def read_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
 
 def read_bool_env(name: str, default: bool) -> bool:
     return _read_bool_env(name, default)
-
-
-def parse_allowed_user_ids(raw_value: str) -> Set[int]:
-    return _parse_allowed_user_ids(raw_value, invalid_logger=lambda cleaned: log(f"ignored invalid ALLOWED_USER_ID value: {cleaned}"))
 
 
 def prepare_tmp_dir(raw_path: str) -> Optional[Path]:
@@ -9179,12 +9362,6 @@ def build_upgrade_prompt(task: str) -> str:
     return UPGRADE_REQUEST_TEMPLATE.format(task=task.strip())
 
 
-def can_use_upgrade_write(allowed_user_ids: Set[int], user_id: Optional[int]) -> bool:
-    if user_id == OWNER_USER_ID:
-        return True
-    return is_allowed_user(allowed_user_ids, user_id)
-
-
 def can_owner_use_workspace_mode(user_id: Optional[int], chat_type: str, assistant_persona: str = "") -> bool:
     return (
         user_id == OWNER_USER_ID
@@ -9197,25 +9374,26 @@ def is_owner_private_chat(user_id: Optional[int], chat_id: int) -> bool:
     return user_id == OWNER_USER_ID and chat_id > 0
 
 
-def is_allowed_user(allowed_user_ids: Set[int], user_id: Optional[int]) -> bool:
-    if not allowed_user_ids:
-        return True
-    if user_id is None:
-        return False
-    return user_id in allowed_user_ids
-
-
-def has_chat_access(authorized_user_ids: Set[int], user_id: Optional[int]) -> bool:
+def has_chat_access(_authorized_user_ids: Set[int], user_id: Optional[int]) -> bool:
     if user_id == OWNER_USER_ID:
         return True
-    if user_id is None:
-        return False
-    return user_id in authorized_user_ids
+    return False
 
 
 def has_public_command_access(text: str) -> bool:
     cleaned = (text or "").strip()
-    return cleaned in PUBLIC_ALLOWED_COMMANDS or cleaned.startswith("/appeal")
+    return cleaned in PUBLIC_ALLOWED_COMMANDS
+
+
+URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
+
+
+def extract_urls(text: str) -> List[str]:
+    return [match.group(0).rstrip(".,!?)]}\"'") for match in URL_PATTERN.finditer(text or "")]
+
+
+def remove_urls_from_text(text: str) -> str:
+    return normalize_whitespace(URL_PATTERN.sub(" ", text or ""))
 
 
 def has_public_callback_access(data: str) -> bool:
@@ -9558,6 +9736,22 @@ def is_term_only_voice_cleanup(original_text: str, fixed_text: str, context_term
 
 
 def should_process_group_message(message: dict, text: str, bot_username: str, trigger_name: str, bot_user_id: Optional[int] = None, allow_owner_reply: bool = False) -> bool:
+    stripped = (text or "").strip()
+    from_user = message.get("from") or {}
+    user_id = from_user.get("id")
+    owner_aliases = {"дмитрий", "дима", "dmitry", "dima"}
+    owner_username = OWNER_USERNAME.strip().lstrip("@").lower()
+    if owner_username:
+        owner_aliases.add(owner_username)
+    lowered = stripped.lower()
+    owner_prefixes: Tuple[str, ...] = tuple(
+        prefix
+        for alias in owner_aliases
+        for prefix in (f"{alias}:", f"{alias},", f"{alias} ", f"{alias}?", f"{alias}!", f"{alias}.")
+    )
+    if user_id == OWNER_USER_ID and lowered:
+        if lowered in owner_aliases or lowered.startswith(owner_prefixes):
+            return True
     return _should_process_group_message(
         message,
         text,
@@ -9952,7 +10146,7 @@ ROUTE_KIND_LIVE_MAP = {
     "live_fx": ("frankfurter", detect_currency_pair),
     "live_crypto": ("coingecko", detect_crypto_asset),
     "live_stocks": ("yahoo-finance", detect_stock_symbol),
-    "live_current_fact": ("duckduckgo+codex", detect_current_fact_query),
+    "live_current_fact": ("duckduckgo+Enterprise", detect_current_fact_query),
     "live_news": ("google-news-rss", detect_news_query),
 }
 ALLOWED_ROUTE_KINDS = {
@@ -9974,7 +10168,7 @@ def analyze_request_route(
     runtime_query = detect_runtime_query(normalized_text)
     workspace_allowed = can_owner_use_workspace_mode(user_id, chat_type, assistant_persona)
     route_kind = "codex_workspace" if workspace_allowed else "codex_chat"
-    source_label = "codex-runtime" if runtime_query and workspace_allowed else "codex"
+    source_label = "Enterprise runtime" if runtime_query and workspace_allowed else "Enterprise"
     for candidate_kind, (candidate_source, detector) in ROUTE_KIND_LIVE_MAP.items():
         detected_value = detector(normalized_text)
         if detected_value:
@@ -9983,6 +10177,8 @@ def analyze_request_route(
             break
     use_live = route_kind.startswith("live_")
     use_web = should_use_web_research(normalized_text) and not use_live and not runtime_query
+    if use_web:
+        source_label = "duckduckgo-web"
     use_events = should_include_event_context(normalized_text) and not runtime_query
     use_database = should_include_database_context(normalized_text) and not runtime_query
     use_reply = bool(reply_context.strip())
@@ -10267,6 +10463,11 @@ def log(message: str) -> None:
     print(f"[{timestamp}] {message}", flush=True)
 
 
+def log_exception(context: str, error: BaseException, limit: int = 8) -> None:
+    details = traceback.format_exc(limit=max(1, limit))
+    log(f"{context}: {error}\n{details}")
+
+
 def main() -> None:
     global INSTANCE_LOCK_HANDLE
     config = BotConfig()
@@ -10278,8 +10479,7 @@ def main() -> None:
     log(
         "config loaded "
         f"mode={config.default_mode} history_limit={config.history_limit} "
-        f"allowed_users={'all' if not config.allowed_user_ids else sorted(config.allowed_user_ids)} "
-        f"safe_chat_only={config.safe_chat_only} stt_backend={config.stt_backend} db_path={config.db_path} "
+        f"owner_only=yes safe_chat_only={config.safe_chat_only} stt_backend={config.stt_backend} db_path={config.db_path} "
         f"lock_path={config.lock_path} codex_timeout={config.codex_timeout}s"
     )
     TelegramBridge(config).run()

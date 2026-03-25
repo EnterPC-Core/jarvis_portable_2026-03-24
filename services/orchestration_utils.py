@@ -8,6 +8,12 @@ def validate_route_decision(decision: Any, allowed_route_kinds: Sequence[str]) -
         raise ValueError(f"route/live contract mismatch: {decision.route_kind}")
     if decision.use_workspace != (decision.route_kind == "codex_workspace"):
         raise ValueError(f"route/workspace contract mismatch: {decision.route_kind}")
+    if decision.use_web and decision.use_live:
+        raise ValueError(f"route/web+live contract mismatch: {decision.route_kind}")
+    if "runtime-verification" in decision.guardrails and decision.use_web:
+        raise ValueError(f"route/runtime+web contract mismatch: {decision.route_kind}")
+    if not (decision.source_label or "").strip():
+        raise ValueError(f"empty source_label: {decision.route_kind}")
 
 
 def build_route_summary_text(route_info: Any) -> str:

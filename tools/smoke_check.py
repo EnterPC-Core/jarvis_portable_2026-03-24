@@ -37,6 +37,28 @@ def main() -> int:
             raise RuntimeError("self_model_state identity is empty")
         if len(state.get_drive_scores()) != len(bridge.DRIVE_NAMES):
             raise RuntimeError("drive_scores not initialized")
+        if not bridge.has_chat_access(set(), bridge.OWNER_USER_ID):
+            raise RuntimeError("owner access check failed")
+        if bridge.has_chat_access(set(), bridge.OWNER_USER_ID + 1):
+            raise RuntimeError("non-owner access check failed")
+        route = bridge.analyze_request_route(
+            "Jarvis какая погода в Москве",
+            assistant_persona="jarvis",
+            chat_type="private",
+            user_id=bridge.OWNER_USER_ID,
+            reply_context="",
+        )
+        if route.route_kind != "live_weather" or not route.use_live:
+            raise RuntimeError(f"unexpected weather route: {route}")
+        web_route = bridge.analyze_request_route(
+            "Jarvis изучи отзывы по этой ссылке https://example.com/item",
+            assistant_persona="jarvis",
+            chat_type="private",
+            user_id=bridge.OWNER_USER_ID,
+            reply_context="",
+        )
+        if not web_route.use_web or web_route.use_live:
+            raise RuntimeError(f"unexpected web route: {web_route}")
         print("smoke-check: ok")
         return 0
     finally:
