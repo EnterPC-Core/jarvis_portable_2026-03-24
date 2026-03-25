@@ -52,9 +52,11 @@ DEFAULT_BOT_USERNAME = ""
 DEFAULT_TRIGGER_NAME = "jarvis"
 DEFAULT_DB_PATH = "jarvis_memory.db"
 DEFAULT_LOCK_PATH = "tg_codex_bridge.lock"
+DEFAULT_HEARTBEAT_PATH = "tg_codex_bridge.heartbeat"
 DEFAULT_BACKUP_INTERVAL_DAYS = 7
 DEFAULT_BACKUP_PART_SIZE_MB = 45
 DEFAULT_OWNER_AUTOFIX = True
+DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90
 DEFAULT_LEGACY_JARVIS_DB_PATH = str((Path(__file__).resolve().parent.parent / "jarvis_legacy_data" / "jarvis.db"))
 OWNER_USER_ID = int((os.getenv("OWNER_USER_ID", os.getenv("ADMIN_ID", "6102780373")) or "6102780373").strip())
 OWNER_USERNAME = (os.getenv("OWNER_USERNAME", "@DmitryUnboxing") or "@DmitryUnboxing").strip()
@@ -437,6 +439,8 @@ class BotConfig:
         self.stt_language = (os.getenv("STT_LANGUAGE", DEFAULT_STT_LANGUAGE).strip() or DEFAULT_STT_LANGUAGE).lower()
         self.db_path = os.getenv("DB_PATH", DEFAULT_DB_PATH).strip() or DEFAULT_DB_PATH
         self.lock_path = os.getenv("LOCK_PATH", DEFAULT_LOCK_PATH).strip() or DEFAULT_LOCK_PATH
+        self.heartbeat_path = os.getenv("HEARTBEAT_PATH", DEFAULT_HEARTBEAT_PATH).strip() or DEFAULT_HEARTBEAT_PATH
+        self.heartbeat_timeout_seconds = read_int_env("HEARTBEAT_TIMEOUT_SECONDS", DEFAULT_HEARTBEAT_TIMEOUT_SECONDS, minimum=30, maximum=600)
         self.backup_interval_days = read_int_env("BACKUP_INTERVAL_DAYS", DEFAULT_BACKUP_INTERVAL_DAYS, minimum=1, maximum=365)
         self.backup_part_size_mb = read_int_env("BACKUP_PART_SIZE_MB", DEFAULT_BACKUP_PART_SIZE_MB, minimum=5, maximum=49)
         self.backup_chat_id = int(os.getenv("BACKUP_CHAT_ID", str(OWNER_USER_ID)).strip() or str(OWNER_USER_ID))
@@ -1403,13 +1407,22 @@ class TelegramBridge:
         self.stt_models: Dict[str, object] = {}
         self.stt_failed_models: Set[str] = set()
         self.stt_lock = Lock()
+        self.heartbeat_path = Path(config.heartbeat_path)
+
+    def beat_heartbeat(self) -> None:
+        try:
+            self.heartbeat_path.write_text(str(time.time()), encoding="utf-8")
+        except OSError as error:
+            log(f"failed to write heartbeat: {error}")
 
     def run(self) -> None:
+        self.beat_heartbeat()
         self.load_bot_identity()
         self.prewarm_stt_model()
         log("bot started")
         while True:
             try:
+                self.beat_heartbeat()
                 self.maybe_start_weekly_backup()
                 self.process_due_moderation_actions()
                 updates = self.get_updates(self.state.last_update_id)
@@ -1419,6 +1432,7 @@ class TelegramBridge:
                     continue
 
                 for item in updates.get("result", []):
+                    self.beat_heartbeat()
                     self.state.last_update_id = item["update_id"] + 1
                     self.handle_update(item)
             except KeyboardInterrupt:
@@ -3531,6 +3545,8 @@ class TelegramBridge:
             f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
             f"STT backend: {self.config.stt_backend}",
             f"Только безопасный чат: {self.config.safe_chat_only}",
+            f"Heartbeat: {self.config.heartbeat_path}",
+            f"Heartbeat timeout: {self.config.heartbeat_timeout_seconds}s",
             f"Legacy Jarvis DB: {'подключена' if self.legacy.enabled else 'не подключена'}",
             f"Legacy путь: {self.config.legacy_jarvis_db_path}",
         ]
