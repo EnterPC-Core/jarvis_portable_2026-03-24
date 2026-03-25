@@ -5213,6 +5213,14 @@ class TelegramBridge:
             live_answer = self.try_handle_live_data_query(user_text, route_decision)
             if live_answer:
                 report = apply_self_check_contract(postprocess_answer(live_answer), route_decision)
+                initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
+                status_note = "Проверяю актуальные данные..." if route_decision.persona != "enterprise" else "Проверяю актуальные данные через Enterprise..."
+                status_message_id = self.send_status_message(chat_id, f"{initial_status}\n\n{status_note}")
+                delivered_via_status = False
+                if status_message_id is not None:
+                    delivered_via_status = self.edit_status_message(chat_id, status_message_id, report.answer)
+                if not delivered_via_status:
+                    self.safe_send_text(chat_id, report.answer)
                 self.record_route_diagnostic(
                     chat_id=chat_id,
                     user_id=user_id,
