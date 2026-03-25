@@ -24,6 +24,11 @@ from requests.exceptions import RequestException
 from appeals_service import AppealsService
 from legacy_jarvis_adapter import LegacyJarvisAdapter
 
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 TELEGRAM_TEXT_LIMIT = 4000
 TELEGRAM_TIMEOUT = 30
 GET_UPDATES_TIMEOUT = 25
@@ -196,6 +201,10 @@ SEARCH_USAGE_TEXT = "Используй: /search <запрос>"
 SD_LIST_USAGE_TEXT = "Используй: /sdls [/sdcard/путь]"
 SD_SEND_USAGE_TEXT = "Используй: /sdsend /sdcard/путь/к/файлу"
 SD_SAVE_USAGE_TEXT = "Используй: /sdsave /sdcard/папка/или/файл и отправь команду reply на медиа либо подписью к документу"
+RESOURCES_USAGE_TEXT = "Используй: /resources"
+TOPPROC_USAGE_TEXT = "Используй: /topproc"
+DISK_USAGE_TEXT = "Используй: /disk"
+NET_USAGE_TEXT = "Используй: /net"
 WHO_SAID_USAGE_TEXT = "Используй: /who_said <запрос>"
 HISTORY_USAGE_TEXT = "Используй: /history @username, /history user_id или reply на сообщение участника"
 EXPORT_USAGE_TEXT = "Используй: /export chat, /export today, /export @username или /export user_id"
@@ -228,6 +237,10 @@ COMMANDS_LIST_TEXT = (
     "/remember <факт>\n"
     "/recall [запрос]\n"
     "/search <запрос>\n"
+    "/resources\n"
+    "/topproc\n"
+    "/disk\n"
+    "/net\n"
     "/sdls [/sdcard/путь]\n"
     "/sdsend /sdcard/путь/к/файлу\n"
     "/sdsave /sdcard/папка/или/файл\n"
@@ -2672,6 +2685,14 @@ class TelegramBridge:
         search_value = parse_search_command(text)
         if search_value is not None:
             return self.handle_search_command(chat_id, search_value)
+        if text == "/resources":
+            return self.handle_resources_command(chat_id, user_id)
+        if text == "/topproc":
+            return self.handle_topproc_command(chat_id, user_id)
+        if text == "/disk":
+            return self.handle_disk_command(chat_id, user_id)
+        if text == "/net":
+            return self.handle_net_command(chat_id, user_id)
         sd_list_value = parse_sd_list_command(text)
         if sd_list_value is not None:
             return self.handle_sd_list_command(chat_id, user_id, sd_list_value)
@@ -3525,6 +3546,34 @@ class TelegramBridge:
             self.safe_send_text(chat_id, "Совпадений не найдено.")
             return True
         self.safe_send_text(chat_id, render_event_rows(rows, title=f"Поиск: {query}"))
+        return True
+
+    def handle_resources_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        self.safe_send_text(chat_id, render_resource_summary())
+        return True
+
+    def handle_topproc_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        self.safe_send_text(chat_id, render_top_processes())
+        return True
+
+    def handle_disk_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        self.safe_send_text(chat_id, render_disk_summary())
+        return True
+
+    def handle_net_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        self.safe_send_text(chat_id, render_network_summary())
         return True
 
     def handle_sd_list_command(self, chat_id: int, user_id: Optional[int], raw_path: str) -> bool:
@@ -5824,6 +5873,138 @@ def should_use_web_research(text: str) -> bool:
         "проверь",
     )
     return any(trigger in lowered for trigger in triggers)
+
+
+def render_resource_summary() -> str:
+    lines = ["Ресурсы системы"]
+    lines.append(f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    try:
+        with open("/proc/loadavg", "r", encoding="utf-8") as handle:
+            lines.append(f"Load average: {handle.read().strip()}")
+    except OSError:
+        pass
+    if psutil is not None:
+        vm = psutil.virtual_memory()
+        cpu_percent = psutil.cpu_percent(interval=0.5)
+        boot_time = datetime.utcfromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M:%S")
+        lines.append(f"CPU: {cpu_percent:.1f}%")
+        lines.append(f"RAM: {vm.percent:.1f}% ({format_bytes(vm.used)} / {format_bytes(vm.total)})")
+        lines.append(f"Swap: {format_swap_line()}")
+        lines.append(f"CPU cores: logical={psutil.cpu_count()} physical={psutil.cpu_count(logical=False) or 'n/a'}")
+        lines.append(f"Boot time UTC: {boot_time}")
+    else:
+        lines.append("psutil не установлен, показываю только базовые данные из /proc.")
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+                meminfo = handle.read()
+            total = extract_meminfo_value(meminfo, "MemTotal")
+            available = extract_meminfo_value(meminfo, "MemAvailable")
+            if total and available is not None:
+                used = max(0, total - available)
+                percent = (used / total) * 100 if total else 0
+                lines.append(f"RAM: {percent:.1f}% ({format_bytes(used * 1024)} / {format_bytes(total * 1024)})")
+        except OSError:
+            pass
+    return "\n".join(lines)
+
+
+def render_top_processes(limit: int = 8) -> str:
+    lines = ["Топ процессов"]
+    if psutil is None:
+        lines.append("psutil не установлен.")
+        return "\n".join(lines)
+    samples: List[Tuple[float, int, str, float, int]] = []
+    for process in psutil.process_iter(["pid", "name", "memory_info"]):
+        try:
+            cpu = process.cpu_percent(interval=None)
+            memory = process.info["memory_info"].rss if process.info.get("memory_info") else 0
+            samples.append((cpu, process.info["pid"], process.info.get("name") or "unknown", memory, memory))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    time.sleep(0.3)
+    samples = []
+    for process in psutil.process_iter(["pid", "name", "memory_info"]):
+        try:
+            cpu = process.cpu_percent(interval=None)
+            memory = process.info["memory_info"].rss if process.info.get("memory_info") else 0
+            samples.append((cpu, process.info["pid"], process.info.get("name") or "unknown", memory, memory))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    samples.sort(key=lambda item: (-item[0], -item[3], item[1]))
+    if not samples:
+        lines.append("Процессы не найдены.")
+        return "\n".join(lines)
+    for cpu, pid, name, memory, _ in samples[:limit]:
+        lines.append(f"- pid={pid} cpu={cpu:.1f}% ram={format_bytes(memory)} name={truncate_text(name, 60)}")
+    return "\n".join(lines)
+
+
+def render_disk_summary() -> str:
+    lines = ["Диски"]
+    for mount in ("/", "/sdcard", "/home/userland"):
+        try:
+            usage = shutil.disk_usage(mount)
+        except OSError:
+            continue
+        used = usage.total - usage.free
+        percent = (used / usage.total) * 100 if usage.total else 0
+        lines.append(
+            f"- {mount}: {percent:.1f}% ({format_bytes(used)} / {format_bytes(usage.total)}), свободно {format_bytes(usage.free)}"
+        )
+    return "\n".join(lines)
+
+
+def render_network_summary() -> str:
+    lines = ["Сеть"]
+    if psutil is not None:
+        counters = psutil.net_io_counters(pernic=True)
+        for name, stats in sorted(counters.items()):
+            if name == "lo":
+                continue
+            lines.append(
+                f"- {name}: recv={format_bytes(stats.bytes_recv)} sent={format_bytes(stats.bytes_sent)}"
+            )
+        if len(lines) == 1:
+            lines.append("Нет активных сетевых интерфейсов.")
+        return "\n".join(lines)
+    try:
+        with open("/proc/net/dev", "r", encoding="utf-8") as handle:
+            rows = handle.read().splitlines()[2:]
+        for row in rows:
+            name, payload = row.split(":", 1)
+            iface = name.strip()
+            if iface == "lo":
+                continue
+            parts = payload.split()
+            recv = int(parts[0])
+            sent = int(parts[8])
+            lines.append(f"- {iface}: recv={format_bytes(recv)} sent={format_bytes(sent)}")
+    except OSError:
+        lines.append("Не удалось прочитать /proc/net/dev")
+    return "\n".join(lines)
+
+
+def format_swap_line() -> str:
+    if psutil is None:
+        return "n/a"
+    swap = psutil.swap_memory()
+    return f"{swap.percent:.1f}% ({format_bytes(swap.used)} / {format_bytes(swap.total)})"
+
+
+def extract_meminfo_value(text: str, key: str) -> Optional[int]:
+    match = re.search(rf"^{re.escape(key)}:\s+(\d+)\s+kB$", text, flags=re.MULTILINE)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def format_bytes(value: int) -> str:
+    amount = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if amount < 1024 or unit == "TB":
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{amount:.1f} TB"
 
 
 def postprocess_answer(text: str, latency_ms: Optional[int] = None) -> str:
