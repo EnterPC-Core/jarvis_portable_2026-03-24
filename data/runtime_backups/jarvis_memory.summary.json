@@ -1,6 +1,6 @@
 {
   "database": "/home/userland/projects/bots/jarvis_portable_2026-03-24/jarvis_memory.db",
-  "generated_at_utc": "2026-03-25T03:29:02+00:00",
+  "generated_at_utc": "2026-03-25T04:19:57+00:00",
   "tables": [
     "achievement_catalog",
     "appeal_events",
@@ -30,13 +30,13 @@
     "achievement_catalog": 17,
     "appeal_events": 2,
     "appeals": 2,
-    "bot_meta": 3,
-    "chat_events": 642,
-    "chat_events_fts": 642,
+    "bot_meta": 6,
+    "chat_events": 682,
+    "chat_events_fts": 682,
     "chat_events_fts_config": 1,
-    "chat_events_fts_data": 19,
-    "chat_events_fts_docsize": 642,
-    "chat_events_fts_idx": 17,
+    "chat_events_fts_data": 22,
+    "chat_events_fts_docsize": 682,
+    "chat_events_fts_idx": 20,
     "chat_history": 181,
     "chat_modes": 1,
     "chat_summaries": 4,
@@ -44,7 +44,7 @@
     "moderation_actions": 0,
     "moderation_journal": 0,
     "progression_profiles": 999,
-    "score_events": 2073,
+    "score_events": 2095,
     "ui_sessions": 2,
     "user_achievement_state": 16932,
     "warn_settings": 0,
@@ -63,7 +63,19 @@
       },
       {
         "key": "last_update_id",
-        "value": "955147966"
+        "value": "955148006"
+      },
+      {
+        "key": "pending_restart_chat_id",
+        "value": ""
+      },
+      {
+        "key": "pending_restart_text",
+        "value": ""
+      },
+      {
+        "key": "pending_restart_message_id",
+        "value": ""
       }
     ],
     "chat_modes": [
@@ -91,7 +103,7 @@
       "content_exported": false
     },
     "chat_events": {
-      "rows": 642,
+      "rows": 682,
       "content_exported": false
     },
     "chat_history": {

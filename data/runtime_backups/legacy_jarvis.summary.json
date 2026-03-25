@@ -1,6 +1,6 @@
 {
   "database": "/home/userland/projects/bots/jarvis_legacy_data/jarvis.db",
-  "generated_at_utc": "2026-03-25T03:29:02+00:00",
+  "generated_at_utc": "2026-03-25T04:19:57+00:00",
   "tables": [
     "achievement_catalog",
     "achievements",
