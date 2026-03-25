@@ -44,7 +44,8 @@ while true; do
     fi
     sleep 5
   done
-  wait "$BRIDGE_PID" 2>/dev/null || true
-  printf '[%s] bridge exited, restarting in 2s\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_PATH"
+  BRIDGE_STATUS=0
+  wait "$BRIDGE_PID" 2>/dev/null || BRIDGE_STATUS=$?
+  printf '[%s] bridge exited status=%s, restarting in 2s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$BRIDGE_STATUS" >> "$LOG_PATH"
   sleep 2
 done

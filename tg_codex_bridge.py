@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -10434,6 +10435,7 @@ def is_message_edit_recoverable_error(error: Exception) -> bool:
 
 
 INSTANCE_LOCK_HANDLE = None
+EXIT_REASON = "normal"
 
 
 def acquire_instance_lock(lock_path: str):
@@ -10468,8 +10470,18 @@ def log_exception(context: str, error: BaseException, limit: int = 8) -> None:
     log(f"{context}: {error}\n{details}")
 
 
+def handle_termination_signal(signum, _frame) -> None:
+    global EXIT_REASON
+    signal_name = signal.Signals(signum).name if signum else str(signum)
+    EXIT_REASON = f"signal:{signal_name}"
+    log(f"received termination signal: {signal_name}")
+    raise SystemExit(0)
+
+
 def main() -> None:
-    global INSTANCE_LOCK_HANDLE
+    global INSTANCE_LOCK_HANDLE, EXIT_REASON
+    signal.signal(signal.SIGTERM, handle_termination_signal)
+    signal.signal(signal.SIGINT, handle_termination_signal)
     config = BotConfig()
     try:
         INSTANCE_LOCK_HANDLE = acquire_instance_lock(config.lock_path)
@@ -10482,7 +10494,10 @@ def main() -> None:
         f"owner_only=yes safe_chat_only={config.safe_chat_only} stt_backend={config.stt_backend} db_path={config.db_path} "
         f"lock_path={config.lock_path} codex_timeout={config.codex_timeout}s"
     )
-    TelegramBridge(config).run()
+    try:
+        TelegramBridge(config).run()
+    finally:
+        log(f"process exiting reason={EXIT_REASON}")
 
 
 if __name__ == "__main__":
