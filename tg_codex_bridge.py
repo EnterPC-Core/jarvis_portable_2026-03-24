@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import traceback
+import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -41,7 +42,7 @@ DEFAULT_MODE_NAME = "jarvis"
 MAX_SEEN_MESSAGES = 500
 MAX_HISTORY_ITEM_CHARS = 900
 MAX_CODEX_OUTPUT_CHARS = 12000
-CODEX_PROGRESS_UPDATE_SECONDS = 8
+CODEX_PROGRESS_UPDATE_SECONDS = 6
 DEFAULT_STT_BACKEND = "whisper"
 DEFAULT_WHISPER_MODEL = "tiny"
 DEFAULT_WHISPER_ACCURACY_MODEL = "base"
@@ -167,32 +168,12 @@ UPGRADE_REQUEST_TEMPLATE = """Ты работаешь внутри проект�
 ГЛАВНАЯ ЦЕЛЬ:
 Сделать точечное улучшение без поломки проекта."""
 
-OWNER_WORKSPACE_REQUEST_TEMPLATE = """Ты работаешь как локальный агент Enterprise Core внутри текущей среды проекта.
-
-РЕЖИМ:
-- это запрос от владельца бота в приватном чате
-- можно работать по текущему workspace так же, как в полноценной локальной agent-сессии
-- можно читать и изменять файлы проекта, если это реально нужно для задачи
-- можно запускать необходимые команды в рамках текущей среды и задачи
-- не нужно притворяться анализатором, если задача требует реальных изменений
-
-ПРАВИЛА:
-- сначала пойми, что именно просит пользователь
-- если нужно менять код, конфиг или окружение, делай это
-- если нужно проверить состояние среды, делай это
-- не делай разрушительных действий без явной необходимости
-- не переписывай проект целиком без причины
-- отвечай по факту: что сделал, что проверил, что осталось
-
-КОНТЕКСТ ДИАЛОГА:
-{base_prompt}
-"""
-
 UPGRADE_USAGE_TEXT = "Используй: /upgrade <что нужно изменить>"
 UPGRADE_RUNNING_TEXT = "Upgrade принят. Запускаю Enterprise Core..."
 UPGRADE_TIMEOUT_TEXT = "Upgrade не завершился вовремя. Попробуй сузить задачу."
 UPGRADE_FAILED_TEXT = "Upgrade завершился с ошибкой."
-OWNER_AGENT_RUNNING_TEXT = "Запрос принят. Запускаю Enterprise Core в режиме workspace-write..."
+OWNER_AGENT_RUNNING_TEXT = "Запрос принят. Запускаю Enterprise..."
+JARVIS_AGENT_RUNNING_TEXT = "Jarvis на связи. Думаю..."
 UPGRADE_ALREADY_RUNNING_TEXT = "Upgrade уже выполняется. Дождись завершения текущей задачи."
 UPGRADE_PRIVATE_ONLY_TEXT = "Upgrade выполняется только в личном чате с создателем."
 UPGRADE_APPLIED_TEXT = "Изменения сохранены. Если нужно применить новый код, используй /restart."
@@ -217,6 +198,57 @@ MODERATION_USAGE_TEXT = "Используй reply или: /ban @username [при
 WARN_USAGE_TEXT = "Используй reply или: /warn @username [причина], /dwarn @username [причина], /swarn @username [причина], /warns @username, /warnreasons @username, /rmwarn @username, /resetwarn @username, /setwarnlimit 3, /setwarnmode mute|tmute 1h|ban|tban 1d|kick, /warntime 7d, /modlog"
 WELCOME_USAGE_TEXT = "Используй: /welcome on|off|status, /setwelcome <текст>, /resetwelcome. Переменные: {first_name} {last_name} {full_name} {username} {chat_title}"
 WELCOME_DEFAULT_TEMPLATE = "Добро пожаловать, {full_name}!"
+ENTERPRISE_PROGRESS_STEPS = [
+    ("Влетаю в задачу", "Дмитрий, пристегнись: сейчас полезу в кишки проекта."),
+    ("Шерстю код и логи", "Ищу, где оно хрустнуло, а где просто притворяется живым."),
+    ("Трогаю среду руками", "Димон, если тут странно пахнет, это я вскрыл ещё один слой."),
+    ("Проверяю гипотезы", "Пальцем в небо не тыкаю, только в реальные причины."),
+    ("Чищу шум и лишнее", "Сэр Дмитрий, мусор на выход не пропускаю."),
+    ("Дожимаю детали", "Тут либо красиво взлетит, либо я найду, кто мешает."),
+    ("Собираю ответ", "Упаковываю без воды, но с уважением к драме момента."),
+]
+ENTERPRISE_PROGRESS_SPINNERS = ("◜", "◠", "◝", "◞", "◡", "◟")
+ENTERPRISE_PROGRESS_MICRO_JOKES = [
+    "Дмитрий, тут код шевелится, но я шевелюсь быстрее.",
+    "Димон, система делает вид, что всё под контролем. Проверяю это заявление.",
+    "Сэр Дмитрий, местный стек уже вспотел.",
+    "Похоже, кто-то тут накодил с фантазией. Разматываю аккуратно.",
+    "Тихо, идёт инженерная магия без шаманства.",
+    "Если оно сейчас хрустнет, я хотя бы пойму почему.",
+    "Дмитрий, я уже там, где обычные ответы заканчиваются.",
+    "Код не паникует. Я тоже. Но вопросы к нему уже есть.",
+    "Внутри всё как обычно: провода, надежда и последствия чужих решений.",
+    "Дим, держу курс на результат, а не на красивые отмазки.",
+]
+ENTERPRISE_PROGRESS_LONG_NOTES = [
+    (60, "☕ Дмитрий, пошла минута ожидания. Это уже не разминочный прогон, а нормальная раскопка."),
+    (180, "🛠 Димон, три минуты внутри. Значит, там либо жирная задача, либо кто-то оставил творческое наследие."),
+    (300, "🚧 Пять минут в бою. Сэр Дмитрий, я всё ещё внутри и уже разговариваю с кодом на его языке."),
+    (480, "🫡 Восемь минут. Дмитрий, это уже экспедиция, а не просто проверка. Но назад я без результата не люблю выходить."),
+]
+JARVIS_PROGRESS_STEPS = [
+    ("Слушаю запрос", "Сначала пойму, чего именно хочет Дмитрий, а потом уже полезу отвечать."),
+    ("Собираю контекст", "Поднимаю нужные куски памяти и несу их ближе к делу."),
+    ("Думаю над ответом", "Без суеты, но и без сонной философии."),
+    ("Перепроверяю детали", "Чтобы красиво было не только по форме, но и по сути."),
+    ("Упаковываю результат", "Сейчас будет аккуратно, понятно и по делу."),
+]
+JARVIS_PROGRESS_SPINNERS = ("✦", "✧", "✦", "✧")
+JARVIS_PROGRESS_MICRO_JOKES = [
+    "Дмитрий, я уже в процессе. Паниковать пока рано, скучать тоже.",
+    "Сэр, запрос принят, мысли шуршат, ответ собирается.",
+    "Если что-то тут и тормозит, то точно не моя мотивация.",
+    "Димон, я аккуратно перекладываю хаос в понятный ответ.",
+    "Сейчас всё будет: и смысл, и форма, и без лишней духоты.",
+    "Я тут не пропал, я просто занят полезным.",
+    "Дмитрий, держу фокус. Красота будет с содержанием.",
+]
+JARVIS_PROGRESS_LONG_NOTES = [
+    (60, "☕ Уже минута. Дмитрий, запрос явно с характером, но я с такими ладил и раньше."),
+    (180, "🧠 Три минуты. Значит, там не ответ на бегу, а нормальная мыслительная работа."),
+    (300, "🎭 Пять минут. Димон, тут уже почти маленький спектакль, но финал хочу сделать сильным."),
+    (480, "🌌 Восемь минут. Дмитрий, я всё ещё в деле и тащу ответ к внятному финалу."),
+]
 COMMANDS_LIST_TEXT = (
     "Команды:\n"
     "/start\n"
@@ -267,6 +299,101 @@ COMMANDS_LIST_TEXT = (
     f"Создатель с ID {OWNER_USER_ID} отвечает без пароля.\n"
     f"Остальным пароль выдаёт только {OWNER_USERNAME}"
 )
+WEATHER_CODE_LABELS = {
+    0: "ясно",
+    1: "преимущественно ясно",
+    2: "переменная облачность",
+    3: "пасмурно",
+    45: "туман",
+    48: "изморозь",
+    51: "слабая морось",
+    53: "морось",
+    55: "сильная морось",
+    56: "ледяная морось",
+    57: "сильная ледяная морось",
+    61: "слабый дождь",
+    63: "дождь",
+    65: "сильный дождь",
+    66: "ледяной дождь",
+    67: "сильный ледяной дождь",
+    71: "слабый снег",
+    73: "снег",
+    75: "сильный снег",
+    77: "снежные зёрна",
+    80: "ливень",
+    81: "сильный ливень",
+    82: "очень сильный ливень",
+    85: "слабый снегопад",
+    86: "сильный снегопад",
+    95: "гроза",
+    96: "гроза с градом",
+    99: "сильная гроза с градом",
+}
+CURRENCY_ALIASES = {
+    "доллар": "USD",
+    "доллара": "USD",
+    "доллару": "USD",
+    "доллары": "USD",
+    "usd": "USD",
+    "евро": "EUR",
+    "eur": "EUR",
+    "руб": "RUB",
+    "рубль": "RUB",
+    "рубля": "RUB",
+    "рублей": "RUB",
+    "ruble": "RUB",
+    "rub": "RUB",
+    "тенге": "KZT",
+    "kzt": "KZT",
+    "гривна": "UAH",
+    "гривны": "UAH",
+    "uah": "UAH",
+    "юань": "CNY",
+    "юаня": "CNY",
+    "cny": "CNY",
+    "лира": "TRY",
+    "try": "TRY",
+    "фунт": "GBP",
+    "gbp": "GBP",
+}
+CRYPTO_ALIASES = {
+    "btc": "bitcoin",
+    "bitcoin": "bitcoin",
+    "биткоин": "bitcoin",
+    "биток": "bitcoin",
+    "eth": "ethereum",
+    "ethereum": "ethereum",
+    "эфир": "ethereum",
+    "эфириум": "ethereum",
+    "sol": "solana",
+    "solana": "solana",
+    "солана": "solana",
+    "ton": "the-open-network",
+    "toncoin": "the-open-network",
+    "тон": "the-open-network",
+    "doge": "dogecoin",
+    "dogecoin": "dogecoin",
+    "дог": "dogecoin",
+}
+STOCK_ALIASES = {
+    "aapl": "AAPL",
+    "apple": "AAPL",
+    "эппл": "AAPL",
+    "tsla": "TSLA",
+    "tesla": "TSLA",
+    "тесла": "TSLA",
+    "nvda": "NVDA",
+    "nvidia": "NVDA",
+    "энвидиа": "NVDA",
+    "amd": "AMD",
+    "amzn": "AMZN",
+    "amazon": "AMZN",
+    "msft": "MSFT",
+    "microsoft": "MSFT",
+    "meta": "META",
+    "googl": "GOOGL",
+    "google": "GOOGL",
+}
 
 OWNER_AUTOFIX_USAGE = "Используй: /ownerautofix on|off|status"
 JARVIS_OFFLINE_TEXT = "Enterprise Core выключен."
@@ -318,13 +445,15 @@ JARVIS_ASSISTANT_PERSONA_NOTE = (
     "используй переданный веб-контекст и опирайся на него."
 )
 
-ENTERPRISE_PERSONA_NOTE = (
-    "Режим Enterprise. Это глобальный усиленный режим Jarvis: действуй жёстче, глубже и системнее. "
-    "Если запрос требует работы по среде, конфигу или коду, переходи к практическому выполнению, а не к роли обычного собеседника."
+ENTERPRISE_ASSISTANT_PERSONA_NOTE = (
+    "Режим Enterprise. Работай заметно иначе, чем Jarvis: как строгий инженерный исполнитель внутри текущего workspace. "
+    "Фокусируйся на проверке фактов, кода, логов, конфигов и запусков. "
+    "Пиши суше, прямее и технически жёстче, без образа личного ассистента. "
+    "Если запрос требует действий в среде, сначала опирайся на локальный проект и реальные результаты команд."
 )
 
 BASE_SYSTEM_PROMPT = (
-    "Ты Jarvis. Ты ведешь диалог как сильный личный ассистент высокого уровня. "
+    "Ты ведешь диалог как сильный личный ассистент высокого уровня. "
     "Твой стиль: спокойный, уверенный, умный, лаконичный, технологичный. "
     "Отвечай на языке пользователя. Учитывай контекст текущего диалога и формулируй лучший вариант решения. "
     "Будь полезным, а не болтливым. Не объясняй очевидное. Не заполняй ответ фразами ради объема. "
@@ -453,7 +582,6 @@ class BotConfig:
 
 class BridgeState:
     def __init__(self, history_limit: int, default_mode: str, db_path: str) -> None:
-        self.last_update_id: Optional[int] = None
         self.history_limit = history_limit
         self.default_mode = default_mode
         self.seen_message_keys: OrderedDict[Tuple[int, int], float] = OrderedDict()
@@ -470,6 +598,7 @@ class BridgeState:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self._init_db()
+        self.last_update_id = self.get_last_update_id()
 
     def _init_db(self) -> None:
         with self.db_lock:
@@ -565,6 +694,30 @@ class BridgeState:
 
     def _rebuild_chat_events_fts(self) -> None:
         self.db.execute("INSERT INTO chat_events_fts(chat_events_fts) VALUES('rebuild')")
+
+    def get_last_update_id(self) -> Optional[int]:
+        with self.db_lock:
+            row = self.db.execute(
+                "SELECT value FROM bot_meta WHERE key = ?",
+                ("last_update_id",),
+            ).fetchone()
+        if not row or row[0] is None:
+            return None
+        try:
+            return int(str(row[0]).strip())
+        except (TypeError, ValueError):
+            return None
+
+    def set_last_update_id(self, update_id: Optional[int]) -> None:
+        self.last_update_id = update_id
+        if update_id is None:
+            return
+        with self.db_lock:
+            self.db.execute(
+                "INSERT INTO bot_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("last_update_id", str(int(update_id))),
+            )
+            self.db.commit()
 
     def get_history(self, chat_id: int) -> Deque[Tuple[str, str]]:
         with self.db_lock:
@@ -1401,7 +1554,6 @@ class TelegramBridge:
         self.session = Session()
         self.script_path = Path(__file__).resolve()
         self.log_path = self.script_path.with_name("tg_codex_bridge.log")
-        self.enterprise_worker_path = self.script_path.with_name("enterprise_worker.py")
         self.bot_username = config.bot_username
         self.bot_user_id: Optional[int] = None
         self.backup_lock = Lock()
@@ -1437,7 +1589,7 @@ class TelegramBridge:
 
                 for item in updates.get("result", []):
                     self.beat_heartbeat()
-                    self.state.last_update_id = item["update_id"] + 1
+                    self.state.set_last_update_id(item["update_id"] + 1)
                     self.handle_update(item)
             except KeyboardInterrupt:
                 log("bot stopped")
@@ -2279,8 +2431,6 @@ class TelegramBridge:
             return
 
         if chat_type in {"group", "supergroup"}:
-            if user_id != OWNER_USER_ID:
-                return
             should_handle_as_bot = should_process_group_message(
                 message,
                 raw_text,
@@ -2435,8 +2585,8 @@ class TelegramBridge:
                 return
             self.handle_sd_save_command(chat_id, user_id, save_target, message)
             return
-
-        self.safe_send_text(chat_id, "Документ получен. Чтобы сохранить его в /sdcard, добавь подпись /sdsave /sdcard/путь или ответь командой /sdsave на сообщение с файлом.")
+        # Ordinary document uploads should stay silent; saving remains opt-in via /sdsave.
+        return
 
     def handle_voice_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
         voice = message.get("voice") or {}
@@ -2447,9 +2597,6 @@ class TelegramBridge:
         from_user = message.get("from") or {}
         owner_label = build_user_autofix_label(from_user)
         log(f"incoming voice chat={chat_id} user={user_id} duration={duration}")
-
-        if chat_type in {"group", "supergroup"} and user_id != OWNER_USER_ID:
-            return
 
         if not file_id:
             self.safe_send_text(chat_id, "Не удалось получить голосовое сообщение.")
@@ -2775,7 +2922,6 @@ class TelegramBridge:
             self.state.append_history(chat_id, "user", text)
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
-            self.safe_send_text(chat_id, answer)
         finally:
             self.state.finish_chat_task(chat_id)
 
@@ -3851,12 +3997,13 @@ class TelegramBridge:
     def run_upgrade_task(self, chat_id: int, task: str) -> None:
         try:
             prompt = build_upgrade_prompt(task)
-            answer = self.run_enterprise_worker_with_progress(
+            answer = self.run_codex_with_progress(
                 chat_id,
                 prompt,
                 initial_status=UPGRADE_RUNNING_TEXT,
-                sandbox_mode="workspace-write",
+                sandbox_mode="danger-full-access",
                 approval_policy="never",
+                timeout_seconds=self.config.enterprise_task_timeout,
             )
             self.state.append_history(chat_id, "user", f"[Upgrade request: {task}]")
             self.state.append_history(chat_id, "assistant", answer)
@@ -3868,16 +4015,11 @@ class TelegramBridge:
 
 
     def restart_process(self) -> None:
-        env = os.environ.copy()
-        with self.log_path.open("ab") as log_handle:
-            subprocess.Popen(
-                [sys.executable, str(self.script_path)],
-                cwd=str(self.script_path.parent),
-                env=env,
-                stdout=log_handle,
-                stderr=log_handle,
-                start_new_session=True,
-            )
+        if os.getenv("RUNNING_UNDER_SUPERVISOR", "").strip() == "1":
+            log("restart requested under supervisor, exiting for clean respawn")
+            raise SystemExit(0)
+        log("restart requested without supervisor, re-exec current process")
+        os.execv(sys.executable, [sys.executable, str(self.script_path)])
         raise SystemExit(0)
 
     def build_codex_command(self, *, image_path: Optional[Path] = None, sandbox_mode: Optional[str] = None, approval_policy: Optional[str] = None, json_output: bool = False) -> List[str]:
@@ -3901,20 +4043,24 @@ class TelegramBridge:
         return command
 
     def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "") -> str:
+        live_answer = self.try_handle_live_data_query(user_text)
+        if live_answer:
+            return postprocess_answer(live_answer)
         summary_text = self.state.get_summary(chat_id)
         facts_text = self.state.render_facts(chat_id, query=user_text, limit=10)
         event_context = ""
         database_context = ""
         persona_note = ""
         identity_label = "Jarvis"
+        include_identity_prompt = True
         web_context = ""
         if assistant_persona == "jarvis":
             persona_note = JARVIS_ASSISTANT_PERSONA_NOTE
             if should_use_web_research(user_text):
                 web_context = self.build_web_search_context(user_text)
         elif assistant_persona == "enterprise":
-            persona_note = ENTERPRISE_PERSONA_NOTE
             identity_label = "Enterprise"
+            persona_note = ENTERPRISE_ASSISTANT_PERSONA_NOTE
             if should_use_web_research(user_text):
                 web_context = self.build_web_search_context(user_text)
         if should_include_event_context(user_text):
@@ -3930,81 +4076,242 @@ class TelegramBridge:
             event_context=event_context,
             database_context=database_context,
             identity_label=identity_label,
+            include_identity_prompt=include_identity_prompt,
             persona_note=persona_note,
             web_context=web_context,
         )
         if can_owner_use_workspace_mode(user_id, chat_type, assistant_persona):
-            owner_prompt = OWNER_WORKSPACE_REQUEST_TEMPLATE.format(base_prompt=prompt)
-            return self.run_enterprise_worker_with_progress(
+            return self.run_codex_with_progress(
                 chat_id,
-                owner_prompt,
+                prompt,
                 initial_status=OWNER_AGENT_RUNNING_TEXT,
-                sandbox_mode="workspace-write",
+                sandbox_mode="danger-full-access",
                 approval_policy="never",
+                timeout_seconds=self.config.enterprise_task_timeout,
+                progress_style="enterprise",
+                replace_status_with_answer=True,
             )
-        return self.run_codex(prompt)
+        jarvis_status = JARVIS_AGENT_RUNNING_TEXT
+        progress_style = "jarvis"
+        if assistant_persona == "enterprise":
+            jarvis_status = OWNER_AGENT_RUNNING_TEXT
+            progress_style = "enterprise"
+        return self.run_codex_with_progress(
+            chat_id,
+            prompt,
+            initial_status=jarvis_status,
+            progress_style=progress_style,
+            replace_status_with_answer=True,
+        )
 
-    def run_enterprise_worker_with_progress(
-        self,
-        chat_id: int,
-        prompt: str,
-        *,
-        initial_status: str,
-        sandbox_mode: str,
-        approval_policy: str,
-    ) -> str:
-        if not self.enterprise_worker_path.exists():
-            return "Enterprise worker не найден."
-        status_message_id = self.send_status_message(chat_id, initial_status)
-        started_at = time.perf_counter()
-        with self.temp_workspace() as workspace:
-            task_path = workspace / "enterprise_task.json"
-            result_path = workspace / "enterprise_result.json"
-            payload = {
-                "prompt": prompt,
-                "sandbox_mode": sandbox_mode,
-                "approval_policy": approval_policy,
-                "codex_timeout": self.config.enterprise_task_timeout,
-            }
-            task_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            process = subprocess.Popen(
-                [sys.executable, str(self.enterprise_worker_path), str(task_path), str(result_path)],
-                cwd=str(self.script_path.parent),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=build_subprocess_env(),
+    def try_handle_live_data_query(self, user_text: str) -> Optional[str]:
+        weather_location = detect_weather_location(user_text)
+        if weather_location:
+            return self.fetch_weather_answer(weather_location)
+        currency_pair = detect_currency_pair(user_text)
+        if currency_pair:
+            return self.fetch_exchange_rate_answer(currency_pair[0], currency_pair[1])
+        crypto_id = detect_crypto_asset(user_text)
+        if crypto_id:
+            return self.fetch_crypto_price_answer(crypto_id)
+        stock_symbol = detect_stock_symbol(user_text)
+        if stock_symbol:
+            return self.fetch_stock_price_answer(stock_symbol)
+        news_query = detect_news_query(user_text)
+        if news_query:
+            return self.fetch_news_answer(news_query)
+        return None
+
+    def fetch_weather_answer(self, location_query: str) -> str:
+        normalized_location = normalize_location_query(location_query)
+        if not normalized_location:
+            return ""
+        try:
+            geo_response = self.session.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={
+                    "name": normalized_location,
+                    "count": 1,
+                    "language": "ru",
+                    "format": "json",
+                },
+                timeout=20,
             )
-            phase_index = 0
-            next_update_at = 0.0
-            while True:
-                return_code = process.poll()
-                elapsed = int(max(1, time.perf_counter() - started_at))
-                if return_code is not None:
-                    break
-                now = time.perf_counter()
-                if now >= next_update_at:
-                    self.send_chat_action(chat_id, "typing")
-                    self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index)
-                    phase_index += 1
-                    next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
-                if elapsed >= self.config.enterprise_task_timeout:
-                    process.kill()
-                    process.wait(timeout=5)
-                    if status_message_id is not None:
-                        self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nWorker превысил лимит {self.config.enterprise_task_timeout} сек.")
-                    return UPGRADE_TIMEOUT_TEXT
-                time.sleep(0.5)
+            geo_response.raise_for_status()
+            geo_payload = geo_response.json()
+            results = geo_payload.get("results") or []
+            if not results:
+                return f"Не нашёл локацию: {normalized_location}."
+            place = results[0]
+            latitude = place.get("latitude")
+            longitude = place.get("longitude")
+            if latitude is None or longitude is None:
+                return f"Не удалось определить координаты для: {normalized_location}."
+            place_name = place.get("name") or normalized_location
+            admin_name = place.get("admin1") or place.get("country") or ""
+            display_name = f"{place_name}, {admin_name}".strip(", ")
+            weather_response = self.session.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation",
+                    "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                    "timezone": "auto",
+                    "forecast_days": 1,
+                },
+                timeout=20,
+            )
+            weather_response.raise_for_status()
+            payload = weather_response.json()
+        except RequestException as error:
+            log(f"weather lookup failed query={shorten_for_log(normalized_location)} error={error}")
+            return "Не удалось получить актуальную погоду из внешнего источника."
+        current = payload.get("current") or {}
+        daily = payload.get("daily") or {}
+        temperature = current.get("temperature_2m")
+        apparent = current.get("apparent_temperature")
+        weather_code = current.get("weather_code")
+        wind_speed = current.get("wind_speed_10m")
+        precipitation = current.get("precipitation")
+        max_list = daily.get("temperature_2m_max") or []
+        min_list = daily.get("temperature_2m_min") or []
+        precip_prob_list = daily.get("precipitation_probability_max") or []
+        weather_label = WEATHER_CODE_LABELS.get(int(weather_code), "условия уточняются") if weather_code is not None else "условия уточняются"
+        details = [
+            f"Погода сейчас в {display_name}: {format_signed_value(temperature)}°C, {weather_label}.",
+        ]
+        if apparent is not None:
+            details.append(f"Ощущается как {format_signed_value(apparent)}°C.")
+        if max_list and min_list:
+            details.append(f"За сегодня: от {format_signed_value(min_list[0])}°C до {format_signed_value(max_list[0])}°C.")
+        if wind_speed is not None:
+            details.append(f"Ветер: {float(wind_speed):.1f} м/с.")
+        if precip_prob_list:
+            details.append(f"Вероятность осадков: {int(precip_prob_list[0])}%.")
+        elif precipitation is not None:
+            details.append(f"Осадки сейчас: {float(precipitation):.1f} мм.")
+        time_value = current.get("time")
+        if time_value:
+            details.append(f"Источник: Open-Meteo, обновление {time_value}.")
+        return " ".join(details)
 
-            if not result_path.exists():
-                answer = "Enterprise worker завершился без результата."
-            else:
-                try:
-                    result_payload = json.loads(result_path.read_text(encoding="utf-8"))
-                    answer = normalize_whitespace(result_payload.get("answer") or "")
-                except Exception as error:
-                    answer = f"Не удалось прочитать результат Enterprise worker: {error}"
-        self._finish_progress_status(chat_id, status_message_id, initial_status, answer)
-        return answer or "Пустой ответ. Переформулируй запрос."
+    def fetch_exchange_rate_answer(self, base_currency: str, quote_currency: str) -> str:
+        base = (base_currency or "").upper()
+        quote = (quote_currency or "").upper()
+        if not base or not quote or base == quote:
+            return ""
+        try:
+            response = self.session.get(
+                "https://api.frankfurter.app/latest",
+                params={"from": base, "to": quote},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except RequestException as error:
+            log(f"exchange lookup failed pair={base}/{quote} error={error}")
+            return "Не удалось получить актуальный курс из внешнего источника."
+        rates = payload.get("rates") or {}
+        value = rates.get(quote)
+        if value is None:
+            return f"Не удалось получить курс {base}/{quote}."
+        date_value = payload.get("date") or ""
+        return f"Курс {base}/{quote}: 1 {base} = {float(value):.4f} {quote}. Дата источника: {date_value}."
+
+    def fetch_crypto_price_answer(self, crypto_id: str) -> str:
+        try:
+            response = self.session.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": crypto_id, "vs_currencies": "usd,rub", "include_last_updated_at": "true"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except RequestException as error:
+            log(f"crypto lookup failed asset={crypto_id} error={error}")
+            return "Не удалось получить актуальную цену криптовалюты."
+        item = payload.get(crypto_id) or {}
+        usd = item.get("usd")
+        rub = item.get("rub")
+        updated_at = item.get("last_updated_at")
+        if usd is None and rub is None:
+            return f"Не удалось получить цену для {crypto_id}."
+        parts = [f"Цена {crypto_id}:"]
+        if usd is not None:
+            parts.append(f"${float(usd):,.4f}".replace(",", " "))
+        if rub is not None:
+            parts.append(f"{float(rub):,.2f} RUB".replace(",", " "))
+        answer = " ".join(parts) + "."
+        if updated_at:
+            answer += f" Источник: CoinGecko, обновление {datetime.utcfromtimestamp(int(updated_at)).strftime('%Y-%m-%d %H:%M:%S')} UTC."
+        return answer
+
+    def fetch_stock_price_answer(self, stock_symbol: str) -> str:
+        try:
+            response = self.session.get(
+                "https://query1.finance.yahoo.com/v7/finance/quote",
+                params={"symbols": stock_symbol},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except RequestException as error:
+            log(f"stock lookup failed symbol={stock_symbol} error={error}")
+            return "Не удалось получить актуальную цену инструмента."
+        results = ((payload.get("quoteResponse") or {}).get("result") or [])
+        if not results:
+            return f"Не удалось получить котировку {stock_symbol}."
+        item = results[0]
+        price = item.get("regularMarketPrice")
+        currency = item.get("currency") or "USD"
+        market_state = item.get("marketState") or ""
+        change_percent = item.get("regularMarketChangePercent")
+        short_name = item.get("shortName") or stock_symbol
+        if price is None:
+            return f"Не удалось получить котировку {stock_symbol}."
+        answer = f"{short_name} ({stock_symbol}): {float(price):,.4f} {currency}".replace(",", " ")
+        if change_percent is not None:
+            answer += f", изменение {format_signed_value(change_percent)}%"
+        if market_state:
+            answer += f", статус рынка: {market_state}"
+        answer += ". Источник: Yahoo Finance."
+        return answer
+
+    def fetch_news_answer(self, query: str, limit: int = 3) -> str:
+        try:
+            response = self.session.get(
+                "https://news.google.com/rss/search",
+                params={"q": query, "hl": "ru", "gl": "RU", "ceid": "RU:ru"},
+                timeout=20,
+            )
+            response.raise_for_status()
+        except RequestException as error:
+            log(f"news lookup failed query={shorten_for_log(query)} error={error}")
+            return "Не удалось получить свежие новости по этому запросу."
+        try:
+            root = ET.fromstring(response.text)
+        except ET.ParseError as error:
+            log(f"news parse failed query={shorten_for_log(query)} error={error}")
+            return "Источник новостей ответил в неожиданном формате."
+        items = root.findall("./channel/item")
+        if not items:
+            return f"По запросу «{query}» свежих новостей не нашёл."
+        lines = [f"Свежие новости по запросу «{query}»:"] 
+        for item in items[:limit]:
+            title = normalize_whitespace("".join(item.findtext("title", default="")).replace(" - ", " — "))
+            link = normalize_whitespace(item.findtext("link", default=""))
+            pub_date = normalize_whitespace(item.findtext("pubDate", default=""))
+            if not title or not link:
+                continue
+            line = f"• {truncate_text(title, 180)}"
+            if pub_date:
+                line += f"\n  {truncate_text(pub_date, 64)}"
+            line += f"\n  {truncate_text(link, 280)}"
+            lines.append(line)
+        if len(lines) == 1:
+            return f"По запросу «{query}» новости получить не удалось."
+        return "\n".join(lines)
 
     def build_web_search_context(self, query: str, limit: int = 5) -> str:
         normalized_query = normalize_whitespace(query)
@@ -4141,6 +4448,9 @@ class TelegramBridge:
         approval_policy: Optional[str] = None,
         json_output: bool = False,
         postprocess: bool = True,
+        timeout_seconds: Optional[int] = None,
+        progress_style: str = "jarvis",
+        replace_status_with_answer: bool = False,
     ) -> str:
         status_message_id = self.send_status_message(chat_id, initial_status)
         command = self.build_codex_command(
@@ -4151,6 +4461,7 @@ class TelegramBridge:
         )
         stdin_command = command + ["-"]
         started_at = time.perf_counter()
+        effective_timeout = timeout_seconds or self.config.codex_timeout
 
         try:
             with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_handle, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_handle:
@@ -4176,14 +4487,14 @@ class TelegramBridge:
                     now = time.perf_counter()
                     if now >= next_update_at:
                         self.send_chat_action(chat_id, "typing")
-                        self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index)
+                        self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style)
                         phase_index += 1
                         next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
-                    if elapsed >= self.config.codex_timeout:
+                    if elapsed >= effective_timeout:
                         process.kill()
                         process.wait(timeout=5)
                         if status_message_id is not None:
-                            self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {self.config.codex_timeout} сек.")
+                            self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.")
                         if approval_policy == "never" and sandbox_mode == "workspace-write":
                             return UPGRADE_TIMEOUT_TEXT
                         return "Слишком долгий ответ. Повтори короче или уточни запрос."
@@ -4210,6 +4521,9 @@ class TelegramBridge:
                 sandbox_mode=sandbox_mode,
                 approval_policy=approval_policy,
                 postprocess=postprocess,
+                timeout_seconds=effective_timeout,
+                progress_style=progress_style,
+                replace_status_with_answer=replace_status_with_answer,
             )
 
         answer = self._finalize_codex_result(
@@ -4221,7 +4535,7 @@ class TelegramBridge:
             approval_policy=approval_policy,
             postprocess=postprocess,
         )
-        self._finish_progress_status(chat_id, status_message_id, initial_status, answer)
+        self._finish_progress_status(chat_id, status_message_id, initial_status, answer, progress_style, replace_status_with_answer)
         return answer
 
     def _retry_codex_with_progress(
@@ -4234,8 +4548,12 @@ class TelegramBridge:
         sandbox_mode: Optional[str] = None,
         approval_policy: Optional[str] = None,
         postprocess: bool = True,
+        timeout_seconds: Optional[int] = None,
+        progress_style: str = "jarvis",
+        replace_status_with_answer: bool = False,
     ) -> str:
         started_at = time.perf_counter()
+        effective_timeout = timeout_seconds or self.config.codex_timeout
         try:
             with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_handle, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_handle:
                 process = subprocess.Popen(
@@ -4255,14 +4573,14 @@ class TelegramBridge:
                     now = time.perf_counter()
                     if now >= next_update_at:
                         self.send_chat_action(chat_id, "typing")
-                        self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index)
+                        self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style)
                         phase_index += 1
                         next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
-                    if elapsed >= self.config.codex_timeout:
+                    if elapsed >= effective_timeout:
                         process.kill()
                         process.wait(timeout=5)
                         if status_message_id is not None:
-                            self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {self.config.codex_timeout} сек.")
+                            self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.")
                         if approval_policy == "never" and sandbox_mode == "workspace-write":
                             return UPGRADE_TIMEOUT_TEXT
                         return "Слишком долгий ответ. Повтори короче или уточни запрос."
@@ -4288,7 +4606,7 @@ class TelegramBridge:
             approval_policy=approval_policy,
             postprocess=postprocess,
         )
-        self._finish_progress_status(chat_id, status_message_id, initial_status, answer)
+        self._finish_progress_status(chat_id, status_message_id, initial_status, answer, progress_style, replace_status_with_answer)
         return answer
 
     def _finalize_codex_result(
@@ -4325,17 +4643,11 @@ class TelegramBridge:
         initial_status: str,
         elapsed_seconds: int,
         phase_index: int,
+        progress_style: str = "jarvis",
     ) -> None:
         if status_message_id is None:
             return
-        phases = [
-            "Анализирую запрос и контекст...",
-            "Читаю проект и ищу нужные места...",
-            "Вношу изменения в среде...",
-            "Проверяю результат...",
-        ]
-        phase = phases[phase_index % len(phases)]
-        status_text = f"{initial_status}\n\n{phase}\n\nПрошло: {elapsed_seconds} сек."
+        status_text = build_progress_status(initial_status, elapsed_seconds, phase_index, progress_style)
         self.edit_status_message(chat_id, status_message_id, status_text)
 
     def _finish_progress_status(
@@ -4344,17 +4656,68 @@ class TelegramBridge:
         status_message_id: Optional[int],
         initial_status: str,
         answer: str,
+        progress_style: str = "jarvis",
+        replace_status_with_answer: bool = False,
     ) -> None:
         if status_message_id is None:
             return
-        if answer == JARVIS_OFFLINE_TEXT:
-            status_text = f"{initial_status}\n\nEnterprise Core сейчас недоступен."
-        elif answer == UPGRADE_TIMEOUT_TEXT or answer.startswith("Слишком долгий ответ."):
-            status_text = f"{initial_status}\n\nЗадача не завершилась вовремя."
-        elif answer.startswith(UPGRADE_FAILED_TEXT) or answer.startswith("Ошибка Enterprise Core:"):
-            status_text = f"{initial_status}\n\nВыполнение завершилось с ошибкой."
+        if replace_status_with_answer and answer and answer != JARVIS_OFFLINE_TEXT:
+            self.edit_status_message(chat_id, status_message_id, answer)
+            return
+        if progress_style == "enterprise":
+            if answer == JARVIS_OFFLINE_TEXT:
+                status_text = (
+                    f"{initial_status}\n\n"
+                    "✖ Enterprise сейчас недоступен.\n"
+                    "Дмитрий, движок не поднялся как надо.\n"
+                    "Придётся чинить маршрут, а не делать вид, что всё ок."
+                )
+            elif answer == UPGRADE_TIMEOUT_TEXT or answer.startswith("Слишком долгий ответ."):
+                status_text = (
+                    f"{initial_status}\n\n"
+                    "⌛ Время вышло.\n"
+                    "Дмитрий, задача всё ещё живая, но лимит ожидания уже кончился.\n"
+                    "Если хочешь, можно дожать её более узким заходом."
+                )
+            elif answer.startswith(UPGRADE_FAILED_TEXT) or answer.startswith("Ошибка Enterprise Core:"):
+                status_text = (
+                    f"{initial_status}\n\n"
+                    "⚠ Выполнение завершилось с ошибкой.\n"
+                    "Я не замял это под ковёр, детали уже в ответе ниже.\n"
+                    "Сэр Дмитрий, тут был не фокус, а реальный сбой."
+                )
+            else:
+                status_text = (
+                    f"{initial_status}\n\n"
+                    "✔ Готово.\n"
+                    "Дмитрий, задача дожата.\n"
+                    "Можно идти смотреть результат и делать вид, что так и было задумано."
+                )
         else:
-            status_text = f"{initial_status}\n\nЗадача завершена."
+            if answer == JARVIS_OFFLINE_TEXT:
+                status_text = (
+                    f"{initial_status}\n\n"
+                    "✖ Jarvis сейчас не отвечает как надо.\n"
+                    "Дмитрий, тут надо не ждать вдохновения, а чинить запуск."
+                )
+            elif answer == UPGRADE_TIMEOUT_TEXT or answer.startswith("Слишком долгий ответ."):
+                status_text = (
+                    f"{initial_status}\n\n"
+                    "⌛ Я упёрся во временной лимит.\n"
+                    "Но мысль не потерял, просто задачу лучше сузить."
+                )
+            elif answer.startswith(UPGRADE_FAILED_TEXT) or answer.startswith("Ошибка Enterprise Core:"):
+                status_text = (
+                    f"{initial_status}\n\n"
+                    "⚠ Не всё пошло гладко.\n"
+                    "Дмитрий, магия споткнулась о реальность, но детали уже есть ниже."
+                )
+            else:
+                status_text = (
+                    f"{initial_status}\n\n"
+                    "✔ Всё готово.\n"
+                    "Дмитрий, ответ собран и причёсан."
+                )
         self.edit_status_message(chat_id, status_message_id, status_text)
 
     def run_codex_short(self, prompt: str, timeout_seconds: int = 35) -> str:
@@ -4577,17 +4940,30 @@ class TelegramBridge:
     def answer_callback_query(self, callback_query_id: str) -> None:
         self.telegram_api("answerCallbackQuery", data={"callback_query_id": callback_query_id})
 
+    def send_message_with_html_fallback(self, payload: dict) -> None:
+        html_payload = dict(payload)
+        html_payload["parse_mode"] = "HTML"
+        try:
+            self.telegram_api("sendMessage", data=html_payload)
+            return
+        except RequestException as error:
+            if not is_telegram_parse_mode_error(error):
+                raise
+        self.telegram_api("sendMessage", data=payload)
+
     def send_reply_message(self, chat_id: int, text: str, reply_to_message_id: int, parse_mode: str = "") -> None:
         for chunk in split_long_message(text):
             payload = {"chat_id": chat_id, "text": chunk, "reply_to_message_id": reply_to_message_id}
             if parse_mode:
                 payload["parse_mode"] = parse_mode
-            response = self.session.post(
-                f"{self.config.base_url}/sendMessage",
-                data=payload,
-                timeout=TELEGRAM_TIMEOUT,
-            )
-            ensure_telegram_ok(response)
+                response = self.session.post(
+                    f"{self.config.base_url}/sendMessage",
+                    data=payload,
+                    timeout=TELEGRAM_TIMEOUT,
+                )
+                ensure_telegram_ok(response)
+            else:
+                self.send_message_with_html_fallback(payload)
 
     def delete_message(self, chat_id: int, message_id: int) -> bool:
         response = self.session.post(
@@ -4684,7 +5060,7 @@ class TelegramBridge:
     def safe_send_text(self, chat_id: int, text: str) -> None:
         for chunk in split_long_message(text):
             try:
-                self.telegram_api("sendMessage", data={"chat_id": chat_id, "text": chunk})
+                self.send_message_with_html_fallback({"chat_id": chat_id, "text": chunk})
             except RequestException as error:
                 log(f"failed to send message chat={chat_id}: {error}")
                 break
@@ -5003,6 +5379,189 @@ def format_duration_seconds(seconds: int) -> str:
     return f"{max(1, seconds // 60)}m"
 
 
+def format_progress_elapsed(seconds: int) -> str:
+    seconds = max(1, int(seconds))
+    minutes, rem_seconds = divmod(seconds, 60)
+    if minutes <= 0:
+        return f"{rem_seconds} сек"
+    if rem_seconds == 0:
+        return f"{minutes} мин"
+    return f"{minutes} мин {rem_seconds} сек"
+
+
+def format_signed_value(value: object) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if numeric > 0:
+        return f"+{numeric:.1f}".rstrip("0").rstrip(".")
+    return f"{numeric:.1f}".rstrip("0").rstrip(".")
+
+
+def normalize_location_query(text: str) -> str:
+    cleaned = normalize_whitespace(text)
+    cleaned = re.sub(r"^[\s,:-]+|[\s?!.,:;-]+$", "", cleaned)
+    return cleaned
+
+
+def detect_weather_location(text: str) -> str:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return ""
+    weather_markers = ("погода", "температур", "прогноз", "дожд", "снег", "ветер", "weather")
+    if not any(marker in lowered for marker in weather_markers):
+        return ""
+    patterns = [
+        r"(?:погода|прогноз)(?:\s+сейчас|\s+сегодня|\s+на\s+сегодня|\s+завтра)?\s+в\s+(.+)$",
+        r"(?:какая\s+)?погода\s+в\s+(.+)$",
+        r"(?:температура|прогноз)\s+в\s+(.+)$",
+    ]
+    cleaned = normalize_whitespace(text)
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if match:
+            return normalize_location_query(match.group(1))
+    words = cleaned.split()
+    if len(words) >= 2 and words[0].lower() in {"погода", "weather"}:
+        return normalize_location_query(" ".join(words[1:]))
+    return ""
+
+
+def detect_currency_pair(text: str) -> Optional[Tuple[str, str]]:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return None
+    if not any(token in lowered for token in ("курс", "usd", "eur", "rub", "руб", "доллар", "евро", "юань", "тенге", "гривн", "фунт")):
+        return None
+    codes: List[str] = []
+    for token in re.findall(r"[a-zA-Zа-яА-ЯёЁ]+", lowered):
+        code = CURRENCY_ALIASES.get(token)
+        if code and code not in codes:
+            codes.append(code)
+    if len(codes) >= 2:
+        return codes[0], codes[1]
+    if "курс дол" in lowered or "доллар" in lowered or "usd" in lowered:
+        return "USD", "RUB"
+    if "курс евр" in lowered or "евро" in lowered or "eur" in lowered:
+        return "EUR", "RUB"
+    if "курс юан" in lowered or "cny" in lowered:
+        return "CNY", "RUB"
+    return None
+
+
+def detect_crypto_asset(text: str) -> str:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return ""
+    if not any(token in lowered for token in ("crypto", "крипт", "монет", "coin", "price", "цена", "сколько стоит", "курс")):
+        return ""
+    for token in re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9_-]+", lowered):
+        asset = CRYPTO_ALIASES.get(token)
+        if asset:
+            return asset
+    return ""
+
+
+def detect_stock_symbol(text: str) -> str:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return ""
+    if not any(token in lowered for token in ("акци", "ticker", "тикер", "stock", "price", "цена", "сколько стоит", "котиров")):
+        return ""
+    for token in re.findall(r"[a-zA-Z]{1,10}|[а-яА-ЯёЁ]{2,20}", lowered):
+        symbol = STOCK_ALIASES.get(token)
+        if symbol:
+            return symbol
+        if re.fullmatch(r"[A-Z]{1,5}", token):
+            return token
+    return ""
+
+
+def detect_news_query(text: str) -> str:
+    cleaned = normalize_whitespace(text)
+    lowered = cleaned.lower()
+    if not lowered:
+        return ""
+    news_markers = ("новост", "latest", "today", "сегодня", "что нового", "что случилось", "последние", "свежие")
+    if not any(marker in lowered for marker in news_markers):
+        return ""
+    query = lowered
+    replacements = (
+        "последние новости",
+        "свежие новости",
+        "новости",
+        "что нового",
+        "что случилось",
+        "latest news",
+        "latest",
+        "today",
+        "сегодня",
+        "на сегодня",
+        "проверь",
+        "найди",
+    )
+    for token in replacements:
+        query = query.replace(token, " ")
+    normalized = normalize_location_query(query)
+    return normalized or normalize_whitespace(cleaned)
+
+
+def build_progress_bar(phase_index: int, elapsed_seconds: int, width: int = 10) -> str:
+    width = max(5, width)
+    animated_fill = (phase_index + max(1, elapsed_seconds // CODEX_PROGRESS_UPDATE_SECONDS)) % (width + 1)
+    filled = min(width, max(1, animated_fill))
+    return "█" * filled + "·" * (width - filled)
+
+
+def progress_style_config(style: str) -> Tuple[List[Tuple[str, str]], Tuple[str, ...], List[str], List[Tuple[int, str]]]:
+    normalized = (style or "jarvis").strip().lower()
+    if normalized == "enterprise":
+        return (
+            ENTERPRISE_PROGRESS_STEPS,
+            ENTERPRISE_PROGRESS_SPINNERS,
+            ENTERPRISE_PROGRESS_MICRO_JOKES,
+            ENTERPRISE_PROGRESS_LONG_NOTES,
+        )
+    return (
+        JARVIS_PROGRESS_STEPS,
+        JARVIS_PROGRESS_SPINNERS,
+        JARVIS_PROGRESS_MICRO_JOKES,
+        JARVIS_PROGRESS_LONG_NOTES,
+    )
+
+
+def select_long_progress_note(elapsed_seconds: int, notes: List[Tuple[int, str]]) -> str:
+    note = ""
+    for threshold, text in notes:
+        if elapsed_seconds >= threshold:
+            note = text
+    return note
+
+
+def build_progress_status(initial_status: str, elapsed_seconds: int, phase_index: int, style: str = "jarvis") -> str:
+    steps, spinners, jokes, long_notes = progress_style_config(style)
+    phase, note = steps[phase_index % len(steps)]
+    spinner = spinners[phase_index % len(spinners)]
+    joke = jokes[(phase_index + max(1, elapsed_seconds // 12)) % len(jokes)]
+    elapsed_text = format_progress_elapsed(elapsed_seconds)
+    progress_bar = build_progress_bar(phase_index, elapsed_seconds, width=12)
+    stage_text = f"Этап {phase_index + 1}"
+    long_note = select_long_progress_note(elapsed_seconds, long_notes)
+    extra_block = f"\n{long_note}" if long_note else ""
+    return (
+        f"{initial_status}\n\n"
+        f"{spinner} {phase}\n"
+        f"{note}\n\n"
+        f"┌ {'─' * 18}\n"
+        f"│ [{progress_bar}] {stage_text}\n"
+        f"│ Прошло: {elapsed_text}\n"
+        f"└ {'─' * 18}\n"
+        f"{joke}"
+        f"{extra_block}"
+    )
+
+
 def strip_html_tags(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text or "")
 
@@ -5018,7 +5577,11 @@ def can_use_upgrade_write(allowed_user_ids: Set[int], user_id: Optional[int]) ->
 
 
 def can_owner_use_workspace_mode(user_id: Optional[int], chat_type: str, assistant_persona: str = "") -> bool:
-    return user_id == OWNER_USER_ID and chat_type == "private" and assistant_persona == "enterprise"
+    return (
+        user_id == OWNER_USER_ID
+        and chat_type in {"private", "group", "supergroup"}
+        and assistant_persona == "enterprise"
+    )
 
 
 def is_owner_private_chat(user_id: Optional[int], chat_id: int) -> bool:
@@ -5493,6 +6056,10 @@ def should_process_group_message(message: dict, text: str, bot_username: str, tr
     if stripped.startswith("/"):
         return True
 
+    assistant_persona, _ = extract_assistant_persona(stripped)
+    if assistant_persona:
+        return True
+
     reply_to = message.get("reply_to_message") or {}
     reply_from = reply_to.get("from") or {}
     reply_username = (reply_from.get("username") or "").lower()
@@ -5811,6 +6378,7 @@ def build_prompt(
     event_context: str = "",
     database_context: str = "",
     identity_label: str = "Jarvis",
+    include_identity_prompt: bool = True,
     persona_note: str = "",
     web_context: str = "",
 ) -> str:
@@ -5825,10 +6393,15 @@ def build_prompt(
     database_block = f"Relevant database context:\n{truncate_text(database_context, 3200)}\n\n" if database_context else ""
     persona_block = f"Persona note:\n{persona_note}\n\n" if persona_note else ""
     web_block = f"Web context:\n{truncate_text(web_context, 3200)}\n\n" if web_context else ""
+    identity_block = ""
+    if include_identity_prompt:
+        identity_block = (
+            "Identity:\n"
+            f"Ты отвечаешь от лица {identity_label}. Не называй себя ботом и не описывай внутреннюю реализацию.\n\n"
+        )
     return (
         f"System:\n{BASE_SYSTEM_PROMPT}\n\n"
-        "Identity:\n"
-        f"Ты отвечаешь от лица {identity_label}. Не называй себя ботом и не описывай внутреннюю реализацию.\n\n"
+        f"{identity_block}"
         f"{persona_block}"
         f"Mode:\n{mode_prompt}\n\n"
         f"Intent:\n{intent}\n\n"
@@ -6396,6 +6969,18 @@ def ensure_telegram_ok(response: Response) -> None:
 def is_message_not_modified_error(error: Exception) -> bool:
     message = str(error).lower()
     return "message is not modified" in message
+
+
+def is_telegram_parse_mode_error(error: Exception) -> bool:
+    message = str(error).lower()
+    markers = (
+        "can't parse entities",
+        "cannot parse entities",
+        "unsupported start tag",
+        "unexpected end tag",
+        "tag was not found",
+    )
+    return any(marker in message for marker in markers)
 
 
 def is_message_edit_recoverable_error(error: Exception) -> bool:

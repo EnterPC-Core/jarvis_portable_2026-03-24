@@ -8,6 +8,12 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   . "$SCRIPT_DIR/.env"
 fi
 
+NVM_NODE_BIN="/home/userland/.nvm/versions/node/v18.20.8/bin"
+if [ -x "$NVM_NODE_BIN/node" ]; then
+  PATH="$NVM_NODE_BIN:$PATH"
+  export PATH
+fi
+
 : "${BOT_TOKEN:?BOT_TOKEN is required. Put it in .env or export it before launch.}"
 : "${DB_PATH:=$SCRIPT_DIR/jarvis_memory.db}"
 LOCK_PATH="${LOCK_PATH:-$SCRIPT_DIR/tg_codex_bridge.lock}"
@@ -23,6 +29,8 @@ while true; do
   HEARTBEAT_PATH="$HEARTBEAT_PATH" \
   HEARTBEAT_TIMEOUT_SECONDS="$HEARTBEAT_TIMEOUT_SECONDS" \
   LEGACY_JARVIS_DB_PATH="$LEGACY_JARVIS_DB_PATH" \
+  RUNNING_UNDER_SUPERVISOR=1 \
+  PYTHONUNBUFFERED=1 \
   python3 tg_codex_bridge.py >> "$LOG_PATH" 2>&1 &
   BRIDGE_PID=$!
   while kill -0 "$BRIDGE_PID" 2>/dev/null; do
