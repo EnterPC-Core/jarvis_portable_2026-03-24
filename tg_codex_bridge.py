@@ -105,6 +105,7 @@ from utils.ops_utils import (
 )
 from utils.report_utils import (
     extract_meminfo_value as _extract_meminfo_value,
+    render_enterprise_runtime_report as _render_enterprise_runtime_report,
     format_swap_line as _format_swap_line,
     render_disk_summary as _render_disk_summary,
     render_event_rows as _render_event_rows,
@@ -6927,6 +6928,34 @@ class TelegramBridge:
         if detect_local_chat_query(user_text) and drive_scores.get("stale_memory_pressure", 0.0) >= 35.0:
             self.state.refresh_relation_memory(chat_id)
 
+        if route_decision.persona == "enterprise" and route_decision.intent == "runtime_status" and route_decision.use_workspace:
+            direct_answer = render_enterprise_runtime_report()
+            report = apply_self_check_contract(direct_answer, route_decision)
+            self.state.update_self_model_state(last_outcome=report.outcome)
+            self.run_post_task_reflection(
+                chat_id=chat_id,
+                user_id=user_id,
+                route_decision=route_decision,
+                user_text=user_text,
+                report=report,
+                source="enterprise_runtime_probe",
+            )
+            status_message_id = self.send_status_message(chat_id, f"{OWNER_AGENT_RUNNING_TEXT}\n\nСнимаю прямой runtime probe...")
+            delivered_via_status = False
+            if status_message_id is not None:
+                delivered_via_status = self.edit_status_message(chat_id, status_message_id, report.answer)
+            if not delivered_via_status:
+                self.safe_send_text(chat_id, report.answer)
+            self.record_route_diagnostic(
+                chat_id=chat_id,
+                user_id=user_id,
+                route_decision=route_decision,
+                report=report,
+                started_at=started_at,
+                query_text=user_text,
+            )
+            return report.answer
+
         if route_decision.use_live:
             live_answer = self.try_handle_live_data_query(user_text, route_decision)
             if live_answer:
@@ -10138,6 +10167,16 @@ def render_resource_summary() -> str:
         format_bytes_func=format_bytes,
         format_swap_line_func=format_swap_line,
         extract_meminfo_value_func=extract_meminfo_value,
+    )
+
+
+def render_enterprise_runtime_report() -> str:
+    return _render_enterprise_runtime_report(
+        psutil_module=psutil,
+        format_bytes_func=format_bytes,
+        format_swap_line_func=format_swap_line,
+        truncate_text_func=truncate_text,
+        build_subprocess_env_func=build_subprocess_env,
     )
 
 

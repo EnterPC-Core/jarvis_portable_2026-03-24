@@ -66,6 +66,12 @@
 - `Enterprise` не должен терять инженерный режим из-за слабого роутинга
 - self-check не должен пропускать заявления о выполненных действиях без route/tool-подтверждения
 
+Отдельно для owner `Enterprise`-маршрута:
+
+- runtime-запросы про `RAM/CPU/disk/processes/network`, наличие monitoring tools и видимость `/proc` теперь идут через прямой local runtime probe
+- этот probe читает локальную среду командами вроде `free`, `df`, `ps`, `ip`, `ss`, `apt-cache policy` и проверкой доступности `/proc`
+- `Jarvis`-режим при этом не меняется и остаётся обычным prompt-driven слоем
+
 ## Минимальные требования
 
 - Linux shell, UserLAnd или Termux
@@ -217,6 +223,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 
 - `Jarvis` отвечает всегда
 - `Enterprise` для владельца может идти в расширенный локальный режим
+- для runtime/system вопросов `Enterprise` использует прямой local probe вместо свободного ответа модели
 
 ### В группах
 

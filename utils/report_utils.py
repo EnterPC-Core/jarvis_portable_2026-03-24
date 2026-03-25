@@ -1,8 +1,11 @@
+import os
 import re
 import shutil
+import subprocess
 import time
+import warnings
 from datetime import datetime
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 
 def render_event_rows(
@@ -185,10 +188,94 @@ def render_network_summary(*, psutil_module: Any, format_bytes_func: Callable[[i
     return "\n".join(lines)
 
 
+def run_runtime_command(
+    command: Sequence[str],
+    *,
+    build_subprocess_env_func: Callable[[], dict],
+    timeout_seconds: int = 15,
+    max_lines: int = 12,
+) -> str:
+    try:
+        result = subprocess.run(
+            list(command),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=build_subprocess_env_func(),
+        )
+    except (subprocess.TimeoutExpired, OSError) as error:
+        return f"unavailable: {error}"
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        details = output or f"exit={result.returncode}"
+        return f"unavailable: {details}"
+    if not output:
+        return "no output"
+    lines = output.splitlines()
+    return "\n".join(lines[:max_lines]).strip()
+
+
+def render_enterprise_runtime_report(
+    *,
+    psutil_module: Any,
+    format_bytes_func: Callable[[int], str],
+    format_swap_line_func: Callable[[], str],
+    truncate_text_func: Callable[[str, int], str],
+    build_subprocess_env_func: Callable[[], dict],
+) -> str:
+    lines = ["Enterprise runtime probe"]
+    lines.append(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
+    visible_tools = []
+    for tool_name in ("htop", "sar", "iostat", "mpstat", "pidstat", "free", "df", "ps", "ip", "ss", "apt-cache"):
+        tool_path = shutil.which(tool_name)
+        visible_tools.append(f"{tool_name}={'MISSING' if not tool_path else tool_path}")
+    lines.extend(["", "Tools visible in this runtime:", *[f"- {item}" for item in visible_tools]])
+
+    proc_bits = []
+    for proc_path in ("/proc/loadavg", "/proc/meminfo", "/proc/vmstat", "/proc/net/dev"):
+        proc_bits.append(f"{proc_path}={'readable' if os.access(proc_path, os.R_OK) else 'unreadable'}")
+    lines.extend(["", "Proc access:", *[f"- {item}" for item in proc_bits]])
+
+    resource_lines = render_resource_summary(
+        psutil_module=psutil_module,
+        format_bytes_func=format_bytes_func,
+        format_swap_line_func=format_swap_line_func,
+        extract_meminfo_value_func=extract_meminfo_value,
+    ).splitlines()
+    lines.extend(["", *resource_lines])
+
+    command_sections = [
+        ("uptime", ["uptime"], 4),
+        ("free -h", ["free", "-h"], 8),
+        ("df -h / /home/userland", ["df", "-h", "/", "/home/userland"], 8),
+        ("ps top", ["ps", "-eo", "pid,pcpu,pmem,comm", "--sort=-pcpu"], 10),
+        ("ip -brief addr", ["ip", "-brief", "addr"], 8),
+        ("ss -tunlp", ["ss", "-tunlp"], 10),
+        ("apt-cache policy htop sysstat", ["apt-cache", "policy", "htop", "sysstat"], 12),
+    ]
+    for title, command, max_lines in command_sections:
+        lines.append("")
+        lines.append(f"$ {' '.join(command)}")
+        lines.append(truncate_text_func(
+            run_runtime_command(
+                command,
+                build_subprocess_env_func=build_subprocess_env_func,
+                timeout_seconds=20,
+                max_lines=max_lines,
+            ),
+            1800,
+        ))
+
+    return "\n".join(lines)
+
+
 def format_swap_line(*, psutil_module: Any, format_bytes_func: Callable[[int], str]) -> str:
     if psutil_module is None:
         return "n/a"
-    swap = psutil_module.swap_memory()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        swap = psutil_module.swap_memory()
     return f"{swap.percent:.1f}% ({format_bytes_func(swap.used)} / {format_bytes_func(swap.total)})"
 
 

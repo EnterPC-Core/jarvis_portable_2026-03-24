@@ -1,6 +1,6 @@
 {
   "database": "/home/userland/projects/bots/jarvis_portable_2026-03-24/jarvis_memory.db",
-  "generated_at_utc": "2026-03-25T13:06:31+00:00",
+  "generated_at_utc": "2026-03-25T14:19:46+00:00",
   "tables": [
     "achievement_catalog",
     "appeal_events",
@@ -42,17 +42,17 @@
   ],
   "row_counts": {
     "achievement_catalog": 17,
-    "appeal_events": 4,
+    "appeal_events": 5,
     "appeals": 3,
-    "autobiographical_memory": 1,
+    "autobiographical_memory": 7,
     "bot_meta": 7,
-    "chat_events": 1129,
-    "chat_events_fts": 1129,
+    "chat_events": 1163,
+    "chat_events_fts": 1163,
     "chat_events_fts_config": 1,
-    "chat_events_fts_data": 30,
-    "chat_events_fts_docsize": 1129,
-    "chat_events_fts_idx": 28,
-    "chat_history": 341,
+    "chat_events_fts_data": 31,
+    "chat_events_fts_docsize": 1163,
+    "chat_events_fts_idx": 29,
+    "chat_history": 355,
     "chat_modes": 1,
     "chat_participants": 22,
     "chat_runtime_cache": 2,
@@ -63,13 +63,13 @@
     "moderation_actions": 0,
     "moderation_journal": 0,
     "progression_profiles": 1001,
-    "reflections": 0,
+    "reflections": 2,
     "relation_memory": 25,
-    "request_diagnostics": 77,
-    "score_events": 2395,
+    "request_diagnostics": 84,
+    "score_events": 2412,
     "self_model_state": 1,
     "skill_memory": 5,
-    "summary_snapshots": 177,
+    "summary_snapshots": 193,
     "ui_sessions": 3,
     "user_achievement_state": 16932,
     "user_memory_profiles": 21,
@@ -77,7 +77,7 @@
     "warnings": 0,
     "welcome_settings": 1,
     "world_state_registry": 5,
-    "world_state_snapshots": 3
+    "world_state_snapshots": 5
   },
   "safe_table_rows": {
     "bot_meta": [
@@ -91,7 +91,7 @@
       },
       {
         "key": "last_update_id",
-        "value": "955148376"
+        "value": "955148425"
       },
       {
         "key": "pending_restart_chat_id",
@@ -113,7 +113,7 @@
     "chat_modes": [
       {
         "chat_id": 6102780373,
-        "mode": "strict"
+        "mode": "jarvis"
       }
     ],
     "warn_settings": [],
@@ -127,7 +127,7 @@
   },
   "sensitive_tables": {
     "appeal_events": {
-      "rows": 4,
+      "rows": 5,
       "content_exported": false
     },
     "appeals": {
@@ -135,11 +135,11 @@
       "content_exported": false
     },
     "chat_events": {
-      "rows": 1129,
+      "rows": 1163,
       "content_exported": false
     },
     "chat_history": {
-      "rows": 341,
+      "rows": 355,
       "content_exported": false
     },
     "memory_facts": {
