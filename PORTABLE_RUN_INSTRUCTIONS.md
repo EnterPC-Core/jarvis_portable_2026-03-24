@@ -20,7 +20,6 @@
 - [`start_jarvis_on_userland.sh`](./start_jarvis_on_userland.sh) — фоновый старт в UserLAnd
 - [`jarvis_memory.db`](./jarvis_memory.db) — текущая память
 - [`legacy_jarvis_adapter.py`](./legacy_jarvis_adapter.py) — мост к старой базе
-- [`src/`](./src), [`sql/`](./sql), [`package.json`](./package.json) — облачная/worker-часть проекта
 
 ## Что нужно на новом устройстве
 
@@ -99,7 +98,7 @@ Portable-сборка не делает за тебя:
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py)
 
-Не нужно путать его со старым legacy launcher или только с Worker-частью.
+Не нужно путать его со старыми альтернативными launcher-ветками.
 
 ## Когда portable-сборка считается исправной
 
