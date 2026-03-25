@@ -18,9 +18,15 @@ CREATE INDEX idx_moderation_actions_chat_user ON moderation_actions(chat_id, use
 
 CREATE INDEX idx_moderation_journal_user_created_at ON moderation_journal(user_id, created_at DESC);
 
+CREATE INDEX idx_request_diagnostics_chat_id_id ON request_diagnostics(chat_id, id);
+
 CREATE INDEX idx_score_events_type_created_at ON score_events(event_type, created_at DESC);
 
 CREATE INDEX idx_score_events_user_created_at ON score_events(user_id, created_at DESC);
+
+CREATE INDEX idx_summary_snapshots_chat_id_id ON summary_snapshots(chat_id, id);
+
+CREATE INDEX idx_user_memory_profiles_chat_id_user_id ON user_memory_profiles(chat_id, user_id);
 
 CREATE INDEX idx_warnings_chat_user ON warnings(chat_id, user_id, id);
 
@@ -151,6 +157,28 @@ CREATE TABLE progression_profiles (
                 updated_at INTEGER NOT NULL DEFAULT 0
             );
 
+CREATE TABLE request_diagnostics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER,
+                    chat_type TEXT NOT NULL DEFAULT '',
+                    persona TEXT NOT NULL DEFAULT '',
+                    intent TEXT NOT NULL DEFAULT '',
+                    route_kind TEXT NOT NULL DEFAULT '',
+                    source_label TEXT NOT NULL DEFAULT '',
+                    used_live INTEGER NOT NULL DEFAULT 0,
+                    used_web INTEGER NOT NULL DEFAULT 0,
+                    used_events INTEGER NOT NULL DEFAULT 0,
+                    used_database INTEGER NOT NULL DEFAULT 0,
+                    used_reply INTEGER NOT NULL DEFAULT 0,
+                    used_workspace INTEGER NOT NULL DEFAULT 0,
+                    guardrails TEXT NOT NULL DEFAULT '',
+                    outcome TEXT NOT NULL DEFAULT '',
+                    latency_ms INTEGER NOT NULL DEFAULT 0,
+                    query_text TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
 CREATE TABLE score_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -165,6 +193,14 @@ CREATE TABLE score_events (
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             );
 
+CREATE TABLE summary_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'rolling',
+                    summary TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
 CREATE TABLE ui_sessions (user_id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL DEFAULT 0, active_panel TEXT NOT NULL DEFAULT 'home', pending_action TEXT NOT NULL DEFAULT '', pending_payload TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')));
 
 CREATE TABLE user_achievement_state (
@@ -177,6 +213,19 @@ CREATE TABLE user_achievement_state (
                 last_evaluated_at INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, code)
             );
+
+CREATE TABLE user_memory_profiles (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    style_notes TEXT NOT NULL DEFAULT '',
+                    topics TEXT NOT NULL DEFAULT '',
+                    last_message_at INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    PRIMARY KEY(chat_id, user_id)
+                );
 
 CREATE TABLE warn_settings (chat_id INTEGER PRIMARY KEY, warn_limit INTEGER NOT NULL DEFAULT 3, warn_mode TEXT NOT NULL DEFAULT 'mute', warn_expire_seconds INTEGER NOT NULL DEFAULT 0);
 

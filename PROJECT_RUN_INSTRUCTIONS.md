@@ -13,6 +13,19 @@
 - [`start_jarvis_on_termux.sh`](./start_jarvis_on_termux.sh) — фоновый запуск в Termux
 - [`jarvis_memory.db`](./jarvis_memory.db) — память, история, сервисное состояние
 
+## Слои памяти
+
+В текущей архитектуре память разделена на несколько уровней:
+
+- `chat_history` — короткая рабочая история недавнего диалога
+- `chat_events` — архив событий и сообщений для поиска, reply-context и digest
+- `memory_facts` — вручную сохранённые факты через `/remember`
+- `chat_summaries` — rolling summary по чату
+- `user_memory_profiles` — user memory по участникам в рамках конкретного чата
+- `summary_snapshots` — summary memory, то есть накопленные snapshot-сводки по ходу жизни чата
+
+Это важно: бот теперь строит prompt не только из последних сообщений, а из нескольких memory layers сразу.
+
 ## Минимальные требования
 
 - Linux shell, UserLAnd или Termux

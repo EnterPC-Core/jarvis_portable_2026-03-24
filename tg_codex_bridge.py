@@ -648,6 +648,29 @@ class BridgeState:
                 "CREATE TABLE IF NOT EXISTS memory_facts (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, created_by_user_id INTEGER, fact TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
             )
             self.db.execute(
+                """CREATE TABLE IF NOT EXISTS user_memory_profiles (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    style_notes TEXT NOT NULL DEFAULT '',
+                    topics TEXT NOT NULL DEFAULT '',
+                    last_message_at INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    PRIMARY KEY(chat_id, user_id)
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS summary_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'rolling',
+                    summary TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS chat_events_fts USING fts5(text, content='chat_events', content_rowid='id', tokenize='unicode61')"
             )
             self.db.execute(
@@ -658,6 +681,12 @@ class BridgeState:
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_facts_chat_id_id ON memory_facts(chat_id, id)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_memory_profiles_chat_id_user_id ON user_memory_profiles(chat_id, user_id)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_summary_snapshots_chat_id_id ON summary_snapshots(chat_id, id)"
             )
             self.db.execute(
                 "CREATE TABLE IF NOT EXISTS bot_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -796,18 +825,60 @@ class BridgeState:
 
     def update_summary(self, chat_id: int) -> None:
         history = list(self.get_history(chat_id))[-12:]
-        if not history:
+        with self.db_lock:
+            event_rows = self.db.execute(
+                "SELECT created_at, user_id, username, first_name, last_name, role, message_type, text FROM chat_events WHERE chat_id = ? ORDER BY id DESC LIMIT 24",
+                (chat_id,),
+            ).fetchall()
+            fact_rows = self.db.execute(
+                "SELECT fact FROM memory_facts WHERE chat_id = ? ORDER BY id DESC LIMIT 8",
+                (chat_id,),
+            ).fetchall()
+        if not history and not event_rows and not fact_rows:
             return
         lines = []
         for role, content in history:
             label = "User" if role == "user" else "Jarvis"
             lines.append(f"{label}: {truncate_text(content, 180)}")
-        summary = truncate_text("\n".join(lines), 1400)
+        event_rows = list(reversed(event_rows))
+        if event_rows:
+            actor_counts: Dict[str, int] = {}
+            type_counts: Dict[str, int] = {}
+            for created_at, user_id, username, first_name, last_name, role, message_type, text in event_rows:
+                actor = build_actor_name(user_id, username or "", first_name or "", last_name or "", role)
+                actor_counts[actor] = actor_counts.get(actor, 0) + 1
+                type_counts[message_type] = type_counts.get(message_type, 0) + 1
+            top_actors = ", ".join(f"{name}={count}" for name, count in sorted(actor_counts.items(), key=lambda item: (-item[1], item[0]))[:4])
+            top_types = ", ".join(f"{name}={count}" for name, count in sorted(type_counts.items(), key=lambda item: (-item[1], item[0]))[:5])
+            if top_actors:
+                lines.append(f"Top actors: {top_actors}")
+            if top_types:
+                lines.append(f"Event mix: {top_types}")
+        if fact_rows:
+            lines.append("Pinned facts:")
+            for row in fact_rows[:4]:
+                lines.append(f"- {truncate_text(row[0] or '', 140)}")
+        summary = truncate_text("\n".join(lines), 1800)
         with self.db_lock:
             self.db.execute(
                 "INSERT INTO chat_summaries(chat_id, summary, updated_at) VALUES(?, ?, strftime('%s','now')) ON CONFLICT(chat_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at",
                 (chat_id, summary),
             )
+            recent_snapshot = self.db.execute(
+                "SELECT summary, created_at FROM summary_snapshots WHERE chat_id = ? AND scope = 'rolling' ORDER BY id DESC LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+            should_snapshot = True
+            if recent_snapshot:
+                previous_summary = recent_snapshot[0] or ""
+                previous_ts = int(recent_snapshot[1] or 0)
+                if previous_summary == summary and previous_ts >= int(time.time()) - 1800:
+                    should_snapshot = False
+            if should_snapshot:
+                self.db.execute(
+                    "INSERT INTO summary_snapshots(chat_id, scope, summary) VALUES(?, 'rolling', ?)",
+                    (chat_id, summary),
+                )
             self.db.commit()
 
     def add_fact(self, chat_id: int, fact: str, created_by_user_id: Optional[int]) -> None:
@@ -941,6 +1012,178 @@ class BridgeState:
         stats = ", ".join(f"{k}={v}" for k, v in sorted(type_counts.items()))
         context = f"Participant: {label}\nMessages sampled: {len(rows)}\nTypes: {stats}\n\n" + "\n".join(lines)
         return label, context
+
+    def refresh_user_memory_profile(
+        self,
+        chat_id: int,
+        user_id: Optional[int],
+        username: str = "",
+        first_name: str = "",
+        last_name: str = "",
+    ) -> None:
+        if user_id is None:
+            return
+        with self.db_lock:
+            rows = self.db.execute(
+                """SELECT created_at, message_type, text
+                FROM chat_events
+                WHERE chat_id = ? AND role = 'user' AND user_id = ?
+                ORDER BY id DESC
+                LIMIT 28""",
+                (chat_id, user_id),
+            ).fetchall()
+        if not rows:
+            return
+        recent_rows = list(reversed(rows))
+        type_counts: Dict[str, int] = {}
+        keyword_counts: Dict[str, int] = {}
+        text_messages = 0
+        media_messages = 0
+        total_chars = 0
+        for created_at, message_type, text in recent_rows:
+            type_counts[message_type] = type_counts.get(message_type, 0) + 1
+            if message_type in {"text", "edited_text", "caption", "edited_caption"}:
+                text_messages += 1
+                total_chars += len(text or "")
+            else:
+                media_messages += 1
+            for keyword in extract_keywords(text or ""):
+                if keyword.isdigit():
+                    continue
+                keyword_counts[keyword] = keyword_counts.get(keyword, 0) + 1
+        average_length = int(total_chars / max(1, text_messages)) if text_messages else 0
+        style_notes: List[str] = []
+        if average_length >= 220:
+            style_notes.append("пишет развёрнуто")
+        elif average_length >= 90:
+            style_notes.append("обычно пишет средними сообщениями")
+        elif text_messages > 0:
+            style_notes.append("пишет коротко")
+        if media_messages >= max(2, text_messages):
+            style_notes.append("часто использует медиа и сервисные форматы")
+        if type_counts.get("voice", 0) >= 2:
+            style_notes.append("регулярно шлёт голосовые")
+        if type_counts.get("photo", 0) >= 2:
+            style_notes.append("часто отправляет фото")
+        top_topics = [word for word, _count in sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0]))[:6]]
+        label = build_actor_name(user_id, username, first_name, last_name, "user")
+        summary_parts = [
+            f"{label}: сообщений в выборке {len(recent_rows)}",
+            f"форматы: {', '.join(f'{name}={count}' for name, count in sorted(type_counts.items(), key=lambda item: (-item[1], item[0]))[:5])}" if type_counts else "",
+            f"стиль: {', '.join(style_notes)}" if style_notes else "",
+            f"темы: {', '.join(top_topics)}" if top_topics else "",
+        ]
+        summary = ". ".join(part for part in summary_parts if part).strip()
+        last_message_at = int(recent_rows[-1][0] or 0)
+        with self.db_lock:
+            self.db.execute(
+                """INSERT INTO user_memory_profiles(
+                    chat_id, user_id, username, display_name, summary, style_notes, topics, last_message_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                    username = excluded.username,
+                    display_name = excluded.display_name,
+                    summary = excluded.summary,
+                    style_notes = excluded.style_notes,
+                    topics = excluded.topics,
+                    last_message_at = excluded.last_message_at,
+                    updated_at = excluded.updated_at""",
+                (
+                    chat_id,
+                    user_id,
+                    username or "",
+                    label,
+                    truncate_text(summary, 900),
+                    truncate_text(", ".join(style_notes), 320),
+                    truncate_text(", ".join(top_topics), 320),
+                    last_message_at,
+                ),
+            )
+            self.db.commit()
+
+    def get_user_memory_context(
+        self,
+        chat_id: int,
+        user_id: Optional[int] = None,
+        reply_to_user_id: Optional[int] = None,
+        limit: int = 2,
+    ) -> str:
+        target_ids: List[int] = []
+        for candidate in [user_id, reply_to_user_id]:
+            if candidate is None:
+                continue
+            if candidate not in target_ids:
+                target_ids.append(candidate)
+        if not target_ids:
+            return ""
+        placeholders = ",".join("?" for _ in target_ids[:limit])
+        params: List[object] = [chat_id, *target_ids[:limit]]
+        with self.db_lock:
+            rows = self.db.execute(
+                f"""SELECT user_id, username, display_name, summary, style_notes, topics, updated_at
+                FROM user_memory_profiles
+                WHERE chat_id = ? AND user_id IN ({placeholders})
+                ORDER BY updated_at DESC""",
+                params,
+            ).fetchall()
+        if not rows:
+            return ""
+        lines = ["User memory:"]
+        for row in rows:
+            label = row[2] or build_actor_name(row[0], row[1] or "", "", "", "user")
+            lines.append(f"- {label}")
+            if row[3]:
+                lines.append(f"  summary: {truncate_text(row[3], 260)}")
+            if row[4]:
+                lines.append(f"  style: {truncate_text(row[4], 180)}")
+            if row[5]:
+                lines.append(f"  topics: {truncate_text(row[5], 180)}")
+        return "\n".join(lines)
+
+    def get_summary_memory_context(self, chat_id: int, limit: int = 3) -> str:
+        with self.db_lock:
+            rows = self.db.execute(
+                """SELECT scope, summary, created_at
+                FROM summary_snapshots
+                WHERE chat_id = ?
+                ORDER BY id DESC
+                LIMIT ?""",
+                (chat_id, max(1, min(6, limit))),
+            ).fetchall()
+        if not rows:
+            return ""
+        lines = ["Summary memory:"]
+        for scope, summary, created_at in reversed(rows):
+            stamp = datetime.fromtimestamp(int(created_at)).strftime("%m-%d %H:%M") if created_at else "--:--"
+            lines.append(f"- [{stamp}] {scope}: {truncate_text(summary or '', 220)}")
+        return "\n".join(lines)
+
+    def get_chat_memory_context(self, chat_id: int, query: str = "") -> str:
+        summary = self.get_summary(chat_id)
+        facts = self.get_facts(chat_id, query=query, limit=6)
+        with self.db_lock:
+            rows = self.db.execute(
+                """SELECT user_id, username, first_name, last_name, COUNT(*) as cnt
+                FROM chat_events
+                WHERE chat_id = ? AND role = 'user'
+                GROUP BY user_id, username, first_name, last_name
+                ORDER BY cnt DESC
+                LIMIT 5""",
+                (chat_id,),
+            ).fetchall()
+        lines = ["Chat memory:"]
+        if summary:
+            lines.append(f"- rolling summary: {truncate_text(summary, 260)}")
+        if rows:
+            active = ", ".join(
+                f"{build_actor_name(row[0], row[1] or '', row[2] or '', row[3] or '', 'user')}={int(row[4])}"
+                for row in rows
+            )
+            lines.append(f"- most active participants: {truncate_text(active, 260)}")
+        if facts:
+            lines.append("- remembered facts:")
+            lines.extend(f"  • {truncate_text(fact, 140)}" for fact in facts[:4])
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     def get_event_context(self, chat_id: int, user_text: str, limit: int = 24) -> str:
         rows = self.search_events(chat_id, user_text, limit=limit, prefer_fts=True)
@@ -1258,12 +1501,16 @@ class BridgeState:
             history_count = self.db.execute("SELECT COUNT(*) FROM chat_history WHERE chat_id = ?", (chat_id,)).fetchone()[0]
             total_events = self.db.execute("SELECT COUNT(*) FROM chat_events").fetchone()[0]
             total_route_decisions = self.db.execute("SELECT COUNT(*) FROM request_diagnostics").fetchone()[0]
+            user_memory_profiles = self.db.execute("SELECT COUNT(*) FROM user_memory_profiles WHERE chat_id = ?", (chat_id,)).fetchone()[0]
+            summary_snapshots = self.db.execute("SELECT COUNT(*) FROM summary_snapshots WHERE chat_id = ?", (chat_id,)).fetchone()[0]
         return {
             "events_count": events_count,
             "facts_count": facts_count,
             "history_count": history_count,
             "total_events": total_events,
             "total_route_decisions": total_route_decisions,
+            "user_memory_profiles": user_memory_profiles,
+            "summary_snapshots": summary_snapshots,
         }
 
     def record_request_diagnostic(
@@ -2640,6 +2887,13 @@ class TelegramBridge:
                 has_media=has_media,
                 file_kind=file_kind,
                 is_edited=is_edited,
+            )
+            self.state.refresh_user_memory_profile(
+                chat_id,
+                user_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
             )
 
         self.sync_legacy_jarvis(message)
@@ -4156,6 +4410,8 @@ class TelegramBridge:
             f"События чата: {snapshot['events_count']}",
             f"Факты: {snapshot['facts_count']}",
             f"История: {snapshot['history_count']}",
+            f"User memory profiles: {snapshot['user_memory_profiles']}",
+            f"Summary snapshots: {snapshot['summary_snapshots']}",
             f"Всего событий в БД: {snapshot['total_events']}",
             f"Route decisions в БД: {snapshot['total_route_decisions']}",
             f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
@@ -4520,6 +4776,8 @@ class TelegramBridge:
             f"События в этом чате: {status_snapshot['events_count']}",
             f"Факты в этом чате: {status_snapshot['facts_count']}",
             f"История в этом чате: {status_snapshot['history_count']}",
+            f"User memory profiles в этом чате: {status_snapshot['user_memory_profiles']}",
+            f"Summary snapshots в этом чате: {status_snapshot['summary_snapshots']}",
             f"Всего событий в БД: {status_snapshot['total_events']}",
             f"Route decisions в БД: {status_snapshot['total_route_decisions']}",
             f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
@@ -4746,6 +5004,14 @@ class TelegramBridge:
             event_context = self.state.get_event_context(chat_id, user_text)
         if bool(route_info.get("use_database")):
             database_context = self.state.get_database_context(chat_id, user_text)
+        reply_to = ((message or {}).get("reply_to_message") or {}).get("from") or {}
+        user_memory_text = self.state.get_user_memory_context(
+            chat_id,
+            user_id=user_id,
+            reply_to_user_id=reply_to.get("id"),
+        )
+        chat_memory_text = self.state.get_chat_memory_context(chat_id, query=user_text)
+        summary_memory_text = self.state.get_summary_memory_context(chat_id, limit=3)
         prompt = build_prompt(
             mode=self.state.get_mode(chat_id),
             history=list(self.state.get_history(chat_id)),
@@ -4761,6 +5027,9 @@ class TelegramBridge:
             web_context=web_context,
             route_summary=build_route_summary_text(route_info),
             guardrail_note=build_guardrail_note(route_info),
+            user_memory_text=user_memory_text,
+            chat_memory_text=chat_memory_text,
+            summary_memory_text=summary_memory_text,
         )
         if bool(route_info.get("use_workspace")):
             answer = self.run_codex_with_progress(
@@ -5189,6 +5458,11 @@ class TelegramBridge:
         event_context = ""
         database_context = ""
         reply_context = self.build_reply_context(chat_id, message)
+        from_user = (message or {}).get("from") or {}
+        reply_to_user = (((message or {}).get("reply_to_message") or {}).get("from") or {})
+        user_memory_text = self.state.get_user_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id"))
+        chat_memory_text = self.state.get_chat_memory_context(chat_id, query=prompt_text)
+        summary_memory_text = self.state.get_summary_memory_context(chat_id, limit=3)
         if should_include_event_context(prompt_text):
             event_context = self.state.get_event_context(chat_id, prompt_text)
         if should_include_database_context(prompt_text):
@@ -5203,6 +5477,9 @@ class TelegramBridge:
             event_context=event_context,
             database_context=database_context,
             reply_context=reply_context,
+            user_memory_text=user_memory_text,
+            chat_memory_text=chat_memory_text,
+            summary_memory_text=summary_memory_text,
         )
         return self.run_codex(prompt, image_path=image_path)
 
@@ -5224,6 +5501,11 @@ class TelegramBridge:
         event_context = ""
         database_context = ""
         reply_context = self.build_reply_context(chat_id, message)
+        from_user = (message or {}).get("from") or {}
+        reply_to_user = (((message or {}).get("reply_to_message") or {}).get("from") or {})
+        user_memory_text = self.state.get_user_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id"))
+        chat_memory_text = self.state.get_chat_memory_context(chat_id, query=prompt_text)
+        summary_memory_text = self.state.get_summary_memory_context(chat_id, limit=3)
         if should_include_event_context(prompt_text):
             event_context = self.state.get_event_context(chat_id, prompt_text)
         if should_include_database_context(prompt_text):
@@ -5249,6 +5531,9 @@ class TelegramBridge:
             event_context=event_context,
             database_context=database_context,
             reply_context=reply_context,
+            user_memory_text=user_memory_text,
+            chat_memory_text=chat_memory_text,
+            summary_memory_text=summary_memory_text,
         )
         return self.run_codex(prompt)
 
@@ -7674,6 +7959,9 @@ def build_prompt(
     web_context: str = "",
     route_summary: str = "",
     guardrail_note: str = "",
+    user_memory_text: str = "",
+    chat_memory_text: str = "",
+    summary_memory_text: str = "",
 ) -> str:
     mode_prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS[DEFAULT_MODE_NAME])
     history_block = format_history(history, user_text)
@@ -7689,6 +7977,9 @@ def build_prompt(
     web_block = f"Web context:\n{truncate_text(web_context, 3200)}\n\n" if web_context else ""
     route_block = f"Route summary:\n{truncate_text(route_summary, 1200)}\n\n" if route_summary else ""
     guardrail_block = f"Self-check and guardrails:\n{truncate_text(guardrail_note, 1600)}\n\n" if guardrail_note else ""
+    user_memory_block = f"User memory:\n{truncate_text(user_memory_text, 1800)}\n\n" if user_memory_text else ""
+    chat_memory_block = f"Chat memory:\n{truncate_text(chat_memory_text, 1800)}\n\n" if chat_memory_text else ""
+    summary_memory_block = f"Summary memory:\n{truncate_text(summary_memory_text, 1800)}\n\n" if summary_memory_text else ""
     identity_block = ""
     if include_identity_prompt:
         identity_block = (
@@ -7701,6 +7992,9 @@ def build_prompt(
         f"{persona_block}"
         f"{route_block}"
         f"{guardrail_block}"
+        f"{user_memory_block}"
+        f"{chat_memory_block}"
+        f"{summary_memory_block}"
         f"Mode:\n{mode_prompt}\n\n"
         f"Intent:\n{intent}\n\n"
         f"Response shape:\n{response_shape}\n\n"
