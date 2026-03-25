@@ -20,6 +20,8 @@ CREATE INDEX idx_moderation_actions_chat_user ON moderation_actions(chat_id, use
 
 CREATE INDEX idx_moderation_journal_user_created_at ON moderation_journal(user_id, created_at DESC);
 
+CREATE INDEX idx_relation_memory_chat_id_updated ON relation_memory(chat_id, updated_at DESC, last_interaction_at DESC);
+
 CREATE INDEX idx_request_diagnostics_chat_id_id ON request_diagnostics(chat_id, id);
 
 CREATE INDEX idx_score_events_type_created_at ON score_events(event_type, created_at DESC);
@@ -190,6 +192,24 @@ CREATE TABLE progression_profiles (
                 last_day_key TEXT NOT NULL DEFAULT '',
                 updated_at INTEGER NOT NULL DEFAULT 0
             );
+
+CREATE TABLE relation_memory (
+                    chat_id INTEGER NOT NULL,
+                    user_low_id INTEGER NOT NULL,
+                    user_high_id INTEGER NOT NULL,
+                    reply_count_low_to_high INTEGER NOT NULL DEFAULT 0,
+                    reply_count_high_to_low INTEGER NOT NULL DEFAULT 0,
+                    co_presence_count INTEGER NOT NULL DEFAULT 0,
+                    humor_markers INTEGER NOT NULL DEFAULT 0,
+                    rough_markers INTEGER NOT NULL DEFAULT 0,
+                    support_markers INTEGER NOT NULL DEFAULT 0,
+                    topic_markers TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    last_interaction_at INTEGER NOT NULL DEFAULT 0,
+                    confidence REAL NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    PRIMARY KEY(chat_id, user_low_id, user_high_id)
+                );
 
 CREATE TABLE request_diagnostics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

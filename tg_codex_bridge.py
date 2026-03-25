@@ -665,6 +665,7 @@ class ContextBundle:
     database_context: str = ""
     reply_context: str = ""
     user_memory_text: str = ""
+    relation_memory_text: str = ""
     chat_memory_text: str = ""
     summary_memory_text: str = ""
     web_context: str = ""
@@ -776,6 +777,25 @@ class BridgeState:
                 )"""
             )
             self.db.execute(
+                """CREATE TABLE IF NOT EXISTS relation_memory (
+                    chat_id INTEGER NOT NULL,
+                    user_low_id INTEGER NOT NULL,
+                    user_high_id INTEGER NOT NULL,
+                    reply_count_low_to_high INTEGER NOT NULL DEFAULT 0,
+                    reply_count_high_to_low INTEGER NOT NULL DEFAULT 0,
+                    co_presence_count INTEGER NOT NULL DEFAULT 0,
+                    humor_markers INTEGER NOT NULL DEFAULT 0,
+                    rough_markers INTEGER NOT NULL DEFAULT 0,
+                    support_markers INTEGER NOT NULL DEFAULT 0,
+                    topic_markers TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    last_interaction_at INTEGER NOT NULL DEFAULT 0,
+                    confidence REAL NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    PRIMARY KEY(chat_id, user_low_id, user_high_id)
+                )"""
+            )
+            self.db.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS chat_events_fts USING fts5(text, content='chat_events', content_rowid='id', tokenize='unicode61')"
             )
             self.db.execute(
@@ -792,6 +812,9 @@ class BridgeState:
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_participants_chat_id_last_seen ON chat_participants(chat_id, last_seen_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_relation_memory_chat_id_updated ON relation_memory(chat_id, updated_at DESC, last_interaction_at DESC)"
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_summary_snapshots_chat_id_id ON summary_snapshots(chat_id, id)"
@@ -1524,6 +1547,284 @@ class BridgeState:
                 lines.append(f"- {source_label} -> {target_label}: {int(count)}")
         return "\n".join(lines)
 
+    def get_actor_labels(self, chat_id: int, user_ids: List[int]) -> Dict[int, str]:
+        normalized_ids = sorted({int(user_id) for user_id in user_ids if user_id is not None})
+        if not normalized_ids:
+            return {}
+        placeholders = ",".join("?" for _ in normalized_ids)
+        params: List[object] = [chat_id, *normalized_ids]
+        with self.db_lock:
+            participant_rows = self.db.execute(
+                f"""SELECT user_id, username, first_name, last_name
+                FROM chat_participants
+                WHERE chat_id = ? AND user_id IN ({placeholders})""",
+                params,
+            ).fetchall()
+            event_rows = self.db.execute(
+                f"""SELECT user_id, username, first_name, last_name
+                FROM chat_events
+                WHERE chat_id = ? AND user_id IN ({placeholders})
+                ORDER BY id DESC
+                LIMIT {max(12, len(normalized_ids) * 3)}""",
+                params,
+            ).fetchall()
+        labels: Dict[int, str] = {}
+        for row in participant_rows:
+            if row[0] is None:
+                continue
+            labels[int(row[0])] = build_actor_name(int(row[0]), row[1] or "", row[2] or "", row[3] or "", "user")
+        for row in event_rows:
+            if row[0] is None:
+                continue
+            labels.setdefault(int(row[0]), build_actor_name(int(row[0]), row[1] or "", row[2] or "", row[3] or "", "user"))
+        for user_id in normalized_ids:
+            labels.setdefault(user_id, build_actor_name(user_id, "", "", "", "user"))
+        return labels
+
+    def refresh_relation_memory(self, chat_id: int, limit_pairs: int = 12, sample_limit: int = 180) -> bool:
+        with self.db_lock:
+            rows = self.db.execute(
+                """SELECT created_at, user_id, username, first_name, last_name, reply_to_user_id, text
+                FROM chat_events
+                WHERE chat_id = ? AND role = 'user'
+                ORDER BY id DESC
+                LIMIT ?""",
+                (chat_id, max(60, sample_limit)),
+            ).fetchall()
+            bot_rows = self.db.execute(
+                "SELECT user_id FROM chat_participants WHERE chat_id = ? AND is_bot = 1",
+                (chat_id,),
+            ).fetchall()
+        if len(rows) < 8:
+            return False
+        bot_user_ids = {int(row[0]) for row in bot_rows if row[0] is not None}
+        recent_rows = list(reversed(rows))
+        pair_stats: Dict[Tuple[int, int], Dict[str, object]] = {}
+        recent_window: List[int] = []
+        for created_at, user_id, username, first_name, last_name, reply_to_user_id, text in recent_rows:
+            if user_id is None:
+                continue
+            actor_id = int(user_id)
+            if actor_id in bot_user_ids:
+                continue
+            cleaned = (text or "").lower()
+            distinct_recent = []
+            for seen_user_id in reversed(recent_window):
+                if seen_user_id == actor_id or seen_user_id in distinct_recent:
+                    continue
+                distinct_recent.append(seen_user_id)
+                if len(distinct_recent) >= 4:
+                    break
+            for peer_id in distinct_recent:
+                low_id, high_id = sorted((actor_id, peer_id))
+                stats = pair_stats.setdefault(
+                    (low_id, high_id),
+                    {
+                        "reply_low_to_high": 0,
+                        "reply_high_to_low": 0,
+                        "co_presence": 0,
+                        "humor": 0,
+                        "rough": 0,
+                        "support": 0,
+                        "topics": {},
+                        "last_interaction_at": 0,
+                    },
+                )
+                stats["co_presence"] = int(stats["co_presence"]) + 1
+                stats["last_interaction_at"] = max(int(stats["last_interaction_at"]), int(created_at or 0))
+                if any(token in cleaned for token in ("ахах", "хаха", "))))", "😂", "😁", "😄")):
+                    stats["humor"] = int(stats["humor"]) + 1
+                if any(token in cleaned for token in ("нах", "охуе", "говно", "заеб", "пизд")):
+                    stats["rough"] = int(stats["rough"]) + 1
+                if any(token in cleaned for token in ("спасибо", "красава", "норм", "хорош", "поддерж", "молодец")):
+                    stats["support"] = int(stats["support"]) + 1
+                topics = stats["topics"]
+                for marker in ("бот", "jarvis", "осознан", "контекст", "стиль", "тест", "чат", "памят", "серьез", "цикл"):
+                    if marker in cleaned:
+                        topics[marker] = int(topics.get(marker, 0)) + 1
+            recent_window.append(actor_id)
+            if len(recent_window) > 8:
+                recent_window = recent_window[-8:]
+            if reply_to_user_id is None:
+                continue
+            target_id = int(reply_to_user_id)
+            if target_id == actor_id or target_id in bot_user_ids:
+                continue
+            low_id, high_id = sorted((actor_id, target_id))
+            stats = pair_stats.setdefault(
+                (low_id, high_id),
+                {
+                    "reply_low_to_high": 0,
+                    "reply_high_to_low": 0,
+                    "co_presence": 0,
+                    "humor": 0,
+                    "rough": 0,
+                    "support": 0,
+                    "topics": {},
+                    "last_interaction_at": 0,
+                },
+            )
+            if actor_id == low_id and target_id == high_id:
+                stats["reply_low_to_high"] = int(stats["reply_low_to_high"]) + 1
+            else:
+                stats["reply_high_to_low"] = int(stats["reply_high_to_low"]) + 1
+            stats["last_interaction_at"] = max(int(stats["last_interaction_at"]), int(created_at or 0))
+        ranked_pairs: List[Tuple[Tuple[int, int], Dict[str, object], int]] = []
+        for pair_key, stats in pair_stats.items():
+            reply_total = int(stats["reply_low_to_high"]) + int(stats["reply_high_to_low"])
+            co_presence = int(stats["co_presence"])
+            score = reply_total * 4 + min(co_presence, 8)
+            if score <= 0:
+                continue
+            ranked_pairs.append((pair_key, stats, score))
+        ranked_pairs.sort(key=lambda item: (-item[2], -int(item[1]["last_interaction_at"]), item[0][0], item[0][1]))
+        if not ranked_pairs:
+            return False
+        user_ids: List[int] = []
+        for (low_id, high_id), _stats, _score in ranked_pairs[:limit_pairs]:
+            user_ids.extend([low_id, high_id])
+        labels = self.get_actor_labels(chat_id, user_ids)
+        payload_rows: List[Tuple[int, int, int, int, int, int, int, int, str, str, int, float]] = []
+        for (low_id, high_id), stats, score in ranked_pairs[:limit_pairs]:
+            reply_low_to_high = int(stats["reply_low_to_high"])
+            reply_high_to_low = int(stats["reply_high_to_low"])
+            co_presence = int(stats["co_presence"])
+            humor = int(stats["humor"])
+            rough = int(stats["rough"])
+            support = int(stats["support"])
+            topic_items = sorted(
+                ((str(name), int(count)) for name, count in dict(stats["topics"]).items()),
+                key=lambda item: (-item[1], item[0]),
+            )[:5]
+            topic_markers = ", ".join(f"{name}={count}" for name, count in topic_items)
+            summary_bits: List[str] = []
+            if reply_low_to_high and reply_high_to_low:
+                summary_bits.append("взаимные ответы")
+            elif reply_low_to_high:
+                summary_bits.append(f"{labels.get(low_id, f'user_id={low_id}')} чаще отвечает {labels.get(high_id, f'user_id={high_id}')}")
+            elif reply_high_to_low:
+                summary_bits.append(f"{labels.get(high_id, f'user_id={high_id}')} чаще отвечает {labels.get(low_id, f'user_id={low_id}')}")
+            if co_presence >= 4:
+                summary_bits.append("часто пересекаются в одном фрагменте диалога")
+            if humor >= 2:
+                summary_bits.append("в связке заметна ирония/смех")
+            if rough >= 1:
+                summary_bits.append("бывает грубоватый дружеский тон")
+            if support >= 2:
+                summary_bits.append("заметны поддерживающие реакции")
+            if topic_markers:
+                summary_bits.append(f"общие маркеры: {topic_markers}")
+            summary = truncate_text(". ".join(summary_bits), 380)
+            confidence = min(1.0, round(score / 16.0, 2))
+            payload_rows.append(
+                (
+                    chat_id,
+                    low_id,
+                    high_id,
+                    reply_low_to_high,
+                    reply_high_to_low,
+                    co_presence,
+                    humor,
+                    rough,
+                    support,
+                    topic_markers,
+                    summary,
+                    int(stats["last_interaction_at"]),
+                    confidence,
+                )
+            )
+        with self.db_lock:
+            self.db.execute("DELETE FROM relation_memory WHERE chat_id = ?", (chat_id,))
+            self.db.executemany(
+                """INSERT INTO relation_memory(
+                    chat_id, user_low_id, user_high_id, reply_count_low_to_high, reply_count_high_to_low,
+                    co_presence_count, humor_markers, rough_markers, support_markers, topic_markers,
+                    summary, last_interaction_at, confidence, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))""",
+                payload_rows,
+            )
+            self.db.commit()
+        return True
+
+    def get_relation_memory_context(
+        self,
+        chat_id: int,
+        user_id: Optional[int] = None,
+        reply_to_user_id: Optional[int] = None,
+        query: str = "",
+        limit: int = 4,
+    ) -> str:
+        normalized_targets: List[int] = []
+        for candidate in [user_id, reply_to_user_id]:
+            if candidate is None:
+                continue
+            candidate_int = int(candidate)
+            if candidate_int not in normalized_targets:
+                normalized_targets.append(candidate_int)
+        should_focus_chat = detect_local_chat_query(query)
+        with self.db_lock:
+            existing_count = self.db.execute(
+                "SELECT COUNT(*) FROM relation_memory WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        if int(existing_count[0] or 0) == 0:
+            self.refresh_relation_memory(chat_id)
+        with self.db_lock:
+            if normalized_targets:
+                placeholders = ",".join("?" for _ in normalized_targets)
+                rows = self.db.execute(
+                    f"""SELECT user_low_id, user_high_id, reply_count_low_to_high, reply_count_high_to_low,
+                    co_presence_count, humor_markers, rough_markers, support_markers, topic_markers,
+                    summary, last_interaction_at, confidence
+                    FROM relation_memory
+                    WHERE chat_id = ? AND (user_low_id IN ({placeholders}) OR user_high_id IN ({placeholders}))
+                    ORDER BY (reply_count_low_to_high + reply_count_high_to_low) DESC, co_presence_count DESC, last_interaction_at DESC
+                    LIMIT ?""",
+                    [chat_id, *normalized_targets, *normalized_targets, max(2, limit)],
+                ).fetchall()
+            elif should_focus_chat:
+                rows = self.db.execute(
+                    """SELECT user_low_id, user_high_id, reply_count_low_to_high, reply_count_high_to_low,
+                    co_presence_count, humor_markers, rough_markers, support_markers, topic_markers,
+                    summary, last_interaction_at, confidence
+                    FROM relation_memory
+                    WHERE chat_id = ?
+                    ORDER BY last_interaction_at DESC, (reply_count_low_to_high + reply_count_high_to_low) DESC, co_presence_count DESC
+                    LIMIT ?""",
+                    (chat_id, max(2, limit)),
+                ).fetchall()
+            else:
+                rows = []
+        if not rows:
+            return ""
+        user_ids: List[int] = []
+        for row in rows:
+            user_ids.extend([int(row[0]), int(row[1])])
+        labels = self.get_actor_labels(chat_id, user_ids)
+        lines = ["Relation memory:"]
+        for row in rows[: max(2, limit)]:
+            low_id = int(row[0])
+            high_id = int(row[1])
+            lines.append(
+                f"- {labels.get(low_id, f'user_id={low_id}')} <-> {labels.get(high_id, f'user_id={high_id}')}: "
+                f"replies {int(row[2])}/{int(row[3])}; co_presence={int(row[4])}; "
+                f"confidence={float(row[11]):.2f}"
+            )
+            if row[9]:
+                lines.append(f"  summary: {truncate_text(row[9], 260)}")
+            if row[8]:
+                lines.append(f"  topics: {truncate_text(row[8], 180)}")
+            tone_bits: List[str] = []
+            if int(row[5] or 0) > 0:
+                tone_bits.append(f"humor={int(row[5])}")
+            if int(row[6] or 0) > 0:
+                tone_bits.append(f"rough={int(row[6])}")
+            if int(row[7] or 0) > 0:
+                tone_bits.append(f"support={int(row[7])}")
+            if tone_bits:
+                lines.append(f"  markers: {', '.join(tone_bits)}")
+        return "\n".join(lines)
+
     def get_summary_memory_context(self, chat_id: int, limit: int = 3) -> str:
         with self.db_lock:
             rows = self.db.execute(
@@ -2088,6 +2389,7 @@ class BridgeState:
             total_route_decisions = self.db.execute("SELECT COUNT(*) FROM request_diagnostics").fetchone()[0]
             user_memory_profiles = self.db.execute("SELECT COUNT(*) FROM user_memory_profiles WHERE chat_id = ?", (chat_id,)).fetchone()[0]
             summary_snapshots = self.db.execute("SELECT COUNT(*) FROM summary_snapshots WHERE chat_id = ?", (chat_id,)).fetchone()[0]
+            relation_memory_rows = self.db.execute("SELECT COUNT(*) FROM relation_memory WHERE chat_id = ?", (chat_id,)).fetchone()[0]
         return {
             "events_count": events_count,
             "facts_count": facts_count,
@@ -2096,6 +2398,7 @@ class BridgeState:
             "total_route_decisions": total_route_decisions,
             "user_memory_profiles": user_memory_profiles,
             "summary_snapshots": summary_snapshots,
+            "relation_memory_rows": relation_memory_rows,
         }
 
     def record_request_diagnostic(
@@ -5778,6 +6081,7 @@ class TelegramBridge:
             route_summary=context_bundle.route_summary,
             guardrail_note=context_bundle.guardrail_note,
             user_memory_text=context_bundle.user_memory_text,
+            relation_memory_text=context_bundle.relation_memory_text,
             chat_memory_text=context_bundle.chat_memory_text,
             summary_memory_text=context_bundle.summary_memory_text,
         )
@@ -5868,6 +6172,7 @@ class TelegramBridge:
             database_context=database_context,
             reply_context=reply_context,
             user_memory_text=self.state.get_user_memory_context(chat_id, user_id=user_id, reply_to_user_id=reply_to.get("id")),
+            relation_memory_text=self.state.get_relation_memory_context(chat_id, user_id=user_id, reply_to_user_id=reply_to.get("id"), query=user_text),
             chat_memory_text=self.state.get_chat_memory_context(chat_id, query=user_text),
             summary_memory_text=self.state.get_summary_memory_context(chat_id, limit=3),
             web_context=web_context,
@@ -5892,6 +6197,7 @@ class TelegramBridge:
             database_context=self.state.get_database_context(chat_id, prompt_text) if should_include_database_context(prompt_text) else "",
             reply_context=reply_context,
             user_memory_text=self.state.get_user_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id")),
+            relation_memory_text=self.state.get_relation_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id"), query=prompt_text),
             chat_memory_text=self.state.get_chat_memory_context(chat_id, query=prompt_text),
             summary_memory_text=self.state.get_summary_memory_context(chat_id, limit=3),
         )
@@ -6317,6 +6623,7 @@ class TelegramBridge:
             database_context=context_bundle.database_context,
             reply_context=context_bundle.reply_context,
             user_memory_text=context_bundle.user_memory_text,
+            relation_memory_text=context_bundle.relation_memory_text,
             chat_memory_text=context_bundle.chat_memory_text,
             summary_memory_text=context_bundle.summary_memory_text,
         )
@@ -6364,6 +6671,7 @@ class TelegramBridge:
             database_context=context_bundle.database_context,
             reply_context=context_bundle.reply_context,
             user_memory_text=context_bundle.user_memory_text,
+            relation_memory_text=context_bundle.relation_memory_text,
             chat_memory_text=context_bundle.chat_memory_text,
             summary_memory_text=context_bundle.summary_memory_text,
         )
@@ -7064,6 +7372,7 @@ class TelegramBridge:
         try:
             for chat_id, last_event_id, new_events in self.state.get_chats_due_for_memory_refresh(limit=3):
                 summary_done = self.refresh_ai_chat_summary(chat_id)
+                relations_done = self.state.refresh_relation_memory(chat_id)
                 users_done = self.refresh_ai_user_memory(chat_id)
                 self.state.mark_memory_refresh(
                     chat_id,
@@ -7073,7 +7382,9 @@ class TelegramBridge:
                 )
                 log(
                     f"memory refresh chat={chat_id} new_events={new_events} "
-                    f"summary={'yes' if summary_done else 'no'} users={'yes' if users_done else 'no'}"
+                    f"summary={'yes' if summary_done else 'no'} "
+                    f"relations={'yes' if relations_done else 'no'} "
+                    f"users={'yes' if users_done else 'no'}"
                 )
         except Exception as error:
             log(f"memory refresh failed: {error}")
@@ -9001,6 +9312,7 @@ def build_prompt(
     route_summary: str = "",
     guardrail_note: str = "",
     user_memory_text: str = "",
+    relation_memory_text: str = "",
     chat_memory_text: str = "",
     summary_memory_text: str = "",
 ) -> str:
@@ -9019,6 +9331,7 @@ def build_prompt(
     route_block = f"Route summary:\n{truncate_text(route_summary, 1200)}\n\n" if route_summary else ""
     guardrail_block = f"Self-check and guardrails:\n{truncate_text(guardrail_note, 1600)}\n\n" if guardrail_note else ""
     user_memory_block = f"User memory:\n{truncate_text(user_memory_text, 1800)}\n\n" if user_memory_text else ""
+    relation_memory_block = f"Relation memory:\n{truncate_text(relation_memory_text, 1800)}\n\n" if relation_memory_text else ""
     chat_memory_block = f"Chat memory:\n{truncate_text(chat_memory_text, 1800)}\n\n" if chat_memory_text else ""
     summary_memory_block = f"Summary memory:\n{truncate_text(summary_memory_text, 1800)}\n\n" if summary_memory_text else ""
     identity_block = ""
@@ -9034,6 +9347,7 @@ def build_prompt(
         f"{route_block}"
         f"{guardrail_block}"
         f"{user_memory_block}"
+        f"{relation_memory_block}"
         f"{chat_memory_block}"
         f"{summary_memory_block}"
         f"Mode:\n{mode_prompt}\n\n"

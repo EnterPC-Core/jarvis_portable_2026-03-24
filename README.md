@@ -25,7 +25,7 @@
 
 - Telegram long polling через локальный Python bridge
 - память диалога и служебное состояние в SQLite
-- три слоя памяти: `user memory`, `chat memory`, `summary memory`
+- четыре слоя памяти: `user memory`, `relation memory`, `chat memory`, `summary memory`
 - рейтинги, достижения, топы и апелляции через legacy-базу `jarvis.db`
 - команды модерации, warn/welcome, история, поиск по событиям
 - reply-aware контекст: bot понимает reply на сообщение, медиа и короткий тред вокруг него
@@ -58,6 +58,8 @@
 
 - `user memory`:
   компактные профили участников по чату, которые собираются из реальных сообщений, форматов общения, стиля и частых тем
+- `relation memory`:
+  наблюдаемая память о связях между участниками: reply-направления, частые пересечения, тон связки и повторяющиеся общие маркеры
 - `chat memory`:
   rolling summary чата, remembered facts и краткий срез самых активных участников
 - `summary memory`:
@@ -67,8 +69,9 @@
 
 - периодически выбираются чаты с новой активностью
 - bot обновляет `summary memory` через короткий AI-rollup
+- bot пересобирает `relation memory` из реальных `chat_events`, reply-связей и co-presence паттернов
 - bot дожимает верхние `user memory` профили для самых активных участников
-- user memory теперь может опираться не только на summary, но и на `participant registry` и reply-связи между участниками
+- user memory и локальный chat-grounding теперь могут опираться не только на summary, но и на `participant registry`, `relation memory` и reply-связи между участниками
 
 ### Routing And Contracts
 
@@ -86,7 +89,7 @@
 
 - runtime-запросы вроде `RAM/CPU/disk/uptime` не должны маскироваться под “общий ответ”; им нужен workspace/runtime verification или честное ограничение
 - live-data запросы (`погода`, `новости`, `курс`, `current fact`) должны оставлять явный маркер источника и свежести
-- запросы про `этот чат`, `тут`, `в чате`, `контекст`, `участников` не должны улетать в live/news; им нужен локальный route через chat memory, events и participant registry
+- запросы про `этот чат`, `тут`, `в чате`, `контекст`, `участников` не должны улетать в live/news; им нужен локальный route через chat memory, relation memory, events и participant registry
 - явный вызов `Enterprise` должен удерживать инженерный режим ответа и не сваливаться в общий `Jarvis`-тон
 - bot не должен заявлять о выполненных действиях без route/tool-подтверждения
 

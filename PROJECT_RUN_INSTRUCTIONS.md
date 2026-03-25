@@ -21,12 +21,14 @@
 - `memory_facts` — вручную сохранённые факты через `/remember`
 - `chat_summaries` — rolling summary по чату
 - `user_memory_profiles` — user memory по участникам в рамках конкретного чата
+- `relation_memory` — relation memory по парам участников: reply-направления, co-presence, тональные маркеры, краткая summary связки
 - `summary_snapshots` — summary memory, то есть накопленные snapshot-сводки по ходу жизни чата
 
 Поверх этого в runtime работает фоновый memory-refresh:
 
 - по таймеру выбираются чаты, где накопилась новая пользовательская активность
 - для них обновляется `summary memory` через короткий AI-rollup
+- для них же пересобирается `relation memory` из свежих `chat_events`
 - для самых активных участников обновляется верхний `user memory` слой
 - локальный `participant registry` копит известных участников, статусы админов, join/leave и `member_count`
 
@@ -207,7 +209,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - ответы только по trigger/reply/упоминанию
 - `Enterprise` тоже может работать, если маршрут явно вызван
 - reply на чужое сообщение теперь попадает в prompt как отдельный контекст вместе с коротким thread history
-- вопросы вида `что тут происходит`, `кто в чате`, `изучи этот чат`, `что между ними` теперь должны опираться на локальные `chat_events`, `user memory`, `participant registry` и chat-dynamics слой
+- вопросы вида `что тут происходит`, `кто в чате`, `изучи этот чат`, `что между ними` теперь должны опираться на локальные `chat_events`, `user memory`, `relation memory`, `participant registry` и chat-dynamics слой
 
 ### Progress-статус
 
@@ -243,6 +245,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/routes [N]` — последние route decisions: persona, intent, live/web/db/reply/workspace layers, source и outcome
 - `/memorychat [запрос]` — текущий chat memory слой
 - `/memoryuser [@username|user_id]` — текущий user memory слой по участнику
+- relation memory отдельной команды пока не имеет; он автоматически подтягивается в prompt для локальных chat/participant запросов
 - `/memorysummary` — summary memory snapshots по чату
 - `/restart` — одно сообщение: сначала статус перезапуска, после нового старта это же сообщение обновляется в подтверждение
 
