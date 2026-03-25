@@ -18,6 +18,7 @@ from threading import Lock, Thread
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo
 
 from requests import Response, Session
 from requests.exceptions import RequestException
@@ -1656,7 +1657,7 @@ class TelegramBridge:
             self.state.set_meta("pending_restart_chat_id", "")
             return
         pending_text = self.state.get_meta("pending_restart_text", RESTARTED_TEXT) or RESTARTED_TEXT
-        started_at_text = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        started_at_text = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%Y-%m-%d %H:%M:%S MSK")
         outgoing_text = f"{pending_text}\nВремя запуска: {started_at_text}"
         try:
             self.safe_send_text(chat_id, outgoing_text)
