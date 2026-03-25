@@ -8,7 +8,6 @@
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Enterprise Core bridge
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — supervisor для постоянного процесса
-- [`run_jarvis_stack.sh`](./run_jarvis_stack.sh) — единый запуск supervisor + mobile API
 - [`start_jarvis_on_userland.sh`](./start_jarvis_on_userland.sh) — фоновый запуск в UserLAnd
 - [`start_jarvis_on_termux.sh`](./start_jarvis_on_termux.sh) — фоновый запуск в Termux
 - [`jarvis_memory.db`](./jarvis_memory.db) — память, история, сервисное состояние
@@ -112,21 +111,6 @@ Supervisor:
 - следит за heartbeat
 - перезапускает процесс после падения
 - выставляет `RUNNING_UNDER_SUPERVISOR=1`
-
-## Запуск полного локального стека
-
-Если нужен сразу bot + mobile API:
-
-```bash
-cd /home/userland/projects/bots/jarvis_portable_2026-03-24
-sh run_jarvis_stack.sh
-```
-
-Этот скрипт:
-
-- запускает `run_jarvis_supervisor.sh`
-- запускает `run_jarvis_mobile_api.sh`
-- завершает оба процесса, если один из них упал
 
 ## Фоновый запуск
 

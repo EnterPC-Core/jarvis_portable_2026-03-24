@@ -16,7 +16,6 @@
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной runtime
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — удержание процесса
-- [`run_jarvis_stack.sh`](./run_jarvis_stack.sh) — единый запуск bot + mobile API
 - [`start_jarvis_on_termux.sh`](./start_jarvis_on_termux.sh) — фоновый старт в Termux
 - [`start_jarvis_on_userland.sh`](./start_jarvis_on_userland.sh) — фоновый старт в UserLAnd
 - [`jarvis_memory.db`](./jarvis_memory.db) — текущая память

@@ -94,7 +94,6 @@
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Enterprise Core bridge
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — supervisor, который держит один живой процесс бота
-- [`run_jarvis_stack.sh`](./run_jarvis_stack.sh) — единый запуск supervisor + mobile API
 - [`start_jarvis_on_userland.sh`](./start_jarvis_on_userland.sh) — фоновый запуск под UserLAnd
 - [`start_jarvis_on_termux.sh`](./start_jarvis_on_termux.sh) — фоновый запуск под Termux
 
@@ -107,7 +106,6 @@
 
 ### Дополнительные слои
 
-- [`jarvis_mobile_api.py`](./jarvis_mobile_api.py) — локальный API для мобильного клиента
 - [`src/`](./src) — Worker-часть и старые облачные исходники
 - [`sql/schema.sql`](./sql/schema.sql) — SQL-схема для Worker/D1-части
 
