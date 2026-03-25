@@ -288,6 +288,18 @@ MODE_PROMPTS = {
     ),
 }
 
+JARVIS_ASSISTANT_PERSONA_NOTE = (
+    "Режим Jarvis. Веди себя как сильный личный ассистент в духе технологичного помощника: "
+    "помогай разобраться, исследовать тему, находить варианты, быстро ориентироваться в информации и давать практичный вывод. "
+    "Если в сообщении просят поискать, проверить свежую информацию, изучить тему или найти что-то в интернете, "
+    "используй переданный веб-контекст и опирайся на него."
+)
+
+ENTERPRISE_PERSONA_NOTE = (
+    "Режим Enterprise. Это глобальный усиленный режим Jarvis: действуй жёстче, глубже и системнее. "
+    "Если запрос требует работы по среде, конфигу или коду, переходи к практическому выполнению, а не к роли обычного собеседника."
+)
+
 BASE_SYSTEM_PROMPT = (
     "Ты Jarvis. Ты ведешь диалог как сильный личный ассистент высокого уровня. "
     "Твой стиль: спокойный, уверенный, умный, лаконичный, технологичный. "
@@ -2214,6 +2226,7 @@ class TelegramBridge:
     def handle_text_message(self, chat_id: int, user_id: Optional[int], message: dict, chat_type: str = "private") -> None:
         raw_text = (message.get("text") or "").strip()
         text = normalize_incoming_text(raw_text, self.bot_username)
+        assistant_persona, text = extract_assistant_persona(text)
         log(f"incoming text chat={chat_id} type={chat_type} user={user_id} text={shorten_for_log(raw_text)}")
 
         if (
@@ -2258,7 +2271,7 @@ class TelegramBridge:
         if self.handle_command(chat_id, user_id, text, message):
             return
 
-        if self.config.safe_chat_only and is_dangerous_request(text) and not can_owner_use_workspace_mode(user_id, chat_type):
+        if self.config.safe_chat_only and is_dangerous_request(text) and not can_owner_use_workspace_mode(user_id, chat_type, assistant_persona):
             self.safe_send_text(chat_id, SAFE_MODE_REPLY)
             return
 
@@ -2269,7 +2282,7 @@ class TelegramBridge:
         self.send_chat_action(chat_id, "typing")
         worker = Thread(
             target=self.run_text_task,
-            args=(chat_id, text, user_id, chat_type),
+            args=(chat_id, text, user_id, chat_type, assistant_persona),
             daemon=True,
         )
         worker.start()
@@ -2678,9 +2691,9 @@ class TelegramBridge:
         self.safe_send_text(chat_id, f"Mode: {parsed_mode}")
         return True
 
-    def run_text_task(self, chat_id: int, text: str, user_id: Optional[int] = None, chat_type: str = "private") -> None:
+    def run_text_task(self, chat_id: int, text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "") -> None:
         try:
-            answer = self.ask_codex(chat_id, text, user_id=user_id, chat_type=chat_type)
+            answer = self.ask_codex(chat_id, text, user_id=user_id, chat_type=chat_type, assistant_persona=assistant_persona)
             self.state.append_history(chat_id, "user", text)
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
@@ -3693,11 +3706,23 @@ class TelegramBridge:
             command.extend(["-i", str(image_path)])
         return command
 
-    def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private") -> str:
+    def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "") -> str:
         summary_text = self.state.get_summary(chat_id)
         facts_text = self.state.render_facts(chat_id, query=user_text, limit=10)
         event_context = ""
         database_context = ""
+        persona_note = ""
+        identity_label = "Jarvis"
+        web_context = ""
+        if assistant_persona == "jarvis":
+            persona_note = JARVIS_ASSISTANT_PERSONA_NOTE
+            if should_use_web_research(user_text):
+                web_context = self.build_web_search_context(user_text)
+        elif assistant_persona == "enterprise":
+            persona_note = ENTERPRISE_PERSONA_NOTE
+            identity_label = "Enterprise"
+            if should_use_web_research(user_text):
+                web_context = self.build_web_search_context(user_text)
         if should_include_event_context(user_text):
             event_context = self.state.get_event_context(chat_id, user_text)
         if should_include_database_context(user_text):
@@ -3710,8 +3735,11 @@ class TelegramBridge:
             facts_text=facts_text,
             event_context=event_context,
             database_context=database_context,
+            identity_label=identity_label,
+            persona_note=persona_note,
+            web_context=web_context,
         )
-        if can_owner_use_workspace_mode(user_id, chat_type):
+        if can_owner_use_workspace_mode(user_id, chat_type, assistant_persona):
             owner_prompt = OWNER_WORKSPACE_REQUEST_TEMPLATE.format(base_prompt=prompt)
             return self.run_codex_with_progress(
                 chat_id,
@@ -3721,6 +3749,48 @@ class TelegramBridge:
                 approval_policy="never",
             )
         return self.run_codex(prompt)
+
+    def build_web_search_context(self, query: str, limit: int = 5) -> str:
+        normalized_query = normalize_whitespace(query)
+        if not normalized_query:
+            return ""
+        try:
+            response = self.session.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": normalized_query},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=20,
+            )
+            response.raise_for_status()
+        except RequestException as error:
+            log(f"web search failed query={shorten_for_log(normalized_query)} error={error}")
+            return ""
+
+        pattern = re.compile(
+            r'<a[^>]*class="result__a"[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
+            r'(?:<a[^>]*class="result__snippet"[^>]*>(?P<snippet_a>.*?)</a>|'
+            r'<div[^>]*class="result__snippet"[^>]*>(?P<snippet_div>.*?)</div>)',
+            re.S,
+        )
+        items: List[str] = []
+        for match in pattern.finditer(response.text):
+            title = html.unescape(re.sub(r"<.*?>", " ", match.group("title") or ""))
+            snippet_raw = match.group("snippet_a") or match.group("snippet_div") or ""
+            snippet = html.unescape(re.sub(r"<.*?>", " ", snippet_raw))
+            url = html.unescape(match.group("url") or "")
+            title = normalize_whitespace(title)
+            snippet = normalize_whitespace(snippet)
+            url = normalize_whitespace(url)
+            if not title or not url:
+                continue
+            items.append(
+                f"- {truncate_text(title, 180)}\n  URL: {truncate_text(url, 300)}\n  Фрагмент: {truncate_text(snippet or 'Фрагмент не найден.', 260)}"
+            )
+            if len(items) >= limit:
+                break
+        if not items:
+            return ""
+        return f"Свежий веб-контекст по запросу «{truncate_text(normalized_query, 180)}»:\n" + "\n".join(items)
 
     def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str) -> str:
         prompt_text = caption or DEFAULT_IMAGE_PROMPT
@@ -4502,6 +4572,29 @@ def parse_search_command(text: str) -> Optional[str]:
     return parts[1].strip()
 
 
+def extract_assistant_persona(text: str) -> Tuple[str, str]:
+    cleaned = normalize_whitespace(text)
+    if not cleaned:
+        return "", ""
+    lowered = cleaned.lower()
+    prefixes = [
+        ("jarvis", "jarvis"),
+        ("джарвис", "jarvis"),
+        ("джервис", "jarvis"),
+        ("enterprise", "enterprise"),
+        ("энтерапрайз", "enterprise"),
+        ("энтерпрайз", "enterprise"),
+    ]
+    for prefix, persona in prefixes:
+        if lowered == prefix:
+            return persona, ""
+        if lowered.startswith(f"{prefix} "):
+            return persona, cleaned[len(prefix):].strip()
+        if lowered.startswith(f"{prefix}:") or lowered.startswith(f"{prefix},") or lowered.startswith(f"{prefix}-"):
+            return persona, cleaned[len(prefix) + 1:].strip()
+    return "", cleaned
+
+
 def parse_who_said_command(text: str) -> Optional[str]:
     if not text.startswith("/who_said"):
         return None
@@ -4641,8 +4734,8 @@ def can_use_upgrade_write(allowed_user_ids: Set[int], user_id: Optional[int]) ->
     return is_allowed_user(allowed_user_ids, user_id)
 
 
-def can_owner_use_workspace_mode(user_id: Optional[int], chat_type: str) -> bool:
-    return user_id == OWNER_USER_ID and chat_type == "private"
+def can_owner_use_workspace_mode(user_id: Optional[int], chat_type: str, assistant_persona: str = "") -> bool:
+    return user_id == OWNER_USER_ID and chat_type == "private" and assistant_persona == "enterprise"
 
 
 def is_allowed_user(allowed_user_ids: Set[int], user_id: Optional[int]) -> bool:
@@ -5309,6 +5402,9 @@ def build_prompt(
     facts_text: str = "",
     event_context: str = "",
     database_context: str = "",
+    identity_label: str = "Jarvis",
+    persona_note: str = "",
+    web_context: str = "",
 ) -> str:
     mode_prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS[DEFAULT_MODE_NAME])
     history_block = format_history(history, user_text)
@@ -5319,16 +5415,20 @@ def build_prompt(
     facts_block = f"Relevant facts:\n{truncate_text(facts_text, 1800)}\n\n" if facts_text else ""
     events_block = f"Relevant archived events:\n{truncate_text(event_context, 2600)}\n\n" if event_context and event_context != "История событий пуста." else ""
     database_block = f"Relevant database context:\n{truncate_text(database_context, 3200)}\n\n" if database_context else ""
+    persona_block = f"Persona note:\n{persona_note}\n\n" if persona_note else ""
+    web_block = f"Web context:\n{truncate_text(web_context, 3200)}\n\n" if web_context else ""
     return (
         f"System:\n{BASE_SYSTEM_PROMPT}\n\n"
         "Identity:\n"
-        "Ты отвечаешь от лица Jarvis. Не называй себя ботом и не описывай внутреннюю реализацию.\n\n"
+        f"Ты отвечаешь от лица {identity_label}. Не называй себя ботом и не описывай внутреннюю реализацию.\n\n"
+        f"{persona_block}"
         f"Mode:\n{mode_prompt}\n\n"
         f"Intent:\n{intent}\n\n"
         f"Response shape:\n{response_shape}\n\n"
         f"{attachment_block}"
         f"{summary_block}"
         f"{facts_block}"
+        f"{web_block}"
         f"{database_block}"
         f"Relevant chat context:\n{history_block}\n\n"
         f"{events_block}"
@@ -5463,6 +5563,29 @@ def response_shape_hint(intent: str) -> str:
     if intent == "short_question":
         return "Ответь коротко и прямо, без вводных фраз."
     return "Держи ответ компактным, точным и естественным."
+
+
+def should_use_web_research(text: str) -> bool:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return False
+    triggers = (
+        "найди",
+        "поищи",
+        "поиск",
+        "в интернете",
+        "интернет",
+        "изучи",
+        "исследуй",
+        "что пишут",
+        "свеж",
+        "новост",
+        "latest",
+        "today",
+        "сегодня",
+        "проверь",
+    )
+    return any(trigger in lowered for trigger in triggers)
 
 
 def postprocess_answer(text: str, latency_ms: Optional[int] = None) -> str:
