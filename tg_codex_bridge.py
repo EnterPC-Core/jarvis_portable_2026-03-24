@@ -215,6 +215,22 @@ MODERATION_USAGE_TEXT = "Используй reply или: /ban @username [при
 WARN_USAGE_TEXT = "Используй reply или: /warn @username [причина], /dwarn @username [причина], /swarn @username [причина], /warns @username, /warnreasons @username, /rmwarn @username, /resetwarn @username, /setwarnlimit 3, /setwarnmode mute|tmute 1h|ban|tban 1d|kick, /warntime 7d, /modlog"
 WELCOME_USAGE_TEXT = "Используй: /welcome on|off|status, /setwelcome <текст>, /resetwelcome. Переменные: {first_name} {last_name} {full_name} {username} {chat_title}"
 WELCOME_DEFAULT_TEMPLATE = "Добро пожаловать, {full_name}!"
+RUNTIME_QUERY_MARKERS = (
+    "ram", "mem", "memory", "swap", "uptime", "cpu", "disk", "storage", "load average",
+    "ресурс", "ресурсы", "памят", "оператив", "озу", "своп", "аптайм", "загрузка", "диск",
+    "место", "процесс", "процессы", "среде", "среда", "характеристик", "характеристики",
+    "topproc", "resources", "disk usage", "system status",
+)
+FRESHNESS_MARKERS = (
+    "сейчас", "сегодня", "на момент запроса", "актуаль", "обнов", "live",
+    "today", "latest", "current",
+)
+ROUTER_POLICY_LESSONS = (
+    "explicit-persona-priority",
+    "runtime-needs-workspace-verification",
+    "live-data-needs-fresh-source",
+    "do-not-claim-actions-without-tool-proof",
+)
 ENTERPRISE_PROGRESS_STEPS = [
     ("Влетаю в задачу", "Дмитрий, пристегнись: сейчас полезу в кишки проекта."),
     ("Шерстю код и логи", "Ищу, где оно хрустнуло, а где просто притворяется живым."),
@@ -7872,6 +7888,7 @@ def should_include_database_context(user_text: str) -> bool:
         "участник", "пользоват", "user_id", "@", "рейтинг", "топ", "уров", "xp",
         "ачив", "достиж", "апел", "appeal", "бан", "мут", "warn", "варн", "санкц",
         "модер", "наруш", "профил", "статист", "лог", "факт", "remember", "recall",
+        "feedback", "фидбек", "отзыв", "роут", "маршрут", "router", "policy", "self-check", "контекст",
     )
     return any(marker in lowered for marker in markers)
 
@@ -8498,8 +8515,17 @@ def should_include_event_context(user_text: str) -> bool:
     return any(marker in text for marker in markers)
 
 
+def detect_runtime_query(user_text: str) -> bool:
+    lowered = normalize_whitespace(user_text).lower()
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in RUNTIME_QUERY_MARKERS)
+
+
 def detect_intent(user_text: str) -> str:
     text = user_text.lower()
+    if detect_runtime_query(text):
+        return "runtime_status"
     if any(token in text for token in ["error", "ошибка", "traceback", "exception", "не работает", "сломалось"]):
         return "error_analysis"
     if any(token in text for token in ["код", "python", "js", "ts", "bash", "sql", "script", "скрипт", "функц", "класс"]):
@@ -8512,6 +8538,8 @@ def detect_intent(user_text: str) -> str:
 
 
 def response_shape_hint(intent: str) -> str:
+    if intent == "runtime_status":
+        return "Сначала конкретный статус или метрика. Если точной проверки не было, прямо скажи это. Не имитируй выполненную диагностику."
     if intent == "error_analysis":
         return "Сначала вероятная причина. Затем конкретное решение. Без длинных вступлений."
     if intent == "coding":
@@ -8526,6 +8554,8 @@ def response_shape_hint(intent: str) -> str:
 def should_use_web_research(text: str) -> bool:
     lowered = normalize_whitespace(text).lower()
     if not lowered:
+        return False
+    if detect_runtime_query(lowered):
         return False
     triggers = (
         "найди",
@@ -8570,8 +8600,10 @@ def analyze_request_route(
 ) -> RouteDecision:
     normalized_text = normalize_whitespace(user_text)
     intent = detect_intent(normalized_text)
-    route_kind = "codex_workspace" if can_owner_use_workspace_mode(user_id, chat_type, assistant_persona) else "codex_chat"
-    source_label = "codex"
+    runtime_query = detect_runtime_query(normalized_text)
+    workspace_allowed = can_owner_use_workspace_mode(user_id, chat_type, assistant_persona)
+    route_kind = "codex_workspace" if workspace_allowed else "codex_chat"
+    source_label = "codex-runtime" if runtime_query and workspace_allowed else "codex"
     for candidate_kind, (candidate_source, detector) in ROUTE_KIND_LIVE_MAP.items():
         detected_value = detector(normalized_text)
         if detected_value:
@@ -8579,20 +8611,26 @@ def analyze_request_route(
             source_label = candidate_source
             break
     use_live = route_kind.startswith("live_")
-    use_web = should_use_web_research(normalized_text) and not use_live
-    use_events = should_include_event_context(normalized_text)
-    use_database = should_include_database_context(normalized_text)
+    use_web = should_use_web_research(normalized_text) and not use_live and not runtime_query
+    use_events = should_include_event_context(normalized_text) and not runtime_query
+    use_database = should_include_database_context(normalized_text) and not runtime_query
     use_reply = bool(reply_context.strip())
     use_workspace = route_kind == "codex_workspace"
     guardrails: List[str] = []
+    guardrails.extend(ROUTER_POLICY_LESSONS)
     if use_live:
         guardrails.append("freshness")
+        guardrails.append("cite-source")
     if use_web:
         guardrails.append("external-web")
     if use_events or use_database or use_reply:
         guardrails.append("ground-in-chat-state")
-    if intent in {"code", "analysis"}:
+    if intent in {"coding", "error_analysis"}:
         guardrails.append("be-explicit-about-assumptions")
+    if runtime_query:
+        guardrails.append("runtime-verification")
+    if assistant_persona == "enterprise":
+        guardrails.append("respect-enterprise-mode")
     if is_dangerous_request(normalized_text):
         guardrails.append("no-system-actions")
     decision = RouteDecision(
@@ -8634,6 +8672,8 @@ def build_route_summary_text(route_info: RouteDecision) -> str:
         active_layers.append("web-context")
     if route_info.use_live:
         active_layers.append(f"live:{route_info.route_kind.replace('live_', '')}")
+    if "runtime-verification" in route_info.guardrails:
+        active_layers.append("runtime-check")
     if not active_layers:
         active_layers.append("history+summary+facts")
     return (
@@ -8641,7 +8681,8 @@ def build_route_summary_text(route_info: RouteDecision) -> str:
         f"chat_type={route_info.chat_type}; "
         f"route={route_info.route_kind}; "
         f"workspace_mode={'yes' if route_info.use_workspace else 'no'}; "
-        f"active_layers={', '.join(active_layers)}"
+        f"active_layers={', '.join(active_layers)}; "
+        f"guardrails={', '.join(route_info.guardrails[:8])}"
     )
 
 
@@ -8650,11 +8691,18 @@ def build_guardrail_note(route_info: RouteDecision) -> str:
         "- перед финальным ответом проверь, что ответ опирается только на доступные контекстные слои и источники",
         "- не заявляй о выполненных действиях, если действие не было реально выполнено маршрутом или инструментом",
     ]
+    if "respect-enterprise-mode" in route_info.guardrails:
+        lines.append("- если пользователь зовёт Enterprise, держи инженерный режим ответа и не сваливайся в общий бытовой тон Jarvis")
     if route_info.use_live or route_info.use_web:
         lines.append("- если данные могли устареть или не подтверждаются уверенно, прямо скажи это")
         lines.append("- не выдавай косвенные сниппеты за окончательно подтверждённый факт")
+    if "cite-source" in route_info.guardrails:
+        lines.append("- для live-data запросов обязательно оставляй явный маркер источника и свежести ответа")
     if route_info.use_events or route_info.use_database or route_info.use_reply:
         lines.append("- не придумывай детали вне chat history, memory facts, reply context, archived events и database context")
+    if "runtime-verification" in route_info.guardrails:
+        lines.append("- для RAM, CPU, диска, uptime и других метрик среды опирайся только на реальную runtime-проверку; если её не было, честно скажи, что состояние не подтверждено")
+        lines.append("- не подменяй проверку среды общими рассуждениями, устаревшими примерами или советом выполнить команду так, будто ответ уже подтверждён")
     if "no-system-actions" in route_info.guardrails:
         lines.append("- не выполняй системные действия и не описывай их как выполненные")
     lines.append("- если уверенности мало, честно обозначь ограничение и предложи следующий безопасный шаг")
@@ -8672,6 +8720,11 @@ def classify_answer_outcome(answer: str) -> str:
     return "ok"
 
 
+def has_freshness_marker(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in FRESHNESS_MARKERS)
+
+
 def apply_self_check_contract(answer: str, route_decision: RouteDecision) -> SelfCheckReport:
     cleaned = normalize_whitespace(answer)
     flags: List[str] = []
@@ -8681,11 +8734,18 @@ def apply_self_check_contract(answer: str, route_decision: RouteDecision) -> Sel
 
     if route_decision.use_live or route_decision.use_web:
         lowered = cleaned.lower()
+        if "источник:" not in lowered and "http" not in lowered:
+            final_answer = final_answer + f"\n\nИсточник: {route_decision.source_label}."
+            flags.append("added-source-marker")
+            lowered = final_answer.lower()
+        if route_decision.use_live and not has_freshness_marker(lowered):
+            final_answer = final_answer + "\nАктуальность: live-проверка на момент запроса."
+            flags.append("added-freshness-marker")
+            lowered = final_answer.lower()
         if route_decision.route_kind == "live_current_fact" and "подтверждение:" not in lowered and "не подтверж" not in lowered:
-            final_answer = cleaned + "\n\nПроверка: это вывод по найденным внешним источникам, а не абсолютная гарантия факта."
+            final_answer = final_answer + "\n\nПроверка: это вывод по найденным внешним источникам, а не абсолютная гарантия факта."
             flags.append("added-current-fact-disclaimer")
-        if route_decision.route_kind == "live_news" and "источник" not in lowered and "http" not in lowered:
-            flags.append("news-without-source-marker")
+            lowered = final_answer.lower()
 
     if "no-system-actions" in route_decision.guardrails:
         lowered = final_answer.lower()
@@ -8693,6 +8753,12 @@ def apply_self_check_contract(answer: str, route_decision: RouteDecision) -> Sel
         if any(marker in lowered for marker in action_markers):
             final_answer += "\n\nПроверка: этот маршрут не подтверждает выполнение системных действий."
             flags.append("added-no-action-disclaimer")
+
+    if "runtime-verification" in route_decision.guardrails and not route_decision.use_workspace:
+        lowered = final_answer.lower()
+        if all(marker not in lowered for marker in ("не подтверж", "не удалось", "ограничен", "недоступ", "нельзя проверить")):
+            final_answer += "\n\nПроверка: этот маршрут не подтверждает реальные метрики среды. Для точных RAM/CPU/disk/uptime данных нужен runtime/workspace маршрут."
+            flags.append("added-runtime-verification-disclaimer")
 
     return SelfCheckReport(
         outcome=classify_answer_outcome(final_answer),

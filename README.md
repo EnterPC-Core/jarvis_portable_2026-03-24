@@ -80,6 +80,13 @@
 
 Эти слои не заменяют `chat_history`, а дополняют его и подаются в prompt отдельно.
 
+Поверх контрактов зафиксированы lessons из реального feedback и operational logs:
+
+- runtime-запросы вроде `RAM/CPU/disk/uptime` не должны маскироваться под “общий ответ”; им нужен workspace/runtime verification или честное ограничение
+- live-data запросы (`погода`, `новости`, `курс`, `current fact`) должны оставлять явный маркер источника и свежести
+- явный вызов `Enterprise` должен удерживать инженерный режим ответа и не сваливаться в общий `Jarvis`-тон
+- bot не должен заявлять о выполненных действиях без route/tool-подтверждения
+
 ### Локальный runtime
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Codex bridge
