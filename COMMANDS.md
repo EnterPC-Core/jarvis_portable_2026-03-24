@@ -44,6 +44,9 @@
 - `/digest [YYYY-MM-DD]`
 - `/export [chat|today|@username|user_id]`
 - `/portrait [@username]`
+- `/memorychat [запрос]`
+- `/memoryuser [@username|user_id]`
+- `/memorysummary`
 
 ## Owner / Runtime
 

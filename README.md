@@ -117,6 +117,7 @@
 - у владельца есть `/ownerreport` для быстрой сводки по runtime и ошибкам
 - ежедневный digest и еженедельный owner-report могут отправляться автоматически владельцу по UTC-расписанию
 - есть отдельные owner-команды `/gitstatus`, `/gitlast`, `/errors`, `/events`, `/routes`, `/chatdigest`
+- есть отдельные owner memory-inspection команды `/memorychat`, `/memoryuser`, `/memorysummary`
 
 ## Где смотреть дальше
 

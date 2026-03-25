@@ -246,6 +246,9 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/errors [N]` — только реальные ошибки и поломки из `tg_codex_bridge.log`
 - `/events [restart|access|system|all] [N]` — служебные события с фильтром по категории
 - `/routes [N]` — последние route decisions: persona, intent, live/web/db/reply/workspace layers, source и outcome
+- `/memorychat [запрос]` — текущий chat memory слой
+- `/memoryuser [@username|user_id]` — текущий user memory слой по участнику
+- `/memorysummary` — summary memory snapshots по чату
 - `/restart` — одно сообщение: сначала статус перезапуска, после нового старта это же сообщение обновляется в подтверждение
 
 ## Owner Panel

@@ -206,6 +206,9 @@ DIGEST_USAGE_TEXT = "Используй: /digest [YYYY-MM-DD]"
 CHAT_DIGEST_USAGE_TEXT = "Используй: /chatdigest <chat_id> [YYYY-MM-DD]"
 OWNER_REPORT_USAGE_TEXT = "Используй: /ownerreport"
 ROUTES_USAGE_TEXT = "Используй: /routes [количество]"
+MEMORY_CHAT_USAGE_TEXT = "Используй: /memorychat [запрос]"
+MEMORY_USER_USAGE_TEXT = "Используй: /memoryuser @username, /memoryuser user_id или reply на сообщение участника"
+MEMORY_SUMMARY_USAGE_TEXT = "Используй: /memorysummary"
 EXPORT_USAGE_TEXT = "Используй: /export chat, /export today, /export @username или /export user_id"
 APPEAL_USAGE_TEXT = "Используй: /appeal <текст апелляции>"
 MODERATION_USAGE_TEXT = "Используй reply или: /ban @username [причина], /mute @username [причина], /tban 1d @username [причина], /tmute 1h @username [причина]"
@@ -296,6 +299,9 @@ COMMANDS_LIST_TEXT = (
     "/errors [количество]\n"
     "/events [restart|access|system|all] [количество]\n"
     "/routes [количество]\n"
+    "/memorychat [запрос]\n"
+    "/memoryuser [@username|user_id]\n"
+    "/memorysummary\n"
     "/sdls [/sdcard/путь]\n"
     "/sdsend /sdcard/путь/к/файлу\n"
     "/sdsave /sdcard/папка/или/файл\n"
@@ -2556,6 +2562,9 @@ class TelegramBridge:
                 "• /remember <факт> — записать факт в память чата\n"
                 "• /recall [запрос] — поднять релевантные факты и события\n"
                 "• /search <запрос> — поиск по chat_events\n"
+                "• /memorychat [запрос] — показать текущий chat memory слой\n"
+                "• /memoryuser @username|user_id — показать user memory по участнику\n"
+                "• /memorysummary — показать summary memory snapshots\n"
                 "• /who_said <запрос> — кто чаще писал фразу/слово\n"
                 "• /history @username — timeline участника\n"
                 "• /daily [YYYY-MM-DD] — активность за день в текущем чате\n"
@@ -3732,6 +3741,14 @@ class TelegramBridge:
         routes_value = parse_routes_command(text)
         if routes_value is not None:
             return self.handle_routes_command(chat_id, user_id, routes_value)
+        memory_chat_value = parse_memory_chat_command(text)
+        if memory_chat_value is not None:
+            return self.handle_memory_chat_command(chat_id, user_id, memory_chat_value)
+        memory_user_value = parse_memory_user_command(text)
+        if memory_user_value is not None:
+            return self.handle_memory_user_command(chat_id, user_id, memory_user_value, message)
+        if parse_memory_summary_command(text):
+            return self.handle_memory_summary_command(chat_id, user_id)
         chat_digest_value = parse_chat_digest_command(text)
         if chat_digest_value is not None:
             return self.handle_chat_digest_command(chat_id, user_id, chat_digest_value)
@@ -4859,6 +4876,54 @@ class TelegramBridge:
                 self.safe_send_text(chat_id, ROUTES_USAGE_TEXT)
                 return True
         self.safe_send_text(chat_id, render_route_diagnostics_rows(self.state.get_recent_request_diagnostics(limit=limit)))
+        return True
+
+    def handle_memory_chat_command(self, chat_id: int, user_id: Optional[int], query: str) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        self.safe_send_text(chat_id, self.state.get_chat_memory_context(chat_id, query=query or "") or "Chat memory пока пуста.")
+        return True
+
+    def handle_memory_user_command(self, chat_id: int, user_id: Optional[int], raw_target: str, message: Optional[dict]) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        target_user_id: Optional[int] = None
+        cleaned = (raw_target or "").strip()
+        reply_to = (message or {}).get("reply_to_message") or {}
+        reply_from = reply_to.get("from") or {}
+        if cleaned:
+            if cleaned.startswith("@"):
+                resolved_id, _label = self.state.resolve_chat_user(chat_id, cleaned)
+                target_user_id = resolved_id
+            else:
+                try:
+                    target_user_id = int(cleaned)
+                except ValueError:
+                    resolved_id, _label = self.state.resolve_chat_user(chat_id, cleaned)
+                    target_user_id = resolved_id
+        elif reply_to and not reply_from.get("is_bot"):
+            target_user_id = reply_from.get("id")
+        else:
+            self.safe_send_text(chat_id, MEMORY_USER_USAGE_TEXT)
+            return True
+        if target_user_id is None:
+            self.safe_send_text(chat_id, "Не удалось определить участника в памяти текущего чата.")
+            return True
+        context = self.state.get_user_memory_context(chat_id, user_id=target_user_id)
+        if not context:
+            self.safe_send_text(chat_id, "User memory по этому участнику пока пуста.")
+            return True
+        self.safe_send_text(chat_id, context)
+        return True
+
+    def handle_memory_summary_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        context = self.state.get_summary_memory_context(chat_id, limit=6)
+        self.safe_send_text(chat_id, context or "Summary memory пока пуста.")
         return True
 
     def handle_chat_digest_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
@@ -6815,6 +6880,28 @@ def parse_routes_command(text: str) -> Optional[str]:
     if len(parts) == 1:
         return ""
     return parts[1].strip()
+
+
+def parse_memory_chat_command(text: str) -> Optional[str]:
+    if not text.startswith("/memorychat"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def parse_memory_user_command(text: str) -> Optional[str]:
+    if not text.startswith("/memoryuser"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def parse_memory_summary_command(text: str) -> bool:
+    return text.strip() == "/memorysummary"
 
 
 def parse_chat_digest_command(text: str) -> Optional[str]:

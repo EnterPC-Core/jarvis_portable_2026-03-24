@@ -99,6 +99,9 @@
 - `/chatdigest <chat_id> [YYYY-MM-DD]`
 - `/export [chat|today|@username|user_id]`
 - `/portrait [@username]`
+- `/memorychat [запрос]`
+- `/memoryuser [@username|user_id]`
+- `/memorysummary`
 - `/reset`
 
 ### Что важно
@@ -106,6 +109,9 @@
 - `/digest` работает для текущего чата
 - `/chatdigest` работает для конкретного `chat_id` из owner-лички
 - `/history` и `/portrait` можно вызывать через reply на сообщение участника
+- `/memorychat` показывает текущий chat memory слой
+- `/memoryuser` показывает user memory по участнику текущего чата
+- `/memorysummary` показывает summary memory snapshots
 
 ## Раздел Файлы И Медиа
 
