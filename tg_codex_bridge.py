@@ -1,10 +1,10 @@
 import fcntl
 import html
 import json
+import mimetypes
 import os
 import re
 import sqlite3
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,7 +15,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Set, Tuple
@@ -181,10 +181,9 @@ MAX_SEEN_MESSAGES = 500
 MAX_HISTORY_ITEM_CHARS = 900
 MAX_CODEX_OUTPUT_CHARS = 12000
 CODEX_PROGRESS_UPDATE_SECONDS = 6
-DEFAULT_STT_BACKEND = "whisper"
-DEFAULT_WHISPER_MODEL = "tiny"
-DEFAULT_WHISPER_ACCURACY_MODEL = "base"
-DEFAULT_FFMPEG_BINARY = "ffmpeg"
+DEFAULT_STT_BACKEND = "disabled"
+DEFAULT_AUDIO_TRANSCRIBE_MODEL = ""
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_STT_LANGUAGE = "ru"
 DEFAULT_SAFE_CHAT_ONLY = True
 DEFAULT_BOT_USERNAME = ""
@@ -211,9 +210,6 @@ ACCESS_DENIED_TEXT = (
 CHAT_PARTICIPANTS_REFRESH_SECONDS = 6 * 60 * 60
 
 TERMUX_LIB_DIR = "/data/data/com.termux/files/usr/lib"
-WHISPER_CPP_DIR = "/data/data/com.termux/files/home/jarvis-ai-worker/local/whisper.cpp"
-WHISPER_CPP_BIN = f"{WHISPER_CPP_DIR}/build/bin/whisper-cli"
-WHISPER_CPP_MODELS_DIR = f"{WHISPER_CPP_DIR}/models"
 DEFAULT_IMAGE_PROMPT = (
     "Проанализируй изображение и кратко объясни, что на нём. "
     "Если это скриншот ошибки, сначала назови вероятную причину, затем предложи решение."
@@ -222,7 +218,7 @@ SAFE_MODE_REPLY = (
     "Сейчас режим ограничен анализом и общением. "
     "Я могу объяснить, проверить идею, разобрать код, фото, текст или ошибку, но не выполнять действия в системе."
 )
-UNSUPPORTED_FILE_REPLY = "Пока поддерживаются текст, фото и голосовые сообщения."
+UNSUPPORTED_FILE_REPLY = "Пока поддерживаются текст и фото."
 
 UPGRADE_REQUEST_TEMPLATE = """Ты работаешь внутри проекта Telegram ↔ Enterprise Core bridge (Python, Termux).
 
@@ -823,10 +819,10 @@ class BotConfig:
         self.trigger_name = (os.getenv("TRIGGER_NAME", DEFAULT_TRIGGER_NAME).strip() or DEFAULT_TRIGGER_NAME).lower()
         self.tmp_dir = prepare_tmp_dir(os.getenv("TMP_DIR", "").strip())
         self.stt_backend = (os.getenv("STT_BACKEND", DEFAULT_STT_BACKEND).strip() or DEFAULT_STT_BACKEND).lower()
-        self.whisper_model = os.getenv("WHISPER_MODEL", DEFAULT_WHISPER_MODEL).strip() or DEFAULT_WHISPER_MODEL
-        self.whisper_accuracy_model = os.getenv("WHISPER_ACCURACY_MODEL", DEFAULT_WHISPER_ACCURACY_MODEL).strip() or DEFAULT_WHISPER_ACCURACY_MODEL
-        self.ffmpeg_binary = os.getenv("FFMPEG_BINARY", DEFAULT_FFMPEG_BINARY).strip() or DEFAULT_FFMPEG_BINARY
+        self.audio_transcribe_model = os.getenv("AUDIO_TRANSCRIBE_MODEL", DEFAULT_AUDIO_TRANSCRIBE_MODEL).strip() or DEFAULT_AUDIO_TRANSCRIBE_MODEL
         self.stt_language = (os.getenv("STT_LANGUAGE", DEFAULT_STT_LANGUAGE).strip() or DEFAULT_STT_LANGUAGE).lower()
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        self.openai_base_url = (os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL).rstrip("/")
         self.db_path = os.getenv("DB_PATH", DEFAULT_DB_PATH).strip() or DEFAULT_DB_PATH
         self.lock_path = os.getenv("LOCK_PATH", DEFAULT_LOCK_PATH).strip() or DEFAULT_LOCK_PATH
         self.heartbeat_path = os.getenv("HEARTBEAT_PATH", DEFAULT_HEARTBEAT_PATH).strip() or DEFAULT_HEARTBEAT_PATH
@@ -3495,9 +3491,6 @@ class TelegramBridge:
         self.next_memory_refresh_check_ts = 0.0
         self.memory_refresh_lock = Lock()
         self.memory_refresh_in_progress = False
-        self.stt_models: Dict[str, object] = {}
-        self.stt_failed_models: Set[str] = set()
-        self.stt_lock = Lock()
         self.heartbeat_path = Path(config.heartbeat_path)
 
     def beat_heartbeat(self) -> None:
@@ -3509,7 +3502,6 @@ class TelegramBridge:
     def run(self) -> None:
         self.beat_heartbeat()
         self.load_bot_identity()
-        self.prewarm_stt_model()
         self.refresh_world_state_registry("startup")
         self.recompute_drive_scores()
         self.state.record_autobiographical_event(
@@ -4467,7 +4459,6 @@ class TelegramBridge:
                 self.handle_photo_message(chat_id, user_id, message)
                 return
             if message.get("voice"):
-                self.handle_voice_message(chat_id, user_id, message)
                 return
             if message.get("animation"):
                 return
@@ -4931,135 +4922,43 @@ class TelegramBridge:
         worker.start()
 
     def handle_voice_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
-        voice = message.get("voice") or {}
-        file_id = voice.get("file_id")
-        duration = voice.get("duration")
-        message_id = message.get("message_id")
-        chat = message.get("chat") or {}
-        chat_type = (chat.get("type") or "private").lower()
-        from_user = message.get("from") or {}
-        owner_label = build_user_autofix_label(from_user)
-        log(f"incoming voice chat={chat_id} user={user_id} duration={duration}")
+        try:
+            voice = message.get("voice") or {}
+            file_id = voice.get("file_id")
+            duration = voice.get("duration")
+            chat = message.get("chat") or {}
+            chat_type = (chat.get("type") or "private").lower()
+            log(f"incoming voice chat={chat_id} user={user_id} duration={duration}")
 
-        if not file_id:
-            self.safe_send_text(chat_id, "Не удалось получить голосовое сообщение.")
-            return
-
-        status_message_id = self.send_status_message(chat_id, "Распознаю голосовое...")
-
-        with self.temp_workspace() as workspace:
-            file_info = self.get_file_info(file_id)
-            file_path = file_info.get("file_path")
-            if not file_path:
-                self.safe_send_text(chat_id, "Telegram не вернул путь к голосовому сообщению.")
+            if not file_id:
+                self.safe_send_text(chat_id, "Не удалось получить голосовое сообщение.")
                 return
 
-            local_path = workspace / build_download_name(file_path, fallback_name="voice.ogg")
-            self.download_telegram_file(file_path, local_path)
-            transcript = self.transcribe_voice_local(local_path, workspace, chat_id=chat_id)
-            should_force_accuracy_retry = chat_type in {"group", "supergroup"} and user_id == OWNER_USER_ID
-            if should_force_accuracy_retry or self.should_retry_voice_for_accuracy(transcript, chat_type, user_id):
-                improved_transcript = self.retry_voice_trigger_transcription(local_path, workspace, chat_id)
-                if improved_transcript and improved_transcript != transcript:
-                    log(f"voice transcript improved chat={chat_id} old={shorten_for_log(transcript)} new={shorten_for_log(improved_transcript)}")
-                    transcript = improved_transcript
-
-        if not transcript:
-            self.safe_send_text(chat_id, build_voice_transcription_help(self.config))
-            return
-
-        log(f"voice transcript chat={chat_id} text={shorten_for_log(transcript)}")
-        transcript_message = f"Голосовое от {owner_label}\n\nРасшифровка:\n{transcript}" if chat_type in {"group", "supergroup"} else f"Расшифровка голосового:\n{transcript}"
-        self.state.update_event_text(
-            chat_id,
-            message_id,
-            f"[Голосовое сообщение: {transcript}]",
-            message_type="voice",
-            has_media=1,
-            file_kind="voice",
-        )
-        if status_message_id is not None:
-            if not self.edit_status_message(chat_id, status_message_id, transcript_message):
-                self.safe_send_text(chat_id, transcript_message)
-        else:
-            self.safe_send_text(chat_id, transcript_message)
-
-        if chat_type in {"group", "supergroup"}:
-            should_handle_as_bot = (
-                should_process_group_message(
+            if chat_type in {"group", "supergroup"}:
+                if not should_process_group_message(
                     message,
-                    transcript,
+                    "",
                     self.bot_username,
                     self.config.trigger_name,
                     bot_user_id=self.bot_user_id,
                     allow_owner_reply=False,
-                )
-                or contains_voice_trigger_name(transcript, self.config.trigger_name, self.bot_username)
-            )
-            if not should_handle_as_bot:
-                log(f"voice trigger not found chat={chat_id} text={shorten_for_log(transcript)}")
+                ) and user_id != OWNER_USER_ID:
+                    log(f"voice trigger not found chat={chat_id} file_id={file_id}")
+                    return
+
+            if not self.state.try_start_chat_task(chat_id):
+                self.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
                 return
 
-        if self.config.safe_chat_only and is_dangerous_request(transcript):
-            self.state.append_history(chat_id, "user", f"[Голосовое сообщение: {transcript}]")
-            self.safe_send_text(chat_id, SAFE_MODE_REPLY)
-            return
-
-        self.send_chat_action(chat_id, "typing")
-        answer = self.ask_codex(chat_id, transcript)
-        self.state.append_history(chat_id, "user", f"[Голосовое сообщение: {transcript}]")
-        self.state.append_history(chat_id, "assistant", answer)
-        if chat_type in {"group", "supergroup"}:
-            self.safe_send_text(chat_id, f"Ответ Jarvis:\n{answer}")
-        else:
-            self.safe_send_text(chat_id, answer)
-
-    def prewarm_stt_model(self) -> None:
-        if self.config.stt_backend != "whisper":
-            return
-        thread = Thread(target=self._prewarm_stt_worker, daemon=True)
-        thread.start()
-
-    def _prewarm_stt_worker(self) -> None:
-        try:
-            model = self.get_stt_model(self.config.whisper_model)
-            if model is not None:
-                log(f"stt model prewarmed model={self.config.whisper_model}")
-        except Exception as error:
-            log(f"stt prewarm failed: {shorten_for_log(str(error))}")
-
-    def retry_voice_trigger_transcription(self, source_path: Path, workspace: Path, chat_id: int) -> str:
-        try:
-            log(f"retrying voice transcription for trigger file={source_path.name}")
-            transcript = self.transcribe_with_stt_model(
-                source_path,
-                workspace,
-                model_name=self.config.whisper_accuracy_model,
-                initial_prompt=self.build_voice_initial_prompt(chat_id, strict_trigger=True),
-                beam_size=2,
-                best_of=2,
+            worker = Thread(
+                target=self.run_voice_task,
+                args=(chat_id, user_id, file_id, message),
+                daemon=True,
             )
-            if transcript:
-                log(f"voice trigger retry finished file={source_path.name}")
-            return transcript
-        except Exception as error:
-            log(f"voice trigger retry failed: {shorten_for_log(str(error))}")
-            return ""
-
-    def should_retry_voice_for_accuracy(self, transcript: str, chat_type: str, user_id: Optional[int]) -> bool:
-        if not transcript:
-            return True
-        if chat_type in {"group", "supergroup"} and user_id == OWNER_USER_ID:
-            if contains_voice_trigger_name(transcript, self.config.trigger_name, self.bot_username):
-                return False
-            return True
-        weird_markers = ("колосса", "джаря", "джависты", "голосого", "и менее болта")
-        lowered = transcript.lower()
-        if any(marker in lowered for marker in weird_markers):
-            return True
-        if len(transcript.split()) <= 2:
-            return True
-        return False
+            worker.start()
+        except Exception:
+            log(f"voice handler failed chat={chat_id} traceback={traceback.format_exc()}")
+            self.safe_send_text(chat_id, "Ошибка при обработке голосового. Детали записаны в лог.")
 
     def build_voice_initial_prompt(self, chat_id: int, strict_trigger: bool = False) -> str:
         terms = self.state.get_voice_prompt_terms(chat_id, limit=28)
@@ -5076,34 +4975,6 @@ class TelegramBridge:
             "Сохраняй имена, названия и термины без искажений. "
             f"Возможные слова и имена: {joined_terms}."
         )
-
-    def get_stt_model(self, model_name: Optional[str] = None):
-        resolved_model_name = (model_name or self.config.whisper_model).strip() or self.config.whisper_model
-        if resolved_model_name in self.stt_models:
-            return self.stt_models.get(resolved_model_name)
-        if resolved_model_name in self.stt_failed_models:
-            return None
-        with self.stt_lock:
-            if resolved_model_name in self.stt_models:
-                return self.stt_models.get(resolved_model_name)
-            try:
-                from faster_whisper import WhisperModel
-            except Exception as error:
-                self.stt_failed_models.add(resolved_model_name)
-                log(f"faster-whisper import failed: {shorten_for_log(str(error))}")
-                return None
-            try:
-                started_at = time.perf_counter()
-                model = WhisperModel(resolved_model_name, device="cpu", compute_type="int8")
-                self.stt_models[resolved_model_name] = model
-                self.stt_failed_models.discard(resolved_model_name)
-                latency_ms = max(1, int((time.perf_counter() - started_at) * 1000))
-                log(f"stt model loaded model={resolved_model_name} latency_ms={latency_ms}")
-                return model
-            except Exception as error:
-                self.stt_failed_models.add(resolved_model_name)
-                log(f"stt model init failed: {shorten_for_log(str(error))}")
-                return None
 
     def handle_command(self, chat_id: int, user_id: Optional[int], text: str, message: Optional[dict] = None) -> bool:
         has_access = has_chat_access(self.state.authorized_user_ids, user_id)
@@ -5367,8 +5238,16 @@ class TelegramBridge:
         finally:
             self.state.finish_chat_task(chat_id)
 
-    def run_voice_task(self, chat_id: int, file_id: str) -> None:
+    def run_voice_task(self, chat_id: int, user_id: Optional[int], file_id: str, message: Optional[dict] = None) -> None:
         try:
+            message = message or {}
+            message_id = message.get("message_id")
+            chat = message.get("chat") or {}
+            chat_type = (chat.get("type") or "private").lower()
+            from_user = message.get("from") or {}
+            owner_label = build_user_autofix_label(from_user)
+            status_message_id = self.send_status_message(chat_id, "Распознаю голосовое...")
+
             with self.temp_workspace() as workspace:
                 file_info = self.get_file_info(file_id)
                 file_path = file_info.get("file_path")
@@ -5378,15 +5257,43 @@ class TelegramBridge:
 
                 local_path = workspace / build_download_name(file_path, fallback_name="voice.ogg")
                 self.download_telegram_file(file_path, local_path)
-                transcript = self.transcribe_voice_local(local_path, workspace)
+                transcript = self.transcribe_voice_with_ai(local_path, chat_id=chat_id)
 
             if not transcript:
-                self.safe_send_text(chat_id, "Не удалось распознать голосовое. Проверь, что установлен whisper и ffmpeg.")
+                self.safe_send_text(chat_id, build_voice_transcription_help(self.config))
                 return
 
             log(f"voice transcript chat={chat_id} text={shorten_for_log(transcript)}")
-            self.safe_send_text(chat_id, f"Распознано: {truncate_text(transcript, 180)}")
-            self.send_chat_action(chat_id, "typing")
+            transcript_message = f"Голосовое от {owner_label}\n\nРасшифровка:\n{transcript}" if chat_type in {"group", "supergroup"} else f"Расшифровка голосового:\n{transcript}"
+            self.state.update_event_text(
+                chat_id,
+                message_id,
+                f"[Голосовое сообщение: {transcript}]",
+                message_type="voice",
+                has_media=1,
+                file_kind="voice",
+            )
+            if status_message_id is not None:
+                if not self.edit_status_message(chat_id, status_message_id, transcript_message):
+                    self.safe_send_text(chat_id, transcript_message)
+            else:
+                self.safe_send_text(chat_id, transcript_message)
+
+            if chat_type in {"group", "supergroup"}:
+                should_handle_as_bot = (
+                    should_process_group_message(
+                        message,
+                        transcript,
+                        self.bot_username,
+                        self.config.trigger_name,
+                        bot_user_id=self.bot_user_id,
+                        allow_owner_reply=False,
+                    )
+                    or contains_voice_trigger_name(transcript, self.config.trigger_name, self.bot_username)
+                )
+                if not should_handle_as_bot:
+                    log(f"voice trigger not found chat={chat_id} text={shorten_for_log(transcript)}")
+                    return
 
             if self.config.safe_chat_only and is_dangerous_request(transcript):
                 self.state.append_history(chat_id, "user", f"[Голосовое сообщение: {transcript}]")
@@ -6882,9 +6789,11 @@ class TelegramBridge:
         effective_approval_policy = approval_policy
         if effective_approval_policy is None and self.config.safe_chat_only:
             effective_approval_policy = "never"
-        if effective_approval_policy:
-            command.extend(["-a", effective_approval_policy])
         command.append("exec")
+        if effective_approval_policy == "never" and sandbox_mode == "danger-full-access":
+            command.append("--dangerously-bypass-approvals-and-sandbox")
+        elif effective_approval_policy in {"never", "on-request"} and sandbox_mode == "workspace-write":
+            command.append("--full-auto")
         if json_output:
             command.append("--json")
         command.append("--skip-git-repo-check")
@@ -8023,133 +7932,79 @@ class TelegramBridge:
         return extract_codex_text_response(stdout)
 
     def cleanup_voice_transcript_with_ai(self, chat_id: int, transcript: str) -> str:
-        return normalize_whitespace(transcript)
-
-    def transcribe_with_stt_model(
-        self,
-        source_path: Path,
-        workspace: Path,
-        model_name: str = "",
-        initial_prompt: str = "",
-        beam_size: int = 1,
-        best_of: int = 1,
-    ) -> str:
-        converted_path = self.convert_audio_if_needed(source_path, workspace)
-        resolved_model_name = (model_name or self.config.whisper_model).strip() or self.config.whisper_model
-        model = self.get_stt_model(resolved_model_name)
-        if model is None:
-            raise RuntimeError("faster-whisper model unavailable")
-        with self.stt_lock:
-            segments, _info = model.transcribe(
-                str(converted_path),
-                language=self.config.stt_language,
-                vad_filter=False,
-                beam_size=beam_size,
-                best_of=best_of,
-                condition_on_previous_text=False,
-                temperature=0.0,
-                initial_prompt=initial_prompt or None,
+        cleaned = normalize_whitespace(transcript)
+        if not should_attempt_voice_ai_cleanup(cleaned):
+            return cleaned
+        context_terms = ", ".join(self.state.get_voice_prompt_terms(chat_id, limit=28))
+        prompt = build_voice_cleanup_prompt(cleaned, context_terms=context_terms)
+        fixed = extract_codex_text_response(
+            self.run_codex(
+                prompt,
+                sandbox_mode="read-only",
+                approval_policy="never",
+                postprocess=False,
             )
-            return normalize_whitespace(" ".join(segment.text for segment in segments).strip())
+        )
+        fixed = normalize_whitespace(fixed)
+        if not fixed or fixed == cleaned:
+            return cleaned
+        if is_term_only_voice_cleanup(cleaned, fixed, context_terms) or is_safe_voice_cleanup(cleaned, fixed):
+            return fixed
+        return cleaned
 
-    def transcribe_voice_local(self, source_path: Path, workspace: Path, chat_id: int = 0) -> str:
-        if self.config.stt_backend != "whisper":
+    def transcribe_voice_with_ai(self, source_path: Path, chat_id: int = 0) -> str:
+        if self.config.stt_backend not in {"openai", "ai"}:
             log(f"unsupported STT backend: {self.config.stt_backend}")
             return ""
-
-        faster_whisper_error = ""
+        if not self.config.openai_api_key:
+            log("voice transcription unavailable: OPENAI_API_KEY is missing")
+            return ""
+        endpoint = f"{self.config.openai_base_url}/audio/transcriptions"
+        upload_name = source_path.name
+        suffix = source_path.suffix.lower()
+        if suffix == ".oga":
+            upload_name = f"{source_path.stem}.ogg"
+        mime_type = mimetypes.guess_type(upload_name)[0] or "application/octet-stream"
+        if suffix in {".oga", ".ogg"}:
+            mime_type = "audio/ogg"
+        data = {
+            "model": self.config.audio_transcribe_model,
+            "language": self.config.stt_language,
+            "prompt": self.build_voice_initial_prompt(chat_id, strict_trigger=False),
+            "temperature": "0",
+        }
         try:
-            log(f"starting faster-whisper transcription model={self.config.whisper_model} file=voice")
-            transcript = self.transcribe_with_stt_model(
-                source_path,
-                workspace,
-                model_name=self.config.whisper_model,
-                initial_prompt=self.build_voice_initial_prompt(chat_id, strict_trigger=False),
-                beam_size=1,
-                best_of=1,
-            )
-            if transcript:
-                log("faster-whisper transcription finished file=voice")
-                return transcript
-        except Exception as error:
-            faster_whisper_error = str(error)
-            log(f"faster-whisper error: {shorten_for_log(faster_whisper_error)}")
-
-        converted_path = self.convert_audio_if_needed(source_path, workspace)
-        whisper_command = build_whisper_command(converted_path, workspace, self.config.whisper_model, self.config.stt_language)
-        if whisper_command is None:
-            log("whisper backend unavailable")
+            with HeartbeatGuard(self):
+                with source_path.open("rb") as audio_handle:
+                    response = self.session.post(
+                        endpoint,
+                        headers={"Authorization": f"Bearer {self.config.openai_api_key}"},
+                        data=data,
+                        files={"file": (upload_name, audio_handle, mime_type)},
+                        timeout=(30, max(self.config.codex_timeout, 300)),
+                    )
+        except RequestException as error:
+            log(f"voice transcription request failed: {shorten_for_log(str(error))}")
             return ""
-
+        if not response.ok:
+            details = normalize_whitespace(response.text or response.reason or "")
+            log(f"voice transcription http_error status={response.status_code} details={shorten_for_log(details)}")
+            return ""
+        transcript = ""
         try:
-            result = subprocess.run(
-                whisper_command,
-                capture_output=True,
-                text=True,
-                timeout=max(self.config.codex_timeout, 300),
-                env=build_subprocess_env(),
-            )
-        except subprocess.TimeoutExpired:
-            log("voice transcription timeout")
+            payload = response.json()
+        except ValueError:
+            transcript = normalize_whitespace(response.text or "")
+        else:
+            if isinstance(payload, dict):
+                transcript = normalize_whitespace(str(payload.get("text") or ""))
+        if not transcript:
+            log("voice transcription returned empty text")
             return ""
-        except OSError as error:
-            log(f"failed to start whisper: {error}")
-            return ""
-
-        if result.returncode != 0:
-            stderr = normalize_whitespace(result.stderr or result.stdout or "")
-            log(f"whisper error: {shorten_for_log(stderr)}")
-            return ""
-
-        transcript_path = workspace / f"{converted_path.stem}.txt"
-        if not transcript_path.exists():
-            alternative = next(workspace.glob("*.txt"), None)
-            transcript_path = alternative or transcript_path
-
-        if transcript_path.exists():
-            return normalize_whitespace(transcript_path.read_text(encoding="utf-8", errors="ignore"))
-
-        stdout_text = normalize_whitespace(result.stdout or "")
-        if stdout_text:
-            return stdout_text
-
-        log("whisper transcript file not found")
-        return ""
-
-    def convert_audio_if_needed(self, source_path: Path, workspace: Path) -> Path:
-        ffmpeg_path = resolve_ffmpeg_binary(self.config.ffmpeg_binary)
-        if not ffmpeg_path or shutil.which(ffmpeg_path) is None and not Path(ffmpeg_path).exists():
-            return source_path
-
-        target_path = workspace / "voice.wav"
-        try:
-            result = subprocess.run(
-                [
-                    ffmpeg_path,
-                    "-y",
-                    "-i",
-                    str(source_path),
-                    "-ar",
-                    "16000",
-                    "-ac",
-                    "1",
-                    str(target_path),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                env=build_subprocess_env(),
-            )
-        except (subprocess.TimeoutExpired, OSError) as error:
-            log(f"ffmpeg conversion failed: {error}")
-            return source_path
-
-        if result.returncode != 0 or not target_path.exists():
-            stderr = normalize_whitespace(result.stderr or result.stdout or "")
-            log(f"ffmpeg conversion error: {shorten_for_log(stderr)}")
-            cleanup_temp_file(target_path)
-            return source_path
-        return target_path
+        improved = self.cleanup_voice_transcript_with_ai(chat_id, transcript)
+        if improved != transcript:
+            log(f"voice transcript improved chat={chat_id} old={shorten_for_log(transcript)} new={shorten_for_log(improved)}")
+        return improved
 
     def send_chat_action(self, chat_id: int, action: str) -> None:
         try:
@@ -8773,6 +8628,31 @@ class TemporaryWorkspace:
                 cleanup_temp_file(item)
         if self.temp_dir is not None:
             self.temp_dir.cleanup()
+
+
+class HeartbeatGuard:
+    def __init__(self, bridge: "TelegramBridge", interval_seconds: int = 10) -> None:
+        self.bridge = bridge
+        self.interval_seconds = max(3, interval_seconds)
+        self._stop = Event()
+        self._thread: Optional[Thread] = None
+
+    def __enter__(self):
+        def worker() -> None:
+            while not self._stop.wait(self.interval_seconds):
+                try:
+                    self.bridge.beat_heartbeat()
+                except Exception as error:
+                    log(f"heartbeat guard failed: {error}")
+
+        self._thread = Thread(target=worker, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
 
 
 def should_include_code_backup_file(path: Path) -> bool:
@@ -9507,6 +9387,23 @@ def build_voice_cleanup_prompt(text: str, context_terms: str = "") -> str:
         "Если не уверен, верни исходный текст без изменений. Верни только итоговую исправленную расшифровку без комментариев.\n"
         f"{terms_block}\n"
         f"Сырая расшифровка:\n{text}"
+    )
+
+
+def build_voice_transcription_prompt(source_path: Path, language: str, initial_prompt: str) -> str:
+    hint_block = f"\nКонтекст для распознавания: {initial_prompt}\n" if initial_prompt else "\n"
+    return (
+        "Ты работаешь внутри Telegram ↔ Jarvis bridge.\n"
+        "Нужно расшифровать голосовое сообщение через текущий codex/Jarvis поток, без локального whisper, ffmpeg или других локальных STT-движков.\n"
+        "Исходный файл голосового сообщения лежит в рабочей среде по пути:\n"
+        f"{source_path}\n"
+        f"Ожидаемый язык: {language}.\n"
+        f"{hint_block}"
+        "Задача:\n"
+        "1. Прочитай доступный аудиофайл по указанному пути.\n"
+        "2. Если можешь извлечь речь через доступные возможности codex, верни только точную расшифровку без пояснений.\n"
+        "3. Не добавляй префиксы, кавычки, markdown, служебные комментарии и не пересказывай смысл.\n"
+        "4. Если распознавание недоступно или файл нельзя обработать, верни пустую строку.\n"
     )
 
 
@@ -10265,91 +10162,21 @@ def build_download_name(file_path: str, fallback_name: str) -> str:
     return _build_download_name(file_path, fallback_name)
 
 
-def build_whisper_command(audio_path: Path, output_dir: Path, model_name: str, language: str) -> Optional[List[str]]:
-    if shutil.which("whisper"):
-        return [
-            "whisper",
-            str(audio_path),
-            "--model",
-            model_name,
-            "--output_format",
-            "txt",
-            "--output_dir",
-            str(output_dir),
-            "--fp16",
-            "False",
-            "--language",
-            language,
-        ]
-    try:
-        import whisper  # type: ignore  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        return [
-            sys.executable,
-            "-m",
-            "whisper",
-            str(audio_path),
-            "--model",
-            model_name,
-            "--output_format",
-            "txt",
-            "--output_dir",
-            str(output_dir),
-            "--fp16",
-            "False",
-            "--language",
-            language,
-        ]
-
-    whisper_cpp_bin = Path(WHISPER_CPP_BIN)
-    model_path = Path(WHISPER_CPP_MODELS_DIR) / f"ggml-{model_name}.bin"
-    if whisper_cpp_bin.exists() and model_path.exists():
-        output_prefix = output_dir / audio_path.stem
-        return [
-            str(whisper_cpp_bin),
-            "-m",
-            str(model_path),
-            "-f",
-            str(audio_path),
-            "-of",
-            str(output_prefix),
-            "-otxt",
-            "-nt",
-            "-l",
-            language,
-        ]
-    return None
-
-
-def resolve_ffmpeg_binary(preferred_binary: str) -> str:
-    system_path = shutil.which(preferred_binary)
-    if system_path:
-        return system_path
-    try:
-        import imageio_ffmpeg  # type: ignore
-
-        bundled = imageio_ffmpeg.get_ffmpeg_exe()
-        if bundled:
-            return bundled
-    except Exception:
-        pass
-    return preferred_binary
-
-
 def build_voice_transcription_help(config: BotConfig) -> str:
     return _build_voice_transcription_help(
-        ffmpeg_binary=config.ffmpeg_binary,
         tmp_dir=config.tmp_dir,
-        whisper_model=config.whisper_model,
-        whisper_cpp_bin_path=WHISPER_CPP_BIN,
-        whisper_cpp_models_dir=WHISPER_CPP_MODELS_DIR,
+        stt_backend=config.stt_backend,
+        audio_transcribe_model=config.audio_transcribe_model,
+        openai_api_key_present=bool(config.openai_api_key),
     )
 
 
 def build_subprocess_env() -> dict:
     env = os.environ.copy()
+    if (env.get("STT_BACKEND", "").strip().lower() or "disabled") == "disabled":
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("OPENAI_BASE_URL", None)
+        env.pop("AUDIO_TRANSCRIBE_MODEL", None)
     current = env.get("LD_LIBRARY_PATH", "")
     if TERMUX_LIB_DIR not in current.split(":"):
         env["LD_LIBRARY_PATH"] = f"{TERMUX_LIB_DIR}:{current}" if current else TERMUX_LIB_DIR

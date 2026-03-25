@@ -1,5 +1,4 @@
 import os
-import shutil
 from pathlib import Path
 from typing import Dict, List
 
@@ -195,68 +194,32 @@ def build_help_panel_markup(section: str) -> dict:
 
 def build_voice_transcription_help(
     *,
-    ffmpeg_binary: str,
     tmp_dir: Path,
-    whisper_model: str,
-    whisper_cpp_bin_path: str,
-    whisper_cpp_models_dir: str,
+    stt_backend: str,
+    audio_transcribe_model: str,
+    openai_api_key_present: bool,
 ) -> str:
     issues: List[str] = []
 
-    ffmpeg_path = shutil.which(ffmpeg_binary)
-    bundled_ffmpeg_path = ""
-    if ffmpeg_path is None:
-        try:
-            import imageio_ffmpeg  # type: ignore
-
-            bundled_ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-        except Exception:
-            bundled_ffmpeg_path = ""
-    if ffmpeg_path is None:
-        if bundled_ffmpeg_path:
-            ffmpeg_path = bundled_ffmpeg_path
-        else:
-            issues.append(f"ffmpeg не найден в PATH: {ffmpeg_binary}")
-
-    whisper_cli_path = shutil.which("whisper")
-    python_whisper_available = False
-    try:
-        import whisper  # type: ignore  # noqa: F401
-    except ImportError:
-        python_whisper_available = False
-    else:
-        python_whisper_available = True
-
-    faster_whisper_available = False
-    try:
-        import faster_whisper  # type: ignore  # noqa: F401
-    except ImportError:
-        faster_whisper_available = False
-    else:
-        faster_whisper_available = True
-
-    whisper_cpp_bin = Path(whisper_cpp_bin_path)
-    whisper_cpp_model = Path(whisper_cpp_models_dir) / f"ggml-{whisper_model}.bin"
-    whisper_cpp_ready = whisper_cpp_bin.exists() and whisper_cpp_model.exists()
-
-    if whisper_cli_path is None and not python_whisper_available and not faster_whisper_available and not whisper_cpp_ready:
-        issues.append(
-            "не найден ни один backend whisper: CLI `whisper`, Python-модуль `whisper`, Python-модуль "
-            f"`faster_whisper` или `{whisper_cpp_bin}` с моделью `{whisper_cpp_model.name}`"
-        )
-    elif whisper_cpp_bin.exists() and not whisper_cpp_model.exists():
-        issues.append(f"для whisper.cpp отсутствует модель `{whisper_cpp_model.name}`")
+    if stt_backend not in {"openai", "ai"}:
+        issues.append(f"неподдерживаемый STT backend: {stt_backend}")
+    if not audio_transcribe_model:
+        issues.append("не задан AUDIO_TRANSCRIBE_MODEL")
+    if not openai_api_key_present:
+        issues.append("не задан OPENAI_API_KEY для AI-распознавания голосовых сообщений")
 
     if tmp_dir is not None:
         if not tmp_dir.exists():
             issues.append(f"TMP_DIR недоступен: {tmp_dir}")
+        elif not tmp_dir.is_dir():
+            issues.append(f"TMP_DIR не является директорией: {tmp_dir}")
         elif not os.access(tmp_dir, os.W_OK):
             issues.append(f"нет прав на запись в TMP_DIR: {tmp_dir}")
 
     if not issues:
         return (
             "Не удалось распознать голосовое. Дополнительные Android/Telegram-права для этого не нужны. "
-            "Проблема, вероятно, в формате аудио или в локальном окружении whisper. "
+            "Проблема, вероятно, в формате аудио, сети или в speech-to-text backend. "
             "Проверь лог `tg_codex_bridge.py`."
         )
 

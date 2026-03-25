@@ -42,19 +42,25 @@ def truncate_text(text: str, limit: int) -> str:
 def build_subprocess_env() -> dict:
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    if (env.get("STT_BACKEND", "").strip().lower() or "disabled") == "disabled":
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("OPENAI_BASE_URL", None)
+        env.pop("AUDIO_TRANSCRIBE_MODEL", None)
     return env
 
 
 def build_command(payload: dict) -> list:
     command = ["codex"]
     approval_policy = payload.get("approval_policy")
-    if approval_policy:
-        command.extend(["-a", approval_policy])
     command.append("exec")
+    sandbox_mode = payload.get("sandbox_mode")
+    if approval_policy == "never" and sandbox_mode == "danger-full-access":
+        command.append("--dangerously-bypass-approvals-and-sandbox")
+    elif approval_policy in {"never", "on-request"} and sandbox_mode == "workspace-write":
+        command.append("--full-auto")
     if payload.get("json_output"):
         command.append("--json")
     command.append("--skip-git-repo-check")
-    sandbox_mode = payload.get("sandbox_mode")
     if sandbox_mode:
         command.extend(["--sandbox", sandbox_mode])
     image_path = payload.get("image_path")

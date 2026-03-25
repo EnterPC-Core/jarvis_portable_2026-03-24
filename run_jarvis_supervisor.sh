@@ -4,8 +4,11 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
 if [ -f "$SCRIPT_DIR/.env" ]; then
+  unset OPENAI_API_KEY OPENAI_BASE_URL AUDIO_TRANSCRIBE_MODEL STT_BACKEND
+  set -a
   # shellcheck disable=SC1091
   . "$SCRIPT_DIR/.env"
+  set +a
 fi
 
 NVM_NODE_BIN="/home/userland/.nvm/versions/node/v18.20.8/bin"
@@ -23,15 +26,7 @@ LOCK_PATH="${LOCK_PATH:-$SCRIPT_DIR/tg_codex_bridge.lock}"
 LOG_PATH="$SCRIPT_DIR/tg_codex_bridge.log"
 while true; do
   rm -f "$HEARTBEAT_PATH"
-  BOT_TOKEN="$BOT_TOKEN" \
-  DB_PATH="$DB_PATH" \
-  LOCK_PATH="$LOCK_PATH" \
-  HEARTBEAT_PATH="$HEARTBEAT_PATH" \
-  HEARTBEAT_TIMEOUT_SECONDS="$HEARTBEAT_TIMEOUT_SECONDS" \
-  LEGACY_JARVIS_DB_PATH="$LEGACY_JARVIS_DB_PATH" \
-  RUNNING_UNDER_SUPERVISOR=1 \
-  PYTHONUNBUFFERED=1 \
-  python3 tg_codex_bridge.py >> "$LOG_PATH" 2>&1 &
+  RUNNING_UNDER_SUPERVISOR=1 PYTHONUNBUFFERED=1 python3 tg_codex_bridge.py >> "$LOG_PATH" 2>&1 &
   BRIDGE_PID=$!
   while kill -0 "$BRIDGE_PID" 2>/dev/null; do
     if [ -f "$HEARTBEAT_PATH" ]; then
