@@ -4117,6 +4117,9 @@ class TelegramBridge:
         stock_symbol = detect_stock_symbol(user_text)
         if stock_symbol:
             return self.fetch_stock_price_answer(stock_symbol)
+        current_fact_query = detect_current_fact_query(user_text)
+        if current_fact_query:
+            return self.fetch_current_fact_answer(current_fact_query)
         news_query = detect_news_query(user_text)
         if news_query:
             return self.fetch_news_answer(news_query)
@@ -4311,6 +4314,50 @@ class TelegramBridge:
             lines.append(line)
         if len(lines) == 1:
             return f"По запросу «{query}» новости получить не удалось."
+        return "\n".join(lines)
+
+    def fetch_current_fact_answer(self, query: str, limit: int = 3) -> str:
+        normalized_query = normalize_whitespace(query)
+        if not normalized_query:
+            return ""
+        try:
+            response = self.session.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": normalized_query},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=20,
+            )
+            response.raise_for_status()
+        except RequestException as error:
+            log(f"current fact lookup failed query={shorten_for_log(normalized_query)} error={error}")
+            return "Не удалось проверить актуальный факт по внешним источникам."
+        pattern = re.compile(
+            r'<a[^>]*class="result__a"[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
+            r'(?:<a[^>]*class="result__snippet"[^>]*>(?P<snippet_a>.*?)</a>|'
+            r'<div[^>]*class="result__snippet"[^>]*>(?P<snippet_div>.*?)</div>)',
+            re.S,
+        )
+        items: List[Tuple[str, str, str]] = []
+        for match in pattern.finditer(response.text):
+            title = normalize_whitespace(html.unescape(re.sub(r"<.*?>", " ", match.group("title") or "")))
+            snippet_raw = match.group("snippet_a") or match.group("snippet_div") or ""
+            snippet = normalize_whitespace(html.unescape(re.sub(r"<.*?>", " ", snippet_raw)))
+            url = normalize_whitespace(html.unescape(match.group("url") or ""))
+            if not title or not url:
+                continue
+            items.append((title, snippet, url))
+            if len(items) >= limit:
+                break
+        if not items:
+            return f"По запросу «{normalized_query}» не нашёл надёжных внешних результатов."
+        lines = [f"По актуальным найденным источникам для запроса «{normalized_query}»:"] 
+        for title, snippet, url in items:
+            line = f"• {truncate_text(title, 180)}"
+            if snippet:
+                line += f"\n  {truncate_text(snippet, 240)}"
+            line += f"\n  {truncate_text(url, 280)}"
+            lines.append(line)
+        lines.append("Если хочешь, могу после этого ещё собрать короткий вывод по найденным источникам.")
         return "\n".join(lines)
 
     def build_web_search_context(self, query: str, limit: int = 5) -> str:
@@ -5505,6 +5552,35 @@ def detect_news_query(text: str) -> str:
         query = query.replace(token, " ")
     normalized = normalize_location_query(query)
     return normalized or normalize_whitespace(cleaned)
+
+
+def detect_current_fact_query(text: str) -> str:
+    cleaned = normalize_whitespace(text)
+    lowered = cleaned.lower()
+    if not lowered:
+        return ""
+    markers = (
+        "кто сейчас",
+        "кто президент",
+        "кто премьер",
+        "кто мэр",
+        "кто губернатор",
+        "кто ceo",
+        "кто cfo",
+        "кто owner",
+        "кто владелец",
+        "кто гендир",
+        "кто генеральный директор",
+        "who is the",
+        "who is",
+        "current ceo",
+        "current president",
+        "кто сейчас глава",
+        "кто сейчас руководит",
+    )
+    if not any(marker in lowered for marker in markers):
+        return ""
+    return cleaned
 
 
 def build_progress_bar(phase_index: int, elapsed_seconds: int, width: int = 10) -> str:
