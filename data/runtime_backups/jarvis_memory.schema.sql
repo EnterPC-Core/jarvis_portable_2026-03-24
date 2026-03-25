@@ -6,6 +6,10 @@ CREATE INDEX idx_appeals_status_created_at ON appeals(status, created_at DESC);
 
 CREATE INDEX idx_appeals_user_created_at ON appeals(user_id, created_at DESC);
 
+CREATE INDEX idx_autobiographical_memory_chat_id_id ON autobiographical_memory(chat_id, id DESC);
+
+CREATE INDEX idx_autobiographical_memory_open_state ON autobiographical_memory(open_state, importance DESC, updated_at DESC);
+
 CREATE INDEX idx_chat_events_chat_id_id ON chat_events(chat_id, id);
 
 CREATE INDEX idx_chat_history_chat_id_id ON chat_history(chat_id, id);
@@ -20,6 +24,8 @@ CREATE INDEX idx_moderation_actions_chat_user ON moderation_actions(chat_id, use
 
 CREATE INDEX idx_moderation_journal_user_created_at ON moderation_journal(user_id, created_at DESC);
 
+CREATE INDEX idx_reflections_chat_id_id ON reflections(chat_id, id DESC);
+
 CREATE INDEX idx_relation_memory_chat_id_updated ON relation_memory(chat_id, updated_at DESC, last_interaction_at DESC);
 
 CREATE INDEX idx_request_diagnostics_chat_id_id ON request_diagnostics(chat_id, id);
@@ -33,6 +39,8 @@ CREATE INDEX idx_summary_snapshots_chat_id_id ON summary_snapshots(chat_id, id);
 CREATE INDEX idx_user_memory_profiles_chat_id_user_id ON user_memory_profiles(chat_id, user_id);
 
 CREATE INDEX idx_warnings_chat_user ON warnings(chat_id, user_id, id);
+
+CREATE INDEX idx_world_state_registry_category ON world_state_registry(category, updated_at DESC);
 
 CREATE TABLE achievement_catalog (
                 code TEXT PRIMARY KEY,
@@ -80,6 +88,24 @@ CREATE TABLE appeals (
                 cooldown_until INTEGER NOT NULL DEFAULT 0
             , updated_at INTEGER NOT NULL DEFAULT 0, closed_at INTEGER, decision_type TEXT NOT NULL DEFAULT 'manual', source_action TEXT NOT NULL DEFAULT '', review_comment TEXT NOT NULL DEFAULT '', snapshot_json TEXT NOT NULL DEFAULT '{}');
 
+CREATE TABLE autobiographical_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT NOT NULL DEFAULT '',
+                    event_type TEXT NOT NULL DEFAULT '',
+                    chat_id INTEGER,
+                    user_id INTEGER,
+                    route_kind TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    details TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    importance INTEGER NOT NULL DEFAULT 0,
+                    open_state TEXT NOT NULL DEFAULT 'closed',
+                    tags TEXT NOT NULL DEFAULT '',
+                    observed_json TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
 CREATE TABLE bot_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 CREATE TABLE chat_events (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER, role TEXT NOT NULL, message_type TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), message_id INTEGER, username TEXT, first_name TEXT, last_name TEXT, chat_type TEXT, reply_to_message_id INTEGER, reply_to_user_id INTEGER, reply_to_username TEXT, forward_origin TEXT, has_media INTEGER, file_kind TEXT, is_edited INTEGER);
@@ -123,6 +149,13 @@ CREATE TABLE chat_runtime_cache (
                 );
 
 CREATE TABLE chat_summaries (chat_id INTEGER PRIMARY KEY, summary TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')));
+
+CREATE TABLE drive_scores (
+                    drive_name TEXT PRIMARY KEY,
+                    score REAL NOT NULL DEFAULT 0,
+                    reason TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
 
 CREATE TABLE memory_facts (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, created_by_user_id INTEGER, fact TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')));
 
@@ -193,6 +226,21 @@ CREATE TABLE progression_profiles (
                 updated_at INTEGER NOT NULL DEFAULT 0
             );
 
+CREATE TABLE reflections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER,
+                    user_id INTEGER,
+                    route_kind TEXT NOT NULL DEFAULT '',
+                    task_summary TEXT NOT NULL DEFAULT '',
+                    observed_outcome TEXT NOT NULL DEFAULT '',
+                    uncertainty TEXT NOT NULL DEFAULT '',
+                    lesson TEXT NOT NULL DEFAULT '',
+                    recommended_updates TEXT NOT NULL DEFAULT '',
+                    applied_updates TEXT NOT NULL DEFAULT '',
+                    tags TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
 CREATE TABLE relation_memory (
                     chat_id INTEGER NOT NULL,
                     user_low_id INTEGER NOT NULL,
@@ -247,6 +295,37 @@ CREATE TABLE score_events (
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             );
 
+CREATE TABLE self_model_state (
+                    state_id TEXT PRIMARY KEY,
+                    identity TEXT NOT NULL DEFAULT '',
+                    active_mode TEXT NOT NULL DEFAULT '',
+                    capabilities TEXT NOT NULL DEFAULT '',
+                    hard_limitations TEXT NOT NULL DEFAULT '',
+                    trusted_tools TEXT NOT NULL DEFAULT '',
+                    confidence_policy TEXT NOT NULL DEFAULT '',
+                    current_goals TEXT NOT NULL DEFAULT '',
+                    active_constraints TEXT NOT NULL DEFAULT '',
+                    honesty_rules TEXT NOT NULL DEFAULT '',
+                    jarvis_style_invariants TEXT NOT NULL DEFAULT '',
+                    enterprise_style_invariants TEXT NOT NULL DEFAULT '',
+                    last_route_kind TEXT NOT NULL DEFAULT '',
+                    last_outcome TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
+CREATE TABLE skill_memory (
+                    skill_key TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    trigger_tags TEXT NOT NULL DEFAULT '',
+                    procedure TEXT NOT NULL DEFAULT '',
+                    reliability REAL NOT NULL DEFAULT 0.5,
+                    use_count INTEGER NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    last_used_at INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
 CREATE TABLE summary_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     chat_id INTEGER NOT NULL,
@@ -286,3 +365,21 @@ CREATE TABLE warn_settings (chat_id INTEGER PRIMARY KEY, warn_limit INTEGER NOT 
 CREATE TABLE warnings (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), expires_at INTEGER);
 
 CREATE TABLE welcome_settings (chat_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, template TEXT NOT NULL DEFAULT 'Добро пожаловать, {full_name}!');
+
+CREATE TABLE world_state_registry (
+                    state_key TEXT PRIMARY KEY,
+                    category TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    value_text TEXT NOT NULL DEFAULT '',
+                    value_number REAL,
+                    source TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
+CREATE TABLE world_state_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );

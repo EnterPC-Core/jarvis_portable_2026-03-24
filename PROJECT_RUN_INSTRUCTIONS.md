@@ -23,6 +23,12 @@
 - `user_memory_profiles` — user memory по участникам в рамках конкретного чата
 - `relation_memory` — relation memory по парам участников: reply-направления, co-presence, тональные маркеры, краткая summary связки
 - `summary_snapshots` — summary memory, то есть накопленные snapshot-сводки по ходу жизни чата
+- `self_model_state` — текущее self-state агента: identity, mode, capabilities, limitations, trusted tools, goals, constraints и style invariants
+- `autobiographical_memory` — значимые operational события, owner-действия, ошибки, решения, открытые и закрытые задачи
+- `reflections` — post-task reflections с observed outcome, uncertainty, lesson и recommended updates
+- `skill_memory` — procedural memory/playbooks
+- `world_state_registry` и `world_state_snapshots` — актуальное состояние runtime/project/live/sync и его snapshot-история
+- `drive_scores` — текущие pressure-сигналы приоритизации
 
 Поверх этого в runtime работает фоновый memory-refresh:
 
@@ -33,6 +39,14 @@
 - локальный `participant registry` копит известных участников, статусы админов, join/leave и `member_count`
 
 Это важно: бот теперь строит prompt не только из последних сообщений, а из нескольких memory layers сразу.
+
+Новая часть архитектуры принципиально инженерная:
+
+- self-model хранится как данные, а не как roleplay prompt
+- autobiography отделена от chat history и summary memory
+- reflection loop пишет уроки после значимых execution flow
+- world-state и drive-scores влияют на guardrails и routing refinement
+- честность задаётся через observed / inferred / uncertain contract, а не через fake consciousness
 
 ## Routing Contract
 
@@ -247,6 +261,12 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/memoryuser [@username|user_id]` — текущий user memory слой по участнику
 - relation memory отдельной команды пока не имеет; он автоматически подтягивается в prompt для локальных chat/participant запросов
 - `/memorysummary` — summary memory snapshots по чату
+- `/selfstate` — текущее self-state агента
+- `/worldstate` — текущий world-state registry
+- `/drives` — pressure-сигналы приоритизации
+- `/autobio [запрос]` — autobiographical memory
+- `/skills [запрос]` — procedural/skill memory
+- `/reflections [N]` — последние reflection entries
 - `/restart` — одно сообщение: сначала статус перезапуска, после нового старта это же сообщение обновляется в подтверждение
 
 ## Owner Panel

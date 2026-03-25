@@ -26,6 +26,7 @@
 - Telegram long polling через локальный Python bridge
 - память диалога и служебное состояние в SQLite
 - четыре слоя памяти: `user memory`, `relation memory`, `chat memory`, `summary memory`
+- persistent entity-слои: `self-model`, `autobiographical memory`, `reflection loop`, `skill memory`, `world-state registry`, `drive pressures`
 - рейтинги, достижения, топы и апелляции через legacy-базу `jarvis.db`
 - команды модерации, warn/welcome, история, поиск по событиям
 - reply-aware контекст: bot понимает reply на сообщение, медиа и короткий тред вокруг него
@@ -93,6 +94,25 @@
 - явный вызов `Enterprise` должен удерживать инженерный режим ответа и не сваливаться в общий `Jarvis`-тон
 - bot не должен заявлять о выполненных действиях без route/tool-подтверждения
 
+### Persistent Entity Layer
+
+Поверх обычной памяти теперь есть ещё один системный слой непрерывности:
+
+- `self-model`:
+  текущее self-state агента как данные в SQLite, а не как временный prompt: identity, active mode, capabilities, limitations, trusted tools, confidence policy, goals, constraints и style invariants
+- `autobiographical memory`:
+  значимые operational события, owner-действия, runtime-переходы, уроки, открытые и закрытые задачи
+- `reflection loop`:
+  post-task записи о том, что агент пытался сделать, что реально получилось, где была неопределённость и какой урок зафиксирован
+- `skill memory`:
+  procedural memory с устойчивыми playbooks для runtime triage, doc sync, chat grounding, live verification и safe restart
+- `world-state registry`:
+  текущее состояние runtime/project/live/sync/owner priority как обновляемый registry, а не как случайная текстовая сводка
+- `drive pressures`:
+  функциональные сигналы приоритизации: uncertainty, inconsistency, stale memory, unresolved tasks, doc sync, runtime risk
+
+Это не попытка симулировать сознание. Субъектность здесь выражается через continuity, накопление опыта, self-consistency и честную operational agency.
+
 ### Локальный runtime
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Enterprise Core bridge
@@ -126,6 +146,7 @@
 - ежедневный digest и еженедельный owner-report могут отправляться автоматически владельцу по UTC-расписанию
 - есть отдельные owner-команды `/gitstatus`, `/gitlast`, `/errors`, `/events`, `/routes`, `/chatdigest`
 - есть отдельные owner memory-inspection команды `/memorychat`, `/memoryuser`, `/memorysummary`
+- есть owner-introspection по persistent entity слоям: `/selfstate`, `/worldstate`, `/drives`, `/autobio`, `/skills`, `/reflections`
 
 ## Где смотреть дальше
 

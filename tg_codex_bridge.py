@@ -211,6 +211,12 @@ ROUTES_USAGE_TEXT = "Используй: /routes [количество]"
 MEMORY_CHAT_USAGE_TEXT = "Используй: /memorychat [запрос]"
 MEMORY_USER_USAGE_TEXT = "Используй: /memoryuser @username, /memoryuser user_id или reply на сообщение участника"
 MEMORY_SUMMARY_USAGE_TEXT = "Используй: /memorysummary"
+SELF_STATE_USAGE_TEXT = "Используй: /selfstate"
+WORLD_STATE_USAGE_TEXT = "Используй: /worldstate"
+DRIVES_USAGE_TEXT = "Используй: /drives"
+AUTOBIO_USAGE_TEXT = "Используй: /autobio [запрос]"
+SKILLS_USAGE_TEXT = "Используй: /skills [запрос]"
+REFLECTIONS_USAGE_TEXT = "Используй: /reflections [количество]"
 EXPORT_USAGE_TEXT = "Используй: /export chat, /export today, /export @username или /export user_id"
 APPEAL_USAGE_TEXT = "Используй: /appeal <текст апелляции>"
 MODERATION_USAGE_TEXT = "Используй reply или: /ban @username [причина], /mute @username [причина], /tban 1d @username [причина], /tmute 1h @username [причина]"
@@ -320,6 +326,12 @@ COMMANDS_LIST_TEXT = (
     "/memorychat [запрос]\n"
     "/memoryuser [@username|user_id]\n"
     "/memorysummary\n"
+    "/selfstate\n"
+    "/worldstate\n"
+    "/drives\n"
+    "/autobio [запрос]\n"
+    "/skills [запрос]\n"
+    "/reflections [количество]\n"
     "/sdls [/sdcard/путь]\n"
     "/sdsend /sdcard/путь/к/файлу\n"
     "/sdsave /sdcard/папка/или/файл\n"
@@ -344,6 +356,58 @@ COMMANDS_LIST_TEXT = (
     "/setwarnlimit /setwarnmode /warntime /modlog\n\n"
     f"Создатель с ID {OWNER_USER_ID} отвечает без пароля.\n"
     f"Остальным пароль выдаёт только {OWNER_USERNAME}"
+)
+SELF_MODEL_DEFAULTS = {
+    "identity": "Enterprise Core",
+    "capabilities": "local chat reasoning; persistent SQLite memory; runtime verification; owner operations; live-data routing; file/image/voice analysis",
+    "hard_limitations": "не заявляет о действиях без tool/runtime confirmation; не видит всех участников Telegram напрямую; live-data зависит от сети и источников; не симулирует сознание и переживания",
+    "trusted_tools": "SQLite memory; Telegram Bot API; Codex runtime; local filesystem/runtime probes; whitelisted live sources",
+    "confidence_policy": "observed > inferred > uncertain; при нехватке подтверждения явно маркирует ограничение",
+    "current_goals": "держать continuity; отвечать честно; сохранять operational stability; улучшать локальную grounding-память",
+    "active_constraints": "safe_chat_only; owner-only system actions; no fake consciousness; no hidden tool claims",
+    "honesty_rules": "не придумывать выполненные действия; различать observed/inferred/uncertain; не выдавать roleplay за системное состояние",
+    "jarvis_style_invariants": "кратко, живо, без официоза и без фальшивых эмоций",
+    "enterprise_style_invariants": "инженерно, точно, с явными ограничениями и route/tool grounding",
+}
+DEFAULT_SKILL_LIBRARY: Tuple[Tuple[str, str, str, str], ...] = (
+    (
+        "runtime_triage",
+        "runtime, health, status, errors, owner",
+        "1) собрать resource summary; 2) посмотреть recent errors/events; 3) сверить heartbeat/backup/runtime state; 4) ответить только по подтверждённым данным",
+        "built-in",
+    ),
+    (
+        "doc_sync",
+        "docs, backups, sync, drift, repo",
+        "1) прогнать refresh_repo_state.sh; 2) проверить git status; 3) синхронизировать docs/runtime_backups; 4) только потом commit/push",
+        "built-in",
+    ),
+    (
+        "chat_grounding",
+        "chat, context, participants, dynamics, relation",
+        "1) поднять local chat query route; 2) собрать events/user memory/relation memory/chat dynamics; 3) отвечать по локальному контексту, а не по web/live",
+        "built-in",
+    ),
+    (
+        "live_verification",
+        "latest, current, weather, fx, crypto, stocks, news",
+        "1) выбрать профильный live-route; 2) приложить source+freshness; 3) при сетевом сбое честно вернуть fallback без выдуманных фактов",
+        "built-in",
+    ),
+    (
+        "safe_restart",
+        "restart, supervisor, polling, single-instance",
+        "1) не плодить второй polling; 2) перезапускать через supervisor; 3) после рестарта проверить log startup markers и single-instance lock",
+        "built-in",
+    ),
+)
+DRIVE_NAMES: Tuple[str, ...] = (
+    "uncertainty_pressure",
+    "inconsistency_pressure",
+    "stale_memory_pressure",
+    "unresolved_task_pressure",
+    "doc_sync_pressure",
+    "runtime_risk_pressure",
 )
 WEATHER_CODE_LABELS = {
     0: "ясно",
@@ -664,6 +728,11 @@ class ContextBundle:
     event_context: str = ""
     database_context: str = ""
     reply_context: str = ""
+    self_model_text: str = ""
+    autobiographical_text: str = ""
+    skill_memory_text: str = ""
+    world_state_text: str = ""
+    drive_state_text: str = ""
     user_memory_text: str = ""
     relation_memory_text: str = ""
     chat_memory_text: str = ""
@@ -678,6 +747,8 @@ class SelfCheckReport:
     outcome: str
     answer: str
     flags: Tuple[str, ...]
+    observed_basis: Tuple[str, ...] = ()
+    uncertain_points: Tuple[str, ...] = ()
 
 
 class BridgeState:
@@ -796,6 +867,102 @@ class BridgeState:
                 )"""
             )
             self.db.execute(
+                """CREATE TABLE IF NOT EXISTS self_model_state (
+                    state_id TEXT PRIMARY KEY,
+                    identity TEXT NOT NULL DEFAULT '',
+                    active_mode TEXT NOT NULL DEFAULT '',
+                    capabilities TEXT NOT NULL DEFAULT '',
+                    hard_limitations TEXT NOT NULL DEFAULT '',
+                    trusted_tools TEXT NOT NULL DEFAULT '',
+                    confidence_policy TEXT NOT NULL DEFAULT '',
+                    current_goals TEXT NOT NULL DEFAULT '',
+                    active_constraints TEXT NOT NULL DEFAULT '',
+                    honesty_rules TEXT NOT NULL DEFAULT '',
+                    jarvis_style_invariants TEXT NOT NULL DEFAULT '',
+                    enterprise_style_invariants TEXT NOT NULL DEFAULT '',
+                    last_route_kind TEXT NOT NULL DEFAULT '',
+                    last_outcome TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS autobiographical_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT NOT NULL DEFAULT '',
+                    event_type TEXT NOT NULL DEFAULT '',
+                    chat_id INTEGER,
+                    user_id INTEGER,
+                    route_kind TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    details TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    importance INTEGER NOT NULL DEFAULT 0,
+                    open_state TEXT NOT NULL DEFAULT 'closed',
+                    tags TEXT NOT NULL DEFAULT '',
+                    observed_json TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS reflections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER,
+                    user_id INTEGER,
+                    route_kind TEXT NOT NULL DEFAULT '',
+                    task_summary TEXT NOT NULL DEFAULT '',
+                    observed_outcome TEXT NOT NULL DEFAULT '',
+                    uncertainty TEXT NOT NULL DEFAULT '',
+                    lesson TEXT NOT NULL DEFAULT '',
+                    recommended_updates TEXT NOT NULL DEFAULT '',
+                    applied_updates TEXT NOT NULL DEFAULT '',
+                    tags TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS skill_memory (
+                    skill_key TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    trigger_tags TEXT NOT NULL DEFAULT '',
+                    procedure TEXT NOT NULL DEFAULT '',
+                    reliability REAL NOT NULL DEFAULT 0.5,
+                    use_count INTEGER NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    last_used_at INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS world_state_registry (
+                    state_key TEXT PRIMARY KEY,
+                    category TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    value_text TEXT NOT NULL DEFAULT '',
+                    value_number REAL,
+                    source TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS world_state_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS drive_scores (
+                    drive_name TEXT PRIMARY KEY,
+                    score REAL NOT NULL DEFAULT 0,
+                    reason TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS chat_events_fts USING fts5(text, content='chat_events', content_rowid='id', tokenize='unicode61')"
             )
             self.db.execute(
@@ -815,6 +982,18 @@ class BridgeState:
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_relation_memory_chat_id_updated ON relation_memory(chat_id, updated_at DESC, last_interaction_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_autobiographical_memory_chat_id_id ON autobiographical_memory(chat_id, id DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_autobiographical_memory_open_state ON autobiographical_memory(open_state, importance DESC, updated_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reflections_chat_id_id ON reflections(chat_id, id DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_world_state_registry_category ON world_state_registry(category, updated_at DESC)"
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_summary_snapshots_chat_id_id ON summary_snapshots(chat_id, id)"
@@ -877,6 +1056,9 @@ class BridgeState:
             self._ensure_chat_events_columns()
             self._ensure_user_memory_profile_columns()
             self._rebuild_chat_events_fts()
+            self._seed_self_model_state()
+            self._seed_skill_memory()
+            self._seed_drive_scores()
             self.db.commit()
 
     def _ensure_warn_settings_columns(self) -> None:
@@ -913,6 +1095,48 @@ class BridgeState:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(user_memory_profiles)").fetchall()}
         if "ai_summary" not in columns:
             self.db.execute("ALTER TABLE user_memory_profiles ADD COLUMN ai_summary TEXT NOT NULL DEFAULT ''")
+
+    def _seed_self_model_state(self) -> None:
+        self.db.execute(
+            """INSERT INTO self_model_state(
+                state_id, identity, active_mode, capabilities, hard_limitations, trusted_tools,
+                confidence_policy, current_goals, active_constraints, honesty_rules,
+                jarvis_style_invariants, enterprise_style_invariants, last_route_kind, last_outcome
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(state_id) DO NOTHING""",
+            (
+                "primary",
+                SELF_MODEL_DEFAULTS["identity"],
+                self.default_mode,
+                SELF_MODEL_DEFAULTS["capabilities"],
+                SELF_MODEL_DEFAULTS["hard_limitations"],
+                SELF_MODEL_DEFAULTS["trusted_tools"],
+                SELF_MODEL_DEFAULTS["confidence_policy"],
+                SELF_MODEL_DEFAULTS["current_goals"],
+                SELF_MODEL_DEFAULTS["active_constraints"],
+                SELF_MODEL_DEFAULTS["honesty_rules"],
+                SELF_MODEL_DEFAULTS["jarvis_style_invariants"],
+                SELF_MODEL_DEFAULTS["enterprise_style_invariants"],
+                "",
+                "",
+            ),
+        )
+
+    def _seed_skill_memory(self) -> None:
+        for skill_key, trigger_tags, procedure, source in DEFAULT_SKILL_LIBRARY:
+            self.db.execute(
+                """INSERT INTO skill_memory(skill_key, title, trigger_tags, procedure, reliability, use_count, source, notes, last_used_at)
+                VALUES(?, ?, ?, ?, ?, 0, ?, '', 0)
+                ON CONFLICT(skill_key) DO NOTHING""",
+                (skill_key, skill_key.replace("_", " "), trigger_tags, procedure, 0.75, source),
+            )
+
+    def _seed_drive_scores(self) -> None:
+        for drive_name in DRIVE_NAMES:
+            self.db.execute(
+                "INSERT INTO drive_scores(drive_name, score, reason) VALUES(?, 0, 'not-initialized') ON CONFLICT(drive_name) DO NOTHING",
+                (drive_name,),
+            )
 
     def upsert_chat_participant(
         self,
@@ -1825,6 +2049,404 @@ class BridgeState:
                 lines.append(f"  markers: {', '.join(tone_bits)}")
         return "\n".join(lines)
 
+    def get_self_model_state(self) -> sqlite3.Row:
+        with self.db_lock:
+            row = self.db.execute(
+                """SELECT identity, active_mode, capabilities, hard_limitations, trusted_tools, confidence_policy,
+                current_goals, active_constraints, honesty_rules, jarvis_style_invariants,
+                enterprise_style_invariants, last_route_kind, last_outcome, updated_at
+                FROM self_model_state
+                WHERE state_id = 'primary'"""
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("self_model_state is not initialized")
+        return row
+
+    def update_self_model_state(self, **updates: str) -> None:
+        allowed = {
+            "identity",
+            "active_mode",
+            "capabilities",
+            "hard_limitations",
+            "trusted_tools",
+            "confidence_policy",
+            "current_goals",
+            "active_constraints",
+            "honesty_rules",
+            "jarvis_style_invariants",
+            "enterprise_style_invariants",
+            "last_route_kind",
+            "last_outcome",
+        }
+        assignments: List[str] = []
+        params: List[object] = []
+        for key, value in updates.items():
+            if key not in allowed:
+                continue
+            assignments.append(f"{key} = ?")
+            params.append(truncate_text(normalize_whitespace(str(value)), 1200))
+        if not assignments:
+            return
+        assignments.append("updated_at = strftime('%s','now')")
+        with self.db_lock:
+            self.db.execute(
+                f"UPDATE self_model_state SET {', '.join(assignments)} WHERE state_id = 'primary'",
+                params,
+            )
+            self.db.commit()
+
+    def get_self_model_context(self, persona: str) -> str:
+        row = self.get_self_model_state()
+        style = row["enterprise_style_invariants"] if persona == "enterprise" else row["jarvis_style_invariants"]
+        lines = [
+            "Self model:",
+            f"- identity: {truncate_text(row['identity'] or '', 180)}",
+            f"- active_mode: {row['active_mode'] or ''}",
+            f"- capabilities: {truncate_text(row['capabilities'] or '', 260)}",
+            f"- hard_limitations: {truncate_text(row['hard_limitations'] or '', 320)}",
+            f"- trusted_tools: {truncate_text(row['trusted_tools'] or '', 260)}",
+            f"- confidence_policy: {truncate_text(row['confidence_policy'] or '', 220)}",
+            f"- current_goals: {truncate_text(row['current_goals'] or '', 220)}",
+            f"- active_constraints: {truncate_text(row['active_constraints'] or '', 220)}",
+            f"- honesty_rules: {truncate_text(row['honesty_rules'] or '', 220)}",
+            f"- style_invariants: {truncate_text(style or '', 220)}",
+        ]
+        if row["last_route_kind"] or row["last_outcome"]:
+            lines.append(f"- recent_runtime: route={row['last_route_kind'] or '-'}; outcome={row['last_outcome'] or '-'}")
+        return "\n".join(lines)
+
+    def record_autobiographical_event(
+        self,
+        *,
+        category: str,
+        event_type: str,
+        title: str,
+        details: str,
+        chat_id: Optional[int] = None,
+        user_id: Optional[int] = None,
+        route_kind: str = "",
+        status: str = "",
+        importance: int = 0,
+        open_state: str = "closed",
+        tags: str = "",
+        observed_payload: Optional[dict] = None,
+    ) -> int:
+        with self.db_lock:
+            cursor = self.db.execute(
+                """INSERT INTO autobiographical_memory(
+                    category, event_type, chat_id, user_id, route_kind, title, details, status,
+                    importance, open_state, tags, observed_json, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), strftime('%s','now'))""",
+                (
+                    truncate_text(category, 80),
+                    truncate_text(event_type, 80),
+                    chat_id,
+                    user_id,
+                    truncate_text(route_kind, 80),
+                    truncate_text(normalize_whitespace(title), 240),
+                    truncate_text(normalize_whitespace(details), 1500),
+                    truncate_text(status, 80),
+                    max(0, min(100, int(importance))),
+                    truncate_text(open_state, 32),
+                    truncate_text(tags, 240),
+                    json.dumps(observed_payload or {}, ensure_ascii=False, sort_keys=True),
+                ),
+            )
+            self.db.commit()
+            return int(cursor.lastrowid or 0)
+
+    def update_autobiographical_event(self, event_id: int, *, status: str = "", details: str = "", open_state: str = "") -> None:
+        assignments: List[str] = ["updated_at = strftime('%s','now')"]
+        params: List[object] = []
+        if status:
+            assignments.append("status = ?")
+            params.append(truncate_text(status, 80))
+        if details:
+            assignments.append("details = ?")
+            params.append(truncate_text(normalize_whitespace(details), 1500))
+        if open_state:
+            assignments.append("open_state = ?")
+            params.append(truncate_text(open_state, 32))
+        if len(assignments) == 1:
+            return
+        params.append(event_id)
+        with self.db_lock:
+            self.db.execute(
+                f"UPDATE autobiographical_memory SET {', '.join(assignments)} WHERE id = ?",
+                params,
+            )
+            self.db.commit()
+
+    def get_autobiographical_context(self, chat_id: int, query: str = "", limit: int = 6) -> str:
+        lowered = normalize_whitespace(query).lower()
+        keywords = extract_keywords(lowered)
+        with self.db_lock:
+            rows = self.db.execute(
+                """SELECT id, category, event_type, route_kind, title, details, status, importance, open_state, tags, created_at
+                FROM autobiographical_memory
+                WHERE chat_id IS NULL OR chat_id = ?
+                ORDER BY importance DESC, id DESC
+                LIMIT 40""",
+                (chat_id,),
+            ).fetchall()
+        if not rows:
+            return ""
+        selected: List[sqlite3.Row] = []
+        for row in rows:
+            haystack = " ".join(str(row[key] or "").lower() for key in ("category", "event_type", "title", "details", "tags", "status"))
+            if keywords and not any(keyword in haystack for keyword in keywords):
+                continue
+            if not keywords and lowered and lowered not in haystack:
+                continue
+            selected.append(row)
+            if len(selected) >= limit:
+                break
+        if not selected:
+            selected = rows[:limit]
+        lines = ["Autobiographical memory:"]
+        for row in selected[:limit]:
+            stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
+            lines.append(
+                f"- [{stamp}] {row['category']}/{row['event_type']}: {truncate_text(row['title'] or '', 140)}; "
+                f"status={row['status'] or '-'}; open={row['open_state'] or '-'}; importance={int(row['importance'] or 0)}"
+            )
+            if row["details"]:
+                lines.append(f"  details: {truncate_text(row['details'] or '', 220)}")
+        return "\n".join(lines)
+
+    def get_recent_autobiographical_rows(self, limit: int = 8) -> List[sqlite3.Row]:
+        with self.db_lock:
+            return self.db.execute(
+                """SELECT id, category, event_type, title, status, importance, open_state, created_at
+                FROM autobiographical_memory
+                ORDER BY id DESC
+                LIMIT ?""",
+                (max(1, min(20, limit)),),
+            ).fetchall()
+
+    def record_reflection(
+        self,
+        *,
+        chat_id: Optional[int],
+        user_id: Optional[int],
+        route_kind: str,
+        task_summary: str,
+        observed_outcome: str,
+        uncertainty: str,
+        lesson: str,
+        recommended_updates: str,
+        applied_updates: str,
+        tags: str,
+    ) -> int:
+        with self.db_lock:
+            cursor = self.db.execute(
+                """INSERT INTO reflections(
+                    chat_id, user_id, route_kind, task_summary, observed_outcome, uncertainty,
+                    lesson, recommended_updates, applied_updates, tags
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    chat_id,
+                    user_id,
+                    truncate_text(route_kind, 80),
+                    truncate_text(normalize_whitespace(task_summary), 260),
+                    truncate_text(normalize_whitespace(observed_outcome), 700),
+                    truncate_text(normalize_whitespace(uncertainty), 400),
+                    truncate_text(normalize_whitespace(lesson), 500),
+                    truncate_text(normalize_whitespace(recommended_updates), 500),
+                    truncate_text(normalize_whitespace(applied_updates), 500),
+                    truncate_text(tags, 240),
+                ),
+            )
+            self.db.commit()
+            return int(cursor.lastrowid or 0)
+
+    def get_recent_reflections(self, limit: int = 6) -> List[sqlite3.Row]:
+        with self.db_lock:
+            return self.db.execute(
+                """SELECT route_kind, task_summary, observed_outcome, uncertainty, lesson, recommended_updates, created_at
+                FROM reflections
+                ORDER BY id DESC
+                LIMIT ?""",
+                (max(1, min(20, limit)),),
+            ).fetchall()
+
+    def get_reflection_context(self, limit: int = 4) -> str:
+        rows = self.get_recent_reflections(limit=limit)
+        if not rows:
+            return ""
+        lines = ["Recent reflections:"]
+        for row in rows:
+            stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
+            lines.append(f"- [{stamp}] {row['route_kind'] or '-'}: {truncate_text(row['lesson'] or row['observed_outcome'] or '', 220)}")
+        return "\n".join(lines)
+
+    def mark_skill_used(self, skill_key: str, success: bool) -> None:
+        with self.db_lock:
+            row = self.db.execute(
+                "SELECT reliability, use_count FROM skill_memory WHERE skill_key = ?",
+                (skill_key,),
+            ).fetchone()
+            if row is None:
+                return
+            reliability = float(row[0] or 0.5)
+            use_count = int(row[1] or 0) + 1
+            reliability = min(0.99, reliability + 0.03) if success else max(0.1, reliability - 0.04)
+            self.db.execute(
+                """UPDATE skill_memory
+                SET reliability = ?, use_count = ?, last_used_at = strftime('%s','now'), updated_at = strftime('%s','now')
+                WHERE skill_key = ?""",
+                (reliability, use_count, skill_key),
+            )
+            self.db.commit()
+
+    def get_skill_memory_context(self, query: str, route_kind: str = "", limit: int = 4) -> str:
+        lowered = normalize_whitespace(query).lower()
+        keywords = extract_keywords(lowered)
+        with self.db_lock:
+            rows = self.db.execute(
+                """SELECT skill_key, title, trigger_tags, procedure, reliability, use_count, last_used_at
+                FROM skill_memory
+                ORDER BY reliability DESC, use_count DESC, updated_at DESC
+                LIMIT 20"""
+            ).fetchall()
+        matched: List[sqlite3.Row] = []
+        for row in rows:
+            haystack = " ".join(str(row[key] or "").lower() for key in ("skill_key", "title", "trigger_tags", "procedure"))
+            if route_kind and route_kind.replace("live_", "") in haystack:
+                matched.append(row)
+                continue
+            if keywords and any(keyword in haystack for keyword in keywords):
+                matched.append(row)
+                continue
+        if not matched and route_kind == "codex_workspace":
+            matched = [row for row in rows if "runtime" in (row["trigger_tags"] or "").lower()][:limit]
+        if not matched and detect_local_chat_query(query):
+            matched = [row for row in rows if "chat" in (row["trigger_tags"] or "").lower()][:limit]
+        if not matched and (route_kind.startswith("live_") if route_kind else False):
+            matched = [row for row in rows if "live" in (row["trigger_tags"] or "").lower()][:limit]
+        if not matched:
+            matched = rows[: min(limit, 2)]
+        lines = ["Skill memory:"]
+        for row in matched[:limit]:
+            lines.append(
+                f"- {row['skill_key']}: reliability={float(row['reliability'] or 0):.2f}; uses={int(row['use_count'] or 0)}; "
+                f"triggers={truncate_text(row['trigger_tags'] or '', 120)}"
+            )
+            lines.append(f"  procedure: {truncate_text(row['procedure'] or '', 220)}")
+        return "\n".join(lines)
+
+    def upsert_world_state_entry(
+        self,
+        state_key: str,
+        *,
+        category: str,
+        status: str,
+        value_text: str = "",
+        value_number: Optional[float] = None,
+        source: str = "",
+    ) -> None:
+        with self.db_lock:
+            self.db.execute(
+                """INSERT INTO world_state_registry(state_key, category, status, value_text, value_number, source, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                ON CONFLICT(state_key) DO UPDATE SET
+                    category = excluded.category,
+                    status = excluded.status,
+                    value_text = excluded.value_text,
+                    value_number = excluded.value_number,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at""",
+                (
+                    truncate_text(state_key, 120),
+                    truncate_text(category, 80),
+                    truncate_text(status, 80),
+                    truncate_text(normalize_whitespace(value_text), 800),
+                    value_number,
+                    truncate_text(source, 120),
+                ),
+            )
+            self.db.commit()
+
+    def add_world_state_snapshot(self, source: str, summary: str, payload: dict) -> None:
+        with self.db_lock:
+            self.db.execute(
+                "INSERT INTO world_state_snapshots(source, summary, payload_json) VALUES(?, ?, ?)",
+                (
+                    truncate_text(source, 120),
+                    truncate_text(normalize_whitespace(summary), 1200),
+                    truncate_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), 4000),
+                ),
+            )
+            self.db.commit()
+
+    def get_world_state_context(self, category: str = "", limit: int = 10) -> str:
+        with self.db_lock:
+            if category:
+                rows = self.db.execute(
+                    """SELECT state_key, category, status, value_text, value_number, source, updated_at
+                    FROM world_state_registry
+                    WHERE category = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?""",
+                    (category, max(1, min(20, limit))),
+                ).fetchall()
+            else:
+                rows = self.db.execute(
+                    """SELECT state_key, category, status, value_text, value_number, source, updated_at
+                    FROM world_state_registry
+                    ORDER BY updated_at DESC
+                    LIMIT ?""",
+                    (max(1, min(20, limit)),),
+                ).fetchall()
+        if not rows:
+            return ""
+        lines = ["World state:"]
+        for row in rows:
+            value_parts: List[str] = [row["status"] or "-"]
+            if row["value_number"] is not None:
+                value_parts.append(f"value={float(row['value_number']):.1f}")
+            if row["value_text"]:
+                value_parts.append(truncate_text(row["value_text"] or "", 160))
+            if row["source"]:
+                value_parts.append(f"source={row['source']}")
+            lines.append(f"- {row['category']}/{row['state_key']}: {'; '.join(value_parts)}")
+        return "\n".join(lines)
+
+    def get_recent_world_state_snapshots(self, limit: int = 5) -> List[sqlite3.Row]:
+        with self.db_lock:
+            return self.db.execute(
+                "SELECT source, summary, created_at FROM world_state_snapshots ORDER BY id DESC LIMIT ?",
+                (max(1, min(20, limit)),),
+            ).fetchall()
+
+    def set_drive_score(self, drive_name: str, score: float, reason: str) -> None:
+        with self.db_lock:
+            self.db.execute(
+                """INSERT INTO drive_scores(drive_name, score, reason, updated_at)
+                VALUES(?, ?, ?, strftime('%s','now'))
+                ON CONFLICT(drive_name) DO UPDATE SET
+                    score = excluded.score,
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at""",
+                (drive_name, max(0.0, min(100.0, float(score))), truncate_text(normalize_whitespace(reason), 400)),
+            )
+            self.db.commit()
+
+    def get_drive_scores(self) -> List[sqlite3.Row]:
+        with self.db_lock:
+            return self.db.execute(
+                "SELECT drive_name, score, reason, updated_at FROM drive_scores ORDER BY score DESC, drive_name ASC"
+            ).fetchall()
+
+    def get_drive_context(self) -> str:
+        rows = self.get_drive_scores()
+        if not rows:
+            return ""
+        lines = ["Drive pressures:"]
+        for row in rows:
+            lines.append(f"- {row['drive_name']}: {float(row['score'] or 0):.1f}; reason={truncate_text(row['reason'] or '', 180)}")
+        return "\n".join(lines)
+
     def get_summary_memory_context(self, chat_id: int, limit: int = 3) -> str:
         with self.db_lock:
             rows = self.db.execute(
@@ -2390,6 +3012,9 @@ class BridgeState:
             user_memory_profiles = self.db.execute("SELECT COUNT(*) FROM user_memory_profiles WHERE chat_id = ?", (chat_id,)).fetchone()[0]
             summary_snapshots = self.db.execute("SELECT COUNT(*) FROM summary_snapshots WHERE chat_id = ?", (chat_id,)).fetchone()[0]
             relation_memory_rows = self.db.execute("SELECT COUNT(*) FROM relation_memory WHERE chat_id = ?", (chat_id,)).fetchone()[0]
+            autobiographical_rows = self.db.execute("SELECT COUNT(*) FROM autobiographical_memory").fetchone()[0]
+            reflections_rows = self.db.execute("SELECT COUNT(*) FROM reflections").fetchone()[0]
+            world_state_rows = self.db.execute("SELECT COUNT(*) FROM world_state_registry").fetchone()[0]
         return {
             "events_count": events_count,
             "facts_count": facts_count,
@@ -2399,6 +3024,9 @@ class BridgeState:
             "user_memory_profiles": user_memory_profiles,
             "summary_snapshots": summary_snapshots,
             "relation_memory_rows": relation_memory_rows,
+            "autobiographical_rows": autobiographical_rows,
+            "reflections_rows": reflections_rows,
+            "world_state_rows": world_state_rows,
         }
 
     def record_request_diagnostic(
@@ -2862,6 +3490,19 @@ class TelegramBridge:
         self.beat_heartbeat()
         self.load_bot_identity()
         self.prewarm_stt_model()
+        self.refresh_world_state_registry("startup")
+        self.recompute_drive_scores()
+        self.state.record_autobiographical_event(
+            category="runtime",
+            event_type="startup",
+            title="bridge started",
+            details=f"mode={self.config.default_mode}; db={self.config.db_path}",
+            status="ok",
+            importance=55,
+            open_state="closed",
+            tags="startup,runtime",
+            observed_payload={"db_path": self.config.db_path, "safe_chat_only": self.config.safe_chat_only},
+        )
         log("bot started")
         self.maybe_send_restart_confirmation()
         while True:
@@ -2886,9 +3527,33 @@ class TelegramBridge:
                 raise
             except RequestException as error:
                 log(f"network error in main loop: {error}")
+                self.refresh_world_state_registry("runtime_error")
+                self.recompute_drive_scores()
+                self.state.record_autobiographical_event(
+                    category="runtime",
+                    event_type="network_error",
+                    title="main loop network error",
+                    details=str(error),
+                    status="error",
+                    importance=70,
+                    open_state="closed",
+                    tags="runtime,network",
+                )
                 time.sleep(ERROR_BACKOFF_SECONDS)
             except Exception as error:
                 log(f"unexpected main loop error: {error}")
+                self.refresh_world_state_registry("runtime_error")
+                self.recompute_drive_scores()
+                self.state.record_autobiographical_event(
+                    category="runtime",
+                    event_type="unexpected_error",
+                    title="main loop unexpected error",
+                    details=str(error),
+                    status="error",
+                    importance=80,
+                    open_state="closed",
+                    tags="runtime,error",
+                )
                 time.sleep(ERROR_BACKOFF_SECONDS)
 
     def maybe_send_restart_confirmation(self) -> None:
@@ -4572,6 +5237,21 @@ class TelegramBridge:
             return self.handle_memory_user_command(chat_id, user_id, memory_user_value, message)
         if parse_memory_summary_command(text):
             return self.handle_memory_summary_command(chat_id, user_id)
+        if parse_self_state_command(text):
+            return self.handle_self_state_command(chat_id, user_id)
+        if parse_world_state_command(text):
+            return self.handle_world_state_command(chat_id, user_id)
+        if parse_drives_command(text):
+            return self.handle_drives_command(chat_id, user_id)
+        autobio_value = parse_autobio_command(text)
+        if autobio_value is not None:
+            return self.handle_autobio_command(chat_id, user_id, autobio_value)
+        skills_value = parse_skills_command(text)
+        if skills_value is not None:
+            return self.handle_skills_command(chat_id, user_id, skills_value)
+        reflections_value = parse_reflections_command(text)
+        if reflections_value is not None:
+            return self.handle_reflections_command(chat_id, user_id, reflections_value)
         chat_digest_value = parse_chat_digest_command(text)
         if chat_digest_value is not None:
             return self.handle_chat_digest_command(chat_id, user_id, chat_digest_value)
@@ -5429,7 +6109,11 @@ class TelegramBridge:
             f"Факты: {snapshot['facts_count']}",
             f"История: {snapshot['history_count']}",
             f"User memory profiles: {snapshot['user_memory_profiles']}",
+            f"Relation memory rows: {snapshot['relation_memory_rows']}",
             f"Summary snapshots: {snapshot['summary_snapshots']}",
+            f"Autobiographical rows: {snapshot['autobiographical_rows']}",
+            f"Reflections: {snapshot['reflections_rows']}",
+            f"World-state rows: {snapshot['world_state_rows']}",
             f"Всего событий в БД: {snapshot['total_events']}",
             f"Route decisions в БД: {snapshot['total_route_decisions']}",
             f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
@@ -5766,6 +6450,88 @@ class TelegramBridge:
         self.safe_send_text(chat_id, context or "Summary memory пока пуста.")
         return True
 
+    def handle_self_state_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        self.safe_send_text(chat_id, self.state.get_self_model_context("enterprise"))
+        return True
+
+    def handle_world_state_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        payload = self.refresh_world_state_registry("manual_world_state", chat_id=chat_id)
+        self.state.record_autobiographical_event(
+            category="owner",
+            event_type="world_state_check",
+            chat_id=chat_id,
+            user_id=user_id,
+            route_kind="owner_command",
+            title="owner requested world state",
+            details=f"world_state keys={sorted(payload.keys())}",
+            status="ok",
+            importance=40,
+            open_state="closed",
+            tags="owner,world-state",
+            observed_payload=payload,
+        )
+        self.safe_send_text(chat_id, self.state.get_world_state_context(limit=12) or "World state пока пуст.")
+        return True
+
+    def handle_drives_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        scores = self.recompute_drive_scores()
+        self.state.record_autobiographical_event(
+            category="owner",
+            event_type="drive_check",
+            chat_id=chat_id,
+            user_id=user_id,
+            route_kind="owner_command",
+            title="owner requested drive pressures",
+            details=", ".join(f"{key}={value:.1f}" for key, value in sorted(scores.items())),
+            status="ok",
+            importance=40,
+            open_state="closed",
+            tags="owner,drives",
+        )
+        self.safe_send_text(chat_id, self.state.get_drive_context() or "Drive pressures пока не рассчитаны.")
+        return True
+
+    def handle_autobio_command(self, chat_id: int, user_id: Optional[int], query: str) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        context = self.state.get_autobiographical_context(chat_id, query=query or "", limit=8)
+        self.safe_send_text(chat_id, context or "Autobiographical memory пока пуста.")
+        return True
+
+    def handle_skills_command(self, chat_id: int, user_id: Optional[int], query: str) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        context = self.state.get_skill_memory_context(query or "owner operations", route_kind="", limit=6)
+        self.safe_send_text(chat_id, context or "Skill memory пока пуста.")
+        return True
+
+    def handle_reflections_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        limit = 6
+        cleaned = (payload or "").strip()
+        if cleaned:
+            try:
+                limit = max(1, min(20, int(cleaned)))
+            except ValueError:
+                self.safe_send_text(chat_id, REFLECTIONS_USAGE_TEXT)
+                return True
+        context = self.state.get_reflection_context(limit=limit)
+        self.safe_send_text(chat_id, context or "Reflections пока пусты.")
+        return True
+
     def handle_chat_digest_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
         if not is_owner_private_chat(user_id, chat_id):
             self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
@@ -5828,6 +6594,22 @@ class TelegramBridge:
         if not is_owner_private_chat(user_id, chat_id):
             self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
             return True
+        payload = self.refresh_world_state_registry("owner_report", chat_id=chat_id)
+        scores = self.recompute_drive_scores(payload)
+        self.state.record_autobiographical_event(
+            category="owner",
+            event_type="owner_report",
+            chat_id=chat_id,
+            user_id=user_id,
+            route_kind="owner_command",
+            title="owner requested operational report",
+            details=f"errors={payload.get('recent_errors_count', 0)}; git_dirty={payload.get('git_dirty_count', 0)}; runtime_risk={scores.get('runtime_risk_pressure', 0):.1f}",
+            status="ok",
+            importance=55,
+            open_state="closed",
+            tags="owner,report,runtime",
+            observed_payload=payload,
+        )
         self.safe_send_text(chat_id, self.render_owner_report_text(chat_id))
         return True
 
@@ -5849,7 +6631,11 @@ class TelegramBridge:
             f"Факты в этом чате: {status_snapshot['facts_count']}",
             f"История в этом чате: {status_snapshot['history_count']}",
             f"User memory profiles в этом чате: {status_snapshot['user_memory_profiles']}",
+            f"Relation memory в этом чате: {status_snapshot['relation_memory_rows']}",
             f"Summary snapshots в этом чате: {status_snapshot['summary_snapshots']}",
+            f"Autobiographical events: {status_snapshot['autobiographical_rows']}",
+            f"Reflections: {status_snapshot['reflections_rows']}",
+            f"World-state rows: {status_snapshot['world_state_rows']}",
             f"Всего событий в БД: {status_snapshot['total_events']}",
             f"Route decisions в БД: {status_snapshot['total_route_decisions']}",
             f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
@@ -5859,6 +6645,12 @@ class TelegramBridge:
             "Ресурсы:",
             render_resource_summary(),
         ]
+        world_state_context = self.state.get_world_state_context(limit=6)
+        drive_context = self.state.get_drive_context()
+        if world_state_context:
+            lines.extend(["", world_state_context])
+        if drive_context:
+            lines.extend(["", drive_context])
         if recent_routes:
             lines.extend(["", "Последние route decisions:", render_route_diagnostics_rows(recent_routes)])
         if recent_errors:
@@ -5938,6 +6730,19 @@ class TelegramBridge:
         if user_id != OWNER_USER_ID:
             self.safe_send_text(chat_id, "Запрос отклонён по соображениям безопасности")
             return True
+        self.state.record_autobiographical_event(
+            category="owner",
+            event_type="restart_requested",
+            chat_id=chat_id,
+            user_id=user_id,
+            route_kind="owner_command",
+            title="owner requested restart",
+            details="restart requested via /restart",
+            status="accepted",
+            importance=65,
+            open_state="closed",
+            tags="owner,restart",
+        )
         self.state.set_meta("pending_restart_chat_id", str(chat_id))
         self.state.set_meta("pending_restart_text", RESTARTED_TEXT)
         restart_message_id = self.send_status_message(chat_id, RESTARTING_TEXT)
@@ -5964,17 +6769,30 @@ class TelegramBridge:
             self.safe_send_text(chat_id, UPGRADE_ALREADY_RUNNING_TEXT)
             return True
 
+        autobiographical_id = self.state.record_autobiographical_event(
+            category="owner",
+            event_type="upgrade",
+            chat_id=chat_id,
+            user_id=user_id,
+            route_kind="codex_workspace",
+            title=truncate_text(task, 160),
+            details=f"upgrade started: {truncate_text(task, 600)}",
+            status="running",
+            importance=85,
+            open_state="open",
+            tags="owner,upgrade,workspace",
+        )
         self.send_chat_action(chat_id, "typing")
         self.safe_send_status(chat_id, UPGRADE_RUNNING_TEXT)
         worker = Thread(
             target=self.run_upgrade_task,
-            args=(chat_id, task),
+            args=(chat_id, task, autobiographical_id, user_id),
             daemon=True,
         )
         worker.start()
         return True
 
-    def run_upgrade_task(self, chat_id: int, task: str) -> None:
+    def run_upgrade_task(self, chat_id: int, task: str, autobiographical_id: int, user_id: Optional[int]) -> None:
         try:
             prompt = build_upgrade_prompt(task)
             answer = self.run_codex_with_progress(
@@ -5988,8 +6806,45 @@ class TelegramBridge:
             self.state.append_history(chat_id, "user", f"[Upgrade request: {task}]")
             self.state.append_history(chat_id, "assistant", answer)
             self.safe_send_text(chat_id, answer)
-            if not answer.startswith(UPGRADE_FAILED_TEXT) and answer != UPGRADE_TIMEOUT_TEXT:
+            success = not answer.startswith(UPGRADE_FAILED_TEXT) and answer != UPGRADE_TIMEOUT_TEXT
+            if success:
                 self.safe_send_text(chat_id, UPGRADE_APPLIED_TEXT)
+            self.state.update_autobiographical_event(
+                autobiographical_id,
+                status="completed" if success else "failed",
+                details=truncate_text(answer, 1400),
+                open_state="closed",
+            )
+            report = SelfCheckReport(
+                outcome="ok" if success else "error",
+                answer=answer,
+                flags=(),
+                observed_basis=("workspace-runtime",),
+                uncertain_points=() if success else ("upgrade-failed-or-timeout",),
+            )
+            self.run_post_task_reflection(
+                chat_id=chat_id,
+                user_id=user_id,
+                route_decision=RouteDecision(
+                    persona="enterprise",
+                    intent="upgrade",
+                    chat_type="private",
+                    route_kind="codex_workspace",
+                    source_label="workspace",
+                    use_live=False,
+                    use_web=False,
+                    use_events=False,
+                    use_database=False,
+                    use_reply=False,
+                    use_workspace=True,
+                    guardrails=("runtime-verification", "no-system-actions", "respect-enterprise-mode"),
+                ),
+                user_text=task,
+                report=report,
+                source="upgrade",
+            )
+            self.refresh_world_state_registry("upgrade", chat_id=chat_id)
+            self.recompute_drive_scores()
         finally:
             self.state.finish_upgrade(chat_id)
 
@@ -6025,18 +6880,47 @@ class TelegramBridge:
     def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "", message: Optional[dict] = None) -> str:
         started_at = time.perf_counter()
         reply_context = self.build_reply_context(chat_id, message)
-        route_decision = analyze_request_route(
+        initial_route_decision = analyze_request_route(
             user_text,
             assistant_persona=assistant_persona,
             chat_type=chat_type,
             user_id=user_id,
             reply_context=reply_context,
         )
+        operational_state = self.refresh_world_state_registry("ask_codex", chat_id=chat_id)
+        drive_scores = self.recompute_drive_scores(operational_state)
+        route_decision = self.apply_persistent_pressures_to_route(initial_route_decision, user_text)
+        current_goals = (
+            "сохранить continuity и честность; "
+            f"закрыть текущий запрос через {route_decision.route_kind}; "
+            f"снизить uncertainty={drive_scores.get('uncertainty_pressure', 0):.0f} и runtime-risk={drive_scores.get('runtime_risk_pressure', 0):.0f}"
+        )
+        active_constraints = (
+            f"route={route_decision.route_kind}; guardrails={', '.join(route_decision.guardrails)}; "
+            f"safe_chat_only={'yes' if self.config.safe_chat_only else 'no'}"
+        )
+        self.state.update_self_model_state(
+            active_mode=self.state.get_mode(chat_id),
+            current_goals=current_goals,
+            active_constraints=active_constraints,
+            last_route_kind=route_decision.route_kind,
+        )
+        if detect_local_chat_query(user_text) and drive_scores.get("stale_memory_pressure", 0.0) >= 35.0:
+            self.state.refresh_relation_memory(chat_id)
 
         if route_decision.use_live:
             live_answer = self.try_handle_live_data_query(user_text, route_decision)
             if live_answer:
                 report = apply_self_check_contract(postprocess_answer(live_answer), route_decision)
+                self.state.update_self_model_state(last_outcome=report.outcome)
+                self.run_post_task_reflection(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    route_decision=route_decision,
+                    user_text=user_text,
+                    report=report,
+                    source="live_route",
+                )
                 initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
                 status_note = "Проверяю актуальные данные..." if route_decision.persona != "enterprise" else "Проверяю актуальные данные через Enterprise..."
                 status_message_id = self.send_status_message(chat_id, f"{initial_status}\n\n{status_note}")
@@ -6080,6 +6964,11 @@ class TelegramBridge:
             web_context=context_bundle.web_context,
             route_summary=context_bundle.route_summary,
             guardrail_note=context_bundle.guardrail_note,
+            self_model_text=context_bundle.self_model_text,
+            autobiographical_text=context_bundle.autobiographical_text,
+            skill_memory_text=context_bundle.skill_memory_text,
+            world_state_text=context_bundle.world_state_text,
+            drive_state_text=context_bundle.drive_state_text,
             user_memory_text=context_bundle.user_memory_text,
             relation_memory_text=context_bundle.relation_memory_text,
             chat_memory_text=context_bundle.chat_memory_text,
@@ -6109,6 +6998,15 @@ class TelegramBridge:
             )
 
         report = apply_self_check_contract(raw_answer, route_decision)
+        self.state.update_self_model_state(last_outcome=report.outcome)
+        self.run_post_task_reflection(
+            chat_id=chat_id,
+            user_id=user_id,
+            route_decision=route_decision,
+            user_text=user_text,
+            report=report,
+            source="codex_route",
+        )
         self.record_route_diagnostic(
             chat_id=chat_id,
             user_id=user_id,
@@ -6165,12 +7063,23 @@ class TelegramBridge:
         event_context = self.state.get_event_context(chat_id, user_text, limit=40 if detect_local_chat_query(user_text) else 24) if route_decision.use_events else ""
         database_context = self.state.get_database_context(chat_id, user_text) if route_decision.use_database else ""
         reply_to = ((message or {}).get("reply_to_message") or {}).get("from") or {}
+        include_entity_context = (
+            route_decision.persona == "enterprise"
+            or route_decision.use_workspace
+            or detect_local_chat_query(user_text)
+            or is_owner_private_chat(user_id, chat_id)
+        )
         return ContextBundle(
             summary_text=self.state.get_summary(chat_id),
             facts_text=self.state.render_facts(chat_id, query=user_text, limit=10),
             event_context=event_context,
             database_context=database_context,
             reply_context=reply_context,
+            self_model_text=self.state.get_self_model_context(route_decision.persona) if include_entity_context else "",
+            autobiographical_text=self.state.get_autobiographical_context(chat_id, query=user_text, limit=4) if include_entity_context else "",
+            skill_memory_text=self.state.get_skill_memory_context(user_text, route_kind=route_decision.route_kind, limit=3) if include_entity_context else "",
+            world_state_text=self.state.get_world_state_context(limit=8) if include_entity_context else "",
+            drive_state_text=self.state.get_drive_context() if include_entity_context else "",
             user_memory_text=self.state.get_user_memory_context(chat_id, user_id=user_id, reply_to_user_id=reply_to.get("id")),
             relation_memory_text=self.state.get_relation_memory_context(chat_id, user_id=user_id, reply_to_user_id=reply_to.get("id"), query=user_text),
             chat_memory_text=self.state.get_chat_memory_context(chat_id, query=user_text),
@@ -6190,12 +7099,18 @@ class TelegramBridge:
     ) -> ContextBundle:
         from_user = (message or {}).get("from") or {}
         reply_to_user = (((message or {}).get("reply_to_message") or {}).get("from") or {})
+        include_entity_context = bool(prompt_text) and (detect_local_chat_query(prompt_text) or True)
         return ContextBundle(
             summary_text=self.state.get_summary(chat_id),
             facts_text=self.state.render_facts(chat_id, query=prompt_text, limit=10),
             event_context=self.state.get_event_context(chat_id, prompt_text) if should_include_event_context(prompt_text) else "",
             database_context=self.state.get_database_context(chat_id, prompt_text) if should_include_database_context(prompt_text) else "",
             reply_context=reply_context,
+            self_model_text=self.state.get_self_model_context("jarvis") if include_entity_context else "",
+            autobiographical_text=self.state.get_autobiographical_context(chat_id, query=prompt_text, limit=4) if include_entity_context else "",
+            skill_memory_text=self.state.get_skill_memory_context(prompt_text, route_kind="codex_chat", limit=3) if include_entity_context else "",
+            world_state_text=self.state.get_world_state_context(limit=8) if include_entity_context else "",
+            drive_state_text=self.state.get_drive_context() if include_entity_context else "",
             user_memory_text=self.state.get_user_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id")),
             relation_memory_text=self.state.get_relation_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id"), query=prompt_text),
             chat_memory_text=self.state.get_chat_memory_context(chat_id, query=prompt_text),
@@ -6622,6 +7537,11 @@ class TelegramBridge:
             event_context=context_bundle.event_context,
             database_context=context_bundle.database_context,
             reply_context=context_bundle.reply_context,
+            self_model_text=context_bundle.self_model_text,
+            autobiographical_text=context_bundle.autobiographical_text,
+            skill_memory_text=context_bundle.skill_memory_text,
+            world_state_text=context_bundle.world_state_text,
+            drive_state_text=context_bundle.drive_state_text,
             user_memory_text=context_bundle.user_memory_text,
             relation_memory_text=context_bundle.relation_memory_text,
             chat_memory_text=context_bundle.chat_memory_text,
@@ -6670,6 +7590,11 @@ class TelegramBridge:
             event_context=context_bundle.event_context,
             database_context=context_bundle.database_context,
             reply_context=context_bundle.reply_context,
+            self_model_text=context_bundle.self_model_text,
+            autobiographical_text=context_bundle.autobiographical_text,
+            skill_memory_text=context_bundle.skill_memory_text,
+            world_state_text=context_bundle.world_state_text,
+            drive_state_text=context_bundle.drive_state_text,
             user_memory_text=context_bundle.user_memory_text,
             relation_memory_text=context_bundle.relation_memory_text,
             chat_memory_text=context_bundle.chat_memory_text,
@@ -7392,6 +8317,232 @@ class TelegramBridge:
             with self.memory_refresh_lock:
                 self.memory_refresh_in_progress = False
 
+    def refresh_world_state_registry(self, source: str = "runtime_tick", chat_id: Optional[int] = None) -> Dict[str, object]:
+        repo_path = self.script_path.parent
+        try:
+            git_status = subprocess.run(
+                ["git", "-C", str(repo_path), "status", "--porcelain"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            dirty_lines = [line.strip() for line in git_status.stdout.splitlines() if line.strip()]
+        except Exception:
+            dirty_lines = []
+        recent_errors = read_recent_log_highlights(self.log_path, limit=12)
+        recent_events = read_recent_operational_highlights(self.log_path, limit=12, category="all")
+        memory_due = len(self.state.get_chats_due_for_memory_refresh(limit=20))
+        docs_drift_lines = [
+            line for line in dirty_lines
+            if any(marker in line for marker in ("README.md", "PROJECT_RUN_INSTRUCTIONS.md", "PORTABLE_RUN_INSTRUCTIONS.md", "data/runtime_backups/"))
+        ]
+        with self.state.db_lock:
+            live_failures = self.state.db.execute(
+                """SELECT COUNT(*) FROM request_diagnostics
+                WHERE created_at >= strftime('%s','now') - 86400
+                  AND (used_live = 1 OR used_web = 1)
+                  AND outcome IN ('error', 'uncertain')"""
+            ).fetchone()[0]
+            unresolved_tasks = self.state.db.execute(
+                """SELECT COUNT(*) FROM autobiographical_memory
+                WHERE open_state != 'closed'"""
+            ).fetchone()[0]
+        last_backup_raw = self.state.get_meta("last_backup_ts", "0")
+        try:
+            last_backup_value = float(last_backup_raw or "0")
+        except ValueError:
+            last_backup_value = 0.0
+        backup_age_hours = ((time.time() - last_backup_value) / 3600.0) if last_backup_value > 0 else -1.0
+        state_payload = {
+            "git_dirty_count": len(dirty_lines),
+            "recent_errors_count": len(recent_errors),
+            "recent_events_count": len(recent_events),
+            "live_failures_count": int(live_failures or 0),
+            "memory_due_count": memory_due,
+            "docs_drift_count": len(docs_drift_lines),
+            "unresolved_tasks_count": int(unresolved_tasks or 0),
+            "backup_age_hours": round(backup_age_hours, 1) if backup_age_hours >= 0 else -1.0,
+            "upgrade_active": 1 if self.state.global_upgrade_active else 0,
+            "chat_tasks_active": len(self.state.chat_tasks_in_progress),
+        }
+        runtime_status = "risk" if recent_errors else ("attention" if self.state.global_upgrade_active else "ok")
+        git_status_text = "dirty" if dirty_lines else "clean"
+        self.state.upsert_world_state_entry(
+            "runtime_health",
+            category="runtime",
+            status=runtime_status,
+            value_text=f"errors={len(recent_errors)}; events={len(recent_events)}; memory_due={memory_due}; upgrade_active={'yes' if self.state.global_upgrade_active else 'no'}",
+            value_number=float(len(recent_errors)),
+            source=source,
+        )
+        self.state.upsert_world_state_entry(
+            "git_state",
+            category="project",
+            status=git_status_text,
+            value_text="\n".join(dirty_lines[:8]) if dirty_lines else "worktree clean",
+            value_number=float(len(dirty_lines)),
+            source=source,
+        )
+        self.state.upsert_world_state_entry(
+            "live_source_health",
+            category="live",
+            status="attention" if int(live_failures or 0) else "ok",
+            value_text=f"recent_live_failures={int(live_failures or 0)}",
+            value_number=float(int(live_failures or 0)),
+            source=source,
+        )
+        self.state.upsert_world_state_entry(
+            "doc_runtime_drift",
+            category="sync",
+            status="attention" if docs_drift_lines else "ok",
+            value_text="\n".join(docs_drift_lines[:6]) if docs_drift_lines else "docs/runtime backfills synced",
+            value_number=float(len(docs_drift_lines)),
+            source=source,
+        )
+        self.state.upsert_world_state_entry(
+            "owner_priority_state",
+            category="owner",
+            status="attention" if int(unresolved_tasks or 0) else "ok",
+            value_text=f"open_tasks={int(unresolved_tasks or 0)}; backup_age_hours={round(backup_age_hours, 1) if backup_age_hours >= 0 else 'n/a'}",
+            value_number=float(int(unresolved_tasks or 0)),
+            source=source,
+        )
+        if source in {"startup", "owner_report", "reflection", "upgrade", "runtime_error"} or recent_errors or docs_drift_lines:
+            summary = (
+                f"runtime={runtime_status}; git={git_status_text}; live_failures={int(live_failures or 0)}; "
+                f"open_tasks={int(unresolved_tasks or 0)}; docs_drift={len(docs_drift_lines)}"
+            )
+            self.state.add_world_state_snapshot(source, summary, state_payload)
+        return state_payload
+
+    def recompute_drive_scores(self, operational_state: Optional[Dict[str, object]] = None) -> Dict[str, float]:
+        state_payload = operational_state or self.refresh_world_state_registry("drive_recompute")
+        with self.state.db_lock:
+            uncertain_rows = self.state.db.execute(
+                """SELECT COUNT(*) FROM request_diagnostics
+                WHERE created_at >= strftime('%s','now') - 86400
+                  AND outcome IN ('uncertain', 'error')"""
+            ).fetchone()[0]
+        uncertainty_score = min(100.0, float(int(uncertain_rows or 0) * 12))
+        inconsistency_score = min(100.0, float(int(state_payload.get("git_dirty_count", 0)) * 10))
+        stale_memory_score = min(100.0, float(int(state_payload.get("memory_due_count", 0)) * 18))
+        unresolved_task_score = min(100.0, float(int(state_payload.get("unresolved_tasks_count", 0)) * 20 + len(self.state.chat_tasks_in_progress) * 12))
+        doc_sync_score = min(100.0, float(int(state_payload.get("docs_drift_count", 0)) * 25))
+        runtime_risk_score = min(
+            100.0,
+            float(int(state_payload.get("recent_errors_count", 0)) * 18 + int(state_payload.get("live_failures_count", 0)) * 10 + int(state_payload.get("upgrade_active", 0)) * 12),
+        )
+        scores = {
+            "uncertainty_pressure": uncertainty_score,
+            "inconsistency_pressure": inconsistency_score,
+            "stale_memory_pressure": stale_memory_score,
+            "unresolved_task_pressure": unresolved_task_score,
+            "doc_sync_pressure": doc_sync_score,
+            "runtime_risk_pressure": runtime_risk_score,
+        }
+        reasons = {
+            "uncertainty_pressure": f"recent uncertain/error routes={int(uncertain_rows or 0)}",
+            "inconsistency_pressure": f"git dirty entries={int(state_payload.get('git_dirty_count', 0))}",
+            "stale_memory_pressure": f"chats due for refresh={int(state_payload.get('memory_due_count', 0))}",
+            "unresolved_task_pressure": f"open tasks={int(state_payload.get('unresolved_tasks_count', 0))}; active_chat_tasks={len(self.state.chat_tasks_in_progress)}",
+            "doc_sync_pressure": f"docs/runtime drift entries={int(state_payload.get('docs_drift_count', 0))}",
+            "runtime_risk_pressure": f"errors={int(state_payload.get('recent_errors_count', 0))}; live_failures={int(state_payload.get('live_failures_count', 0))}; upgrade_active={int(state_payload.get('upgrade_active', 0))}",
+        }
+        for drive_name, score in scores.items():
+            self.state.set_drive_score(drive_name, score, reasons[drive_name])
+        return scores
+
+    def apply_persistent_pressures_to_route(self, route_decision: RouteDecision, user_text: str) -> RouteDecision:
+        drive_map = {row["drive_name"]: float(row["score"] or 0) for row in self.state.get_drive_scores()}
+        guardrails = list(route_decision.guardrails)
+        if drive_map.get("uncertainty_pressure", 0.0) >= 40.0 and "heightened-uncertainty" not in guardrails:
+            guardrails.append("heightened-uncertainty")
+        if drive_map.get("runtime_risk_pressure", 0.0) >= 45.0 and "runtime-risk-attention" not in guardrails:
+            guardrails.append("runtime-risk-attention")
+        if drive_map.get("doc_sync_pressure", 0.0) >= 35.0 and "doc-sync-attention" not in guardrails:
+            guardrails.append("doc-sync-attention")
+        if detect_local_chat_query(user_text) and drive_map.get("stale_memory_pressure", 0.0) >= 35.0 and "stale-memory-attention" not in guardrails:
+            guardrails.append("stale-memory-attention")
+        return RouteDecision(
+            persona=route_decision.persona,
+            intent=route_decision.intent,
+            chat_type=route_decision.chat_type,
+            route_kind=route_decision.route_kind,
+            source_label=route_decision.source_label,
+            use_live=route_decision.use_live,
+            use_web=route_decision.use_web,
+            use_events=route_decision.use_events,
+            use_database=route_decision.use_database,
+            use_reply=route_decision.use_reply,
+            use_workspace=route_decision.use_workspace,
+            guardrails=tuple(dict.fromkeys(guardrails)),
+        )
+
+    def run_post_task_reflection(
+        self,
+        *,
+        chat_id: Optional[int],
+        user_id: Optional[int],
+        route_decision: RouteDecision,
+        user_text: str,
+        report: SelfCheckReport,
+        source: str,
+    ) -> None:
+        significant = route_decision.use_workspace or route_decision.use_live or route_decision.use_web or report.outcome != "ok" or detect_local_chat_query(user_text)
+        if not significant:
+            return
+        observed_outcome = f"outcome={report.outcome}; flags={', '.join(report.flags) or '-'}; basis={', '.join(report.observed_basis) or '-'}"
+        uncertainty = ", ".join(report.uncertain_points) if report.uncertain_points else "нет явной неопределённости"
+        lesson_parts: List[str] = []
+        recommended_updates: List[str] = []
+        applied_updates: List[str] = []
+        if route_decision.use_live or route_decision.use_web:
+            lesson_parts.append("для внешних данных сохранять источник и freshness-marker")
+            recommended_updates.append("держать live honesty contract")
+            self.state.mark_skill_used("live_verification", report.outcome == "ok")
+        if route_decision.use_workspace:
+            lesson_parts.append("workspace-ответы подтверждать только реальным runtime/tool execution")
+            recommended_updates.append("сохранять workspace grounding")
+            self.state.mark_skill_used("runtime_triage", report.outcome == "ok")
+        if detect_local_chat_query(user_text):
+            lesson_parts.append("локальные запросы про чат должны опираться на chat/relation/user memory, а не на web")
+            applied_updates.append("local chat grounding confirmed")
+            self.state.mark_skill_used("chat_grounding", report.outcome == "ok")
+        if "doc-sync-attention" in route_decision.guardrails:
+            recommended_updates.append("проверить sync docs/runtime_backups после правок")
+            self.state.mark_skill_used("doc_sync", report.outcome == "ok")
+        if "runtime-risk-attention" in route_decision.guardrails:
+            lesson_parts.append("при высоком runtime-risk усиливать честные ограничения и diagnostics")
+        if not lesson_parts:
+            lesson_parts.append("текущий route сработал без отдельного урока")
+        self.state.record_reflection(
+            chat_id=chat_id,
+            user_id=user_id,
+            route_kind=route_decision.route_kind,
+            task_summary=user_text,
+            observed_outcome=observed_outcome,
+            uncertainty=uncertainty,
+            lesson="; ".join(lesson_parts),
+            recommended_updates="; ".join(recommended_updates) or "нет",
+            applied_updates="; ".join(applied_updates) or "нет",
+            tags=f"{source},{route_decision.persona},{route_decision.intent}",
+        )
+        self.state.record_autobiographical_event(
+            category="reflection",
+            event_type=source,
+            chat_id=chat_id,
+            user_id=user_id,
+            route_kind=route_decision.route_kind,
+            title=truncate_text(user_text, 140),
+            details=f"{observed_outcome}. lesson={'; '.join(lesson_parts)}. uncertainty={uncertainty}",
+            status=report.outcome,
+            importance=35 if report.outcome == "ok" else 65,
+            open_state="closed",
+            tags=f"{route_decision.persona},{route_decision.intent},{source}",
+            observed_payload={"flags": report.flags, "observed_basis": report.observed_basis, "uncertain_points": report.uncertain_points},
+        )
+
     def refresh_ai_chat_summary(self, chat_id: int) -> bool:
         rows = self.state.get_recent_chat_rows(chat_id, limit=40)
         if len(rows) < 12:
@@ -7808,6 +8959,45 @@ def parse_memory_user_command(text: str) -> Optional[str]:
 
 def parse_memory_summary_command(text: str) -> bool:
     return text.strip() == "/memorysummary"
+
+
+def parse_self_state_command(text: str) -> bool:
+    return text.strip() == "/selfstate"
+
+
+def parse_world_state_command(text: str) -> bool:
+    return text.strip() == "/worldstate"
+
+
+def parse_drives_command(text: str) -> bool:
+    return text.strip() == "/drives"
+
+
+def parse_autobio_command(text: str) -> Optional[str]:
+    if not text.startswith("/autobio"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def parse_skills_command(text: str) -> Optional[str]:
+    if not text.startswith("/skills"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def parse_reflections_command(text: str) -> Optional[str]:
+    if not text.startswith("/reflections"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
 
 
 def parse_chat_digest_command(text: str) -> Optional[str]:
@@ -9311,6 +10501,11 @@ def build_prompt(
     web_context: str = "",
     route_summary: str = "",
     guardrail_note: str = "",
+    self_model_text: str = "",
+    autobiographical_text: str = "",
+    skill_memory_text: str = "",
+    world_state_text: str = "",
+    drive_state_text: str = "",
     user_memory_text: str = "",
     relation_memory_text: str = "",
     chat_memory_text: str = "",
@@ -9330,6 +10525,11 @@ def build_prompt(
     web_block = f"Web context:\n{truncate_text(web_context, 3200)}\n\n" if web_context else ""
     route_block = f"Route summary:\n{truncate_text(route_summary, 1200)}\n\n" if route_summary else ""
     guardrail_block = f"Self-check and guardrails:\n{truncate_text(guardrail_note, 1600)}\n\n" if guardrail_note else ""
+    self_model_block = f"Self model:\n{truncate_text(self_model_text, 2200)}\n\n" if self_model_text else ""
+    autobiography_block = f"Autobiographical memory:\n{truncate_text(autobiographical_text, 2000)}\n\n" if autobiographical_text else ""
+    skills_block = f"Skill memory:\n{truncate_text(skill_memory_text, 1800)}\n\n" if skill_memory_text else ""
+    world_state_block = f"World state:\n{truncate_text(world_state_text, 1800)}\n\n" if world_state_text else ""
+    drives_block = f"Drive pressures:\n{truncate_text(drive_state_text, 1600)}\n\n" if drive_state_text else ""
     user_memory_block = f"User memory:\n{truncate_text(user_memory_text, 1800)}\n\n" if user_memory_text else ""
     relation_memory_block = f"Relation memory:\n{truncate_text(relation_memory_text, 1800)}\n\n" if relation_memory_text else ""
     chat_memory_block = f"Chat memory:\n{truncate_text(chat_memory_text, 1800)}\n\n" if chat_memory_text else ""
@@ -9346,6 +10546,11 @@ def build_prompt(
         f"{persona_block}"
         f"{route_block}"
         f"{guardrail_block}"
+        f"{self_model_block}"
+        f"{autobiography_block}"
+        f"{skills_block}"
+        f"{world_state_block}"
+        f"{drives_block}"
         f"{user_memory_block}"
         f"{relation_memory_block}"
         f"{chat_memory_block}"
@@ -9738,6 +10943,8 @@ def build_guardrail_note(route_info: RouteDecision) -> str:
     lines = [
         "- перед финальным ответом проверь, что ответ опирается только на доступные контекстные слои и источники",
         "- не заявляй о выполненных действиях, если действие не было реально выполнено маршрутом или инструментом",
+        "- различай observed / inferred / uncertain и не скрывай, где был только вывод, а не прямое наблюдение",
+        "- не описывай внутренние переживания, сознание или эмоции как реальное состояние системы",
     ]
     if "respect-enterprise-mode" in route_info.guardrails:
         lines.append("- если пользователь зовёт Enterprise, держи инженерный режим ответа и не сваливайся в общий бытовой тон Jarvis")
@@ -9753,6 +10960,14 @@ def build_guardrail_note(route_info: RouteDecision) -> str:
         lines.append("- не подменяй проверку среды общими рассуждениями, устаревшими примерами или советом выполнить команду так, будто ответ уже подтверждён")
     if "no-system-actions" in route_info.guardrails:
         lines.append("- не выполняй системные действия и не описывай их как выполненные")
+    if "heightened-uncertainty" in route_info.guardrails:
+        lines.append("- в этом ответе системная неопределённость повышена: держи формулировки консервативными и не сглаживай uncertainty")
+    if "runtime-risk-attention" in route_info.guardrails:
+        lines.append("- сейчас повышен runtime-risk: если не хватает прямого подтверждения, лучше честно ограничить вывод и сослаться на observed state")
+    if "doc-sync-attention" in route_info.guardrails:
+        lines.append("- есть сигнал doc/runtime drift: не делай вид, что документация точно соответствует состоянию без проверки")
+    if "stale-memory-attention" in route_info.guardrails:
+        lines.append("- локальная память могла устареть: приоритет у свежих events и recent relation context")
     lines.append("- если уверенности мало, честно обозначь ограничение и предложи следующий безопасный шаг")
     return "\n".join(lines)
 
@@ -9777,10 +10992,19 @@ def apply_self_check_contract(answer: str, route_decision: RouteDecision) -> Sel
     cleaned = normalize_whitespace(answer)
     flags: List[str] = []
     final_answer = cleaned
+    observed_basis: List[str] = []
+    uncertain_points: List[str] = []
     if not cleaned:
-        return SelfCheckReport(outcome="empty", answer="Пустой ответ. Переформулируй запрос.", flags=("empty-answer",))
+        return SelfCheckReport(
+            outcome="empty",
+            answer="Пустой ответ. Переформулируй запрос.",
+            flags=("empty-answer",),
+            observed_basis=(),
+            uncertain_points=("empty-answer",),
+        )
 
     if route_decision.use_live or route_decision.use_web:
+        observed_basis.append("external-sources")
         lowered = cleaned.lower()
         if "источник:" not in lowered and "http" not in lowered:
             final_answer = final_answer + f"\n\nИсточник: {route_decision.source_label}."
@@ -9793,6 +11017,7 @@ def apply_self_check_contract(answer: str, route_decision: RouteDecision) -> Sel
         if route_decision.route_kind == "live_current_fact" and "подтверждение:" not in lowered and "не подтверж" not in lowered:
             final_answer = final_answer + "\n\nПроверка: это вывод по найденным внешним источникам, а не абсолютная гарантия факта."
             flags.append("added-current-fact-disclaimer")
+            uncertain_points.append("current-fact-is-inferred")
             lowered = final_answer.lower()
 
     if "no-system-actions" in route_decision.guardrails:
@@ -9801,17 +11026,29 @@ def apply_self_check_contract(answer: str, route_decision: RouteDecision) -> Sel
         if any(marker in lowered for marker in action_markers):
             final_answer += "\n\nПроверка: этот маршрут не подтверждает выполнение системных действий."
             flags.append("added-no-action-disclaimer")
+            uncertain_points.append("action-claim-without-tool-proof")
 
     if "runtime-verification" in route_decision.guardrails and not route_decision.use_workspace:
         lowered = final_answer.lower()
         if all(marker not in lowered for marker in ("не подтверж", "не удалось", "ограничен", "недоступ", "нельзя проверить")):
             final_answer += "\n\nПроверка: этот маршрут не подтверждает реальные метрики среды. Для точных RAM/CPU/disk/uptime данных нужен runtime/workspace маршрут."
             flags.append("added-runtime-verification-disclaimer")
+            uncertain_points.append("runtime-not-verified")
+    if route_decision.use_workspace:
+        observed_basis.append("workspace-runtime")
+    if route_decision.use_events or route_decision.use_database or route_decision.use_reply:
+        observed_basis.append("local-memory")
+    if "heightened-uncertainty" in route_decision.guardrails:
+        uncertain_points.append("system-uncertainty-pressure-high")
+    if "runtime-risk-attention" in route_decision.guardrails:
+        uncertain_points.append("runtime-risk-pressure-high")
 
     return SelfCheckReport(
         outcome=classify_answer_outcome(final_answer),
         answer=final_answer,
         flags=tuple(flags),
+        observed_basis=tuple(dict.fromkeys(observed_basis)),
+        uncertain_points=tuple(dict.fromkeys(uncertain_points)),
     )
 
 
