@@ -195,6 +195,7 @@ NET_USAGE_TEXT = "Используй: /net"
 GIT_STATUS_USAGE_TEXT = "Используй: /gitstatus"
 GIT_LAST_USAGE_TEXT = "Используй: /gitlast [количество]"
 ERRORS_USAGE_TEXT = "Используй: /errors [количество]"
+EVENTS_USAGE_TEXT = "Используй: /events [количество]"
 WHO_SAID_USAGE_TEXT = "Используй: /who_said <запрос>"
 HISTORY_USAGE_TEXT = "Используй: /history @username, /history user_id или reply на сообщение участника"
 DIGEST_USAGE_TEXT = "Используй: /digest [YYYY-MM-DD]"
@@ -288,6 +289,7 @@ COMMANDS_LIST_TEXT = (
     "/gitstatus\n"
     "/gitlast [количество]\n"
     "/errors [количество]\n"
+    "/events [количество]\n"
     "/sdls [/sdcard/путь]\n"
     "/sdsend /sdcard/путь/к/файлу\n"
     "/sdsave /sdcard/папка/или/файл\n"
@@ -1971,11 +1973,13 @@ class TelegramBridge:
                 "Команды раздела:\n"
                 "• /gitstatus — worktree, branch, upstream\n"
                 "• /gitlast 5 — последние коммиты, число можно менять\n"
-                "• /errors 10 — последние ошибки/сбои из tg_codex_bridge.log\n"
+                "• /errors 10 — только реальные ошибки и поломки\n"
+                "• /events 10 — рестарты, блокировки и служебные события\n"
                 "• /upgrade <что изменить> — постановка задачи на изменение кода\n\n"
                 "Примеры:\n"
                 "• /gitlast 12\n"
                 "• /errors 20\n"
+                "• /events 20\n"
                 "• /upgrade добавь новый route для ..."
             )
             markup = {
@@ -3128,6 +3132,9 @@ class TelegramBridge:
         errors_value = parse_errors_command(text)
         if errors_value is not None:
             return self.handle_errors_command(chat_id, user_id, errors_value)
+        events_value = parse_events_command(text)
+        if events_value is not None:
+            return self.handle_events_command(chat_id, user_id, events_value)
         if text == "/resources":
             return self.handle_resources_command(chat_id, user_id)
         if text == "/topproc":
@@ -4069,6 +4076,24 @@ class TelegramBridge:
             self.safe_send_text(chat_id, "В последних логах явных ошибок не найдено.")
             return True
         self.safe_send_text(chat_id, "Ошибки и сбои из хвоста лога:\n" + "\n".join(f"- {line}" for line in lines))
+        return True
+
+    def handle_events_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        limit = 12
+        if payload:
+            try:
+                limit = max(1, min(30, int(payload)))
+            except ValueError:
+                self.safe_send_text(chat_id, EVENTS_USAGE_TEXT)
+                return True
+        lines = read_recent_operational_highlights(self.log_path, limit=limit)
+        if not lines:
+            self.safe_send_text(chat_id, "В последних логах заметных служебных событий не найдено.")
+            return True
+        self.safe_send_text(chat_id, "Служебные события из хвоста лога:\n" + "\n".join(f"- {line}" for line in lines))
         return True
 
     def handle_topproc_command(self, chat_id: int, user_id: Optional[int]) -> bool:
@@ -6035,6 +6060,15 @@ def parse_errors_command(text: str) -> Optional[str]:
     return parts[1].strip()
 
 
+def parse_events_command(text: str) -> Optional[str]:
+    if not text.startswith("/events"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
 def parse_export_command(text: str) -> Optional[str]:
     if not text.startswith("/export"):
         return None
@@ -7225,11 +7259,36 @@ def is_error_log_line(lowered_line: str) -> bool:
         "exception",
         "timed out",
         "timeout expired",
+    )
+    return any(marker in lowered_line for marker in error_markers)
+
+
+def read_recent_operational_highlights(log_path: Path, limit: int = 8) -> List[str]:
+    if not log_path.exists():
+        return []
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return []
+    matched: List[str] = []
+    for line in reversed(lines[-400:]):
+        lowered = line.lower()
+        if is_operational_log_line(lowered):
+            matched.append(truncate_text(normalize_whitespace(line), 220))
+        if len(matched) >= limit:
+            break
+    return list(reversed(matched))
+
+
+def is_operational_log_line(lowered_line: str) -> bool:
+    if not lowered_line:
+        return False
+    markers = (
         "restart requested",
         "bridge exited",
         "blocked user_id",
     )
-    return any(marker in lowered_line for marker in error_markers)
+    return any(marker in lowered_line for marker in markers)
 
 
 def run_git_command(repo_path: Path, args: List[str], timeout_seconds: int = 20) -> str:

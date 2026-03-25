@@ -214,7 +214,8 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/ownerreport` — приватный runtime-отчёт для владельца: ресурсы, backup, хвост ошибок
 - `/gitstatus` — текущее состояние git-ветки и worktree
 - `/gitlast [N]` — последние коммиты
-- `/errors [N]` — свежие ошибки и сбои из `tg_codex_bridge.log`
+- `/errors [N]` — только реальные ошибки и поломки из `tg_codex_bridge.log`
+- `/events [N]` — рестарты, блокировки и служебные события
 
 ## Owner Panel
 

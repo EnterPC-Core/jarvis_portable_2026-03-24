@@ -61,6 +61,7 @@
 - `/gitstatus`
 - `/gitlast [количество]`
 - `/errors [количество]`
+- `/events [количество]`
 - `/chatdigest <chat_id> [YYYY-MM-DD]`
 
 ## Owner / Файлы
