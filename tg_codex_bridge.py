@@ -62,6 +62,7 @@ DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90
 DEFAULT_ENTERPRISE_TASK_TIMEOUT = 240
 DEFAULT_OWNER_DAILY_DIGEST_HOUR_UTC = 7
 DEFAULT_OWNER_WEEKLY_DIGEST_WEEKDAY_UTC = 0
+DEFAULT_MEMORY_REFRESH_INTERVAL_SECONDS = 1800
 DEFAULT_LEGACY_JARVIS_DB_PATH = str((Path(__file__).resolve().parent.parent / "jarvis_legacy_data" / "jarvis.db"))
 OWNER_USER_ID = int((os.getenv("OWNER_USER_ID", os.getenv("ADMIN_ID", "6102780373")) or "6102780373").strip())
 OWNER_USERNAME = (os.getenv("OWNER_USERNAME", "@DmitryUnboxing") or "@DmitryUnboxing").strip()
@@ -654,6 +655,7 @@ class BridgeState:
                     username TEXT NOT NULL DEFAULT '',
                     display_name TEXT NOT NULL DEFAULT '',
                     summary TEXT NOT NULL DEFAULT '',
+                    ai_summary TEXT NOT NULL DEFAULT '',
                     style_notes TEXT NOT NULL DEFAULT '',
                     topics TEXT NOT NULL DEFAULT '',
                     last_message_at INTEGER NOT NULL DEFAULT 0,
@@ -668,6 +670,15 @@ class BridgeState:
                     scope TEXT NOT NULL DEFAULT 'rolling',
                     summary TEXT NOT NULL,
                     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS memory_refresh_state (
+                    chat_id INTEGER PRIMARY KEY,
+                    last_event_id INTEGER NOT NULL DEFAULT 0,
+                    last_run_at INTEGER NOT NULL DEFAULT 0,
+                    last_user_refresh_at INTEGER NOT NULL DEFAULT 0,
+                    last_summary_refresh_at INTEGER NOT NULL DEFAULT 0
                 )"""
             )
             self.db.execute(
@@ -744,6 +755,7 @@ class BridgeState:
             self._ensure_warn_settings_columns()
             self._ensure_warnings_columns()
             self._ensure_chat_events_columns()
+            self._ensure_user_memory_profile_columns()
             self._rebuild_chat_events_fts()
             self.db.commit()
 
@@ -776,6 +788,11 @@ class BridgeState:
         for name, type_name in required.items():
             if name not in columns:
                 self.db.execute(f"ALTER TABLE chat_events ADD COLUMN {name} {type_name}")
+
+    def _ensure_user_memory_profile_columns(self) -> None:
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(user_memory_profiles)").fetchall()}
+        if "ai_summary" not in columns:
+            self.db.execute("ALTER TABLE user_memory_profiles ADD COLUMN ai_summary TEXT NOT NULL DEFAULT ''")
 
     def _rebuild_chat_events_fts(self) -> None:
         self.db.execute("INSERT INTO chat_events_fts(chat_events_fts) VALUES('rebuild')")
@@ -1078,12 +1095,13 @@ class BridgeState:
         with self.db_lock:
             self.db.execute(
                 """INSERT INTO user_memory_profiles(
-                    chat_id, user_id, username, display_name, summary, style_notes, topics, last_message_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                    chat_id, user_id, username, display_name, summary, ai_summary, style_notes, topics, last_message_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, '', ?, ?, ?, strftime('%s','now'))
                 ON CONFLICT(chat_id, user_id) DO UPDATE SET
                     username = excluded.username,
                     display_name = excluded.display_name,
                     summary = excluded.summary,
+                    ai_summary = user_memory_profiles.ai_summary,
                     style_notes = excluded.style_notes,
                     topics = excluded.topics,
                     last_message_at = excluded.last_message_at,
@@ -1120,7 +1138,7 @@ class BridgeState:
         params: List[object] = [chat_id, *target_ids[:limit]]
         with self.db_lock:
             rows = self.db.execute(
-                f"""SELECT user_id, username, display_name, summary, style_notes, topics, updated_at
+                f"""SELECT user_id, username, display_name, summary, ai_summary, style_notes, topics, updated_at
                 FROM user_memory_profiles
                 WHERE chat_id = ? AND user_id IN ({placeholders})
                 ORDER BY updated_at DESC""",
@@ -1132,12 +1150,15 @@ class BridgeState:
         for row in rows:
             label = row[2] or build_actor_name(row[0], row[1] or "", "", "", "user")
             lines.append(f"- {label}")
-            if row[3]:
-                lines.append(f"  summary: {truncate_text(row[3], 260)}")
-            if row[4]:
-                lines.append(f"  style: {truncate_text(row[4], 180)}")
+            preferred_summary = row[4] or row[3] or ""
+            if preferred_summary:
+                lines.append(f"  summary: {truncate_text(preferred_summary, 260)}")
+            if row[3] and row[4] and row[4] != row[3]:
+                lines.append(f"  heuristic: {truncate_text(row[3], 180)}")
             if row[5]:
-                lines.append(f"  topics: {truncate_text(row[5], 180)}")
+                lines.append(f"  style: {truncate_text(row[5], 180)}")
+            if row[6]:
+                lines.append(f"  topics: {truncate_text(row[6], 180)}")
         return "\n".join(lines)
 
     def get_summary_memory_context(self, chat_id: int, limit: int = 3) -> str:
@@ -1157,6 +1178,109 @@ class BridgeState:
             stamp = datetime.fromtimestamp(int(created_at)).strftime("%m-%d %H:%M") if created_at else "--:--"
             lines.append(f"- [{stamp}] {scope}: {truncate_text(summary or '', 220)}")
         return "\n".join(lines)
+
+    def add_summary_snapshot(self, chat_id: int, scope: str, summary: str) -> None:
+        cleaned = truncate_text(normalize_whitespace(summary), 1800)
+        if not cleaned:
+            return
+        with self.db_lock:
+            self.db.execute(
+                "INSERT INTO summary_snapshots(chat_id, scope, summary) VALUES(?, ?, ?)",
+                (chat_id, scope, cleaned),
+            )
+            self.db.commit()
+
+    def set_user_memory_ai_summary(self, chat_id: int, user_id: int, ai_summary: str) -> None:
+        cleaned = truncate_text(normalize_whitespace(ai_summary), 900)
+        if not cleaned:
+            return
+        with self.db_lock:
+            self.db.execute(
+                "UPDATE user_memory_profiles SET ai_summary = ?, updated_at = strftime('%s','now') WHERE chat_id = ? AND user_id = ?",
+                (cleaned, chat_id, user_id),
+            )
+            self.db.commit()
+
+    def get_recent_chat_rows(self, chat_id: int, limit: int = 40) -> List[Tuple[int, Optional[int], str, str, str, str, str, str]]:
+        with self.db_lock:
+            rows = self.db.execute(
+                "SELECT created_at, user_id, username, first_name, last_name, role, message_type, text FROM chat_events WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+                (chat_id, limit),
+            ).fetchall()
+        return list(reversed(rows))
+
+    def get_recent_user_rows(self, chat_id: int, user_id: int, limit: int = 20) -> List[Tuple[int, Optional[int], str, str, str, str, str]]:
+        with self.db_lock:
+            rows = self.db.execute(
+                "SELECT created_at, user_id, username, first_name, last_name, message_type, text FROM chat_events WHERE chat_id = ? AND role = 'user' AND user_id = ? ORDER BY id DESC LIMIT ?",
+                (chat_id, user_id, limit),
+            ).fetchall()
+        return list(reversed(rows))
+
+    def get_chats_due_for_memory_refresh(self, limit: int = 3, min_new_events: int = 12, min_gap_seconds: int = DEFAULT_MEMORY_REFRESH_INTERVAL_SECONDS) -> List[Tuple[int, int, int]]:
+        with self.db_lock:
+            chat_rows = self.db.execute(
+                """SELECT chat_id, MAX(id) AS max_id
+                FROM chat_events
+                GROUP BY chat_id
+                ORDER BY max_id DESC
+                LIMIT 40"""
+            ).fetchall()
+            now_ts = int(time.time())
+            due: List[Tuple[int, int, int]] = []
+            for chat_id, max_id in chat_rows:
+                marker_row = self.db.execute(
+                    "SELECT last_event_id, last_run_at FROM memory_refresh_state WHERE chat_id = ?",
+                    (chat_id,),
+                ).fetchone()
+                last_event_id = int(marker_row[0]) if marker_row else 0
+                last_run_at = int(marker_row[1]) if marker_row else 0
+                if last_run_at and now_ts - last_run_at < min_gap_seconds:
+                    continue
+                count_row = self.db.execute(
+                    "SELECT COUNT(*) FROM chat_events WHERE chat_id = ? AND id > ? AND role = 'user'",
+                    (chat_id, last_event_id),
+                ).fetchone()
+                new_events = int(count_row[0] or 0)
+                if new_events < min_new_events:
+                    continue
+                due.append((int(chat_id), int(max_id or 0), new_events))
+                if len(due) >= limit:
+                    break
+        return due
+
+    def mark_memory_refresh(
+        self,
+        chat_id: int,
+        last_event_id: int,
+        *,
+        summary_refreshed: bool = False,
+        users_refreshed: bool = False,
+    ) -> None:
+        with self.db_lock:
+            existing = self.db.execute(
+                "SELECT last_summary_refresh_at, last_user_refresh_at FROM memory_refresh_state WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            last_summary_refresh_at = int(existing[0] or 0) if existing else 0
+            last_user_refresh_at = int(existing[1] or 0) if existing else 0
+            now_expr = "strftime('%s','now')"
+            self.db.execute(
+                f"""INSERT INTO memory_refresh_state(chat_id, last_event_id, last_run_at, last_user_refresh_at, last_summary_refresh_at)
+                VALUES(?, ?, {now_expr}, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    last_event_id = excluded.last_event_id,
+                    last_run_at = {now_expr},
+                    last_user_refresh_at = excluded.last_user_refresh_at,
+                    last_summary_refresh_at = excluded.last_summary_refresh_at""",
+                (
+                    chat_id,
+                    int(last_event_id),
+                    int(time.time()) if users_refreshed else last_user_refresh_at,
+                    int(time.time()) if summary_refreshed else last_summary_refresh_at,
+                ),
+            )
+            self.db.commit()
 
     def get_chat_memory_context(self, chat_id: int, query: str = "") -> str:
         summary = self.get_summary(chat_id)
@@ -1956,6 +2080,9 @@ class TelegramBridge:
         self.next_backup_check_ts = 0.0
         self.next_report_check_ts = 0.0
         self.next_moderation_check_ts = 0.0
+        self.next_memory_refresh_check_ts = 0.0
+        self.memory_refresh_lock = Lock()
+        self.memory_refresh_in_progress = False
         self.stt_models: Dict[str, object] = {}
         self.stt_failed_models: Set[str] = set()
         self.stt_lock = Lock()
@@ -1978,6 +2105,7 @@ class TelegramBridge:
                 self.beat_heartbeat()
                 self.maybe_start_weekly_backup()
                 self.maybe_start_scheduled_reports()
+                self.maybe_start_memory_refresh()
                 self.process_due_moderation_actions()
                 updates = self.get_updates(self.state.last_update_id)
                 if not updates.get("ok"):
@@ -6212,6 +6340,79 @@ class TelegramBridge:
         except Exception as error:
             log(f"scheduled reports failed: {error}")
 
+    def maybe_start_memory_refresh(self) -> None:
+        now = time.time()
+        if now < self.next_memory_refresh_check_ts:
+            return
+        self.next_memory_refresh_check_ts = now + DEFAULT_MEMORY_REFRESH_INTERVAL_SECONDS
+        with self.memory_refresh_lock:
+            if self.memory_refresh_in_progress:
+                return
+            self.memory_refresh_in_progress = True
+        worker = Thread(target=self.run_memory_refresh, daemon=True)
+        worker.start()
+
+    def run_memory_refresh(self) -> None:
+        try:
+            for chat_id, last_event_id, new_events in self.state.get_chats_due_for_memory_refresh(limit=3):
+                summary_done = self.refresh_ai_chat_summary(chat_id)
+                users_done = self.refresh_ai_user_memory(chat_id)
+                self.state.mark_memory_refresh(
+                    chat_id,
+                    last_event_id,
+                    summary_refreshed=summary_done,
+                    users_refreshed=users_done,
+                )
+                log(
+                    f"memory refresh chat={chat_id} new_events={new_events} "
+                    f"summary={'yes' if summary_done else 'no'} users={'yes' if users_done else 'no'}"
+                )
+        except Exception as error:
+            log(f"memory refresh failed: {error}")
+        finally:
+            with self.memory_refresh_lock:
+                self.memory_refresh_in_progress = False
+
+    def refresh_ai_chat_summary(self, chat_id: int) -> bool:
+        rows = self.state.get_recent_chat_rows(chat_id, limit=40)
+        if len(rows) < 12:
+            return False
+        current_summary = self.state.get_summary(chat_id)
+        facts = self.state.get_facts(chat_id, limit=6)
+        prompt = build_ai_chat_memory_prompt(chat_id, rows, current_summary, facts)
+        ai_summary = self.run_codex_short(prompt, timeout_seconds=30)
+        cleaned = normalize_whitespace(ai_summary)
+        if not cleaned:
+            return False
+        self.state.add_summary_snapshot(chat_id, "ai_rollup", cleaned)
+        return True
+
+    def refresh_ai_user_memory(self, chat_id: int) -> bool:
+        rows = self.state.get_recent_chat_rows(chat_id, limit=80)
+        counts: Dict[int, int] = {}
+        labels: Dict[int, Tuple[str, str, str]] = {}
+        for created_at, user_id, username, first_name, last_name, role, message_type, text in rows:
+            if role != "user" or user_id is None:
+                continue
+            counts[user_id] = counts.get(user_id, 0) + 1
+            labels[user_id] = (username or "", first_name or "", last_name or "")
+        refreshed = False
+        for user_id, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:2]:
+            user_rows = self.state.get_recent_user_rows(chat_id, user_id, limit=18)
+            if len(user_rows) < 6:
+                continue
+            username, first_name, last_name = labels.get(user_id, ("", "", ""))
+            profile_label = build_actor_name(user_id, username, first_name, last_name, "user")
+            heuristic_context = self.state.get_user_memory_context(chat_id, user_id=user_id)
+            prompt = build_ai_user_memory_prompt(profile_label, user_rows, heuristic_context)
+            ai_summary = self.run_codex_short(prompt, timeout_seconds=25)
+            cleaned = normalize_whitespace(ai_summary)
+            if not cleaned:
+                continue
+            self.state.set_user_memory_ai_summary(chat_id, user_id, cleaned)
+            refreshed = True
+        return refreshed
+
     def maybe_send_daily_owner_digest(self, now: datetime) -> None:
         if now.hour < self.config.owner_daily_digest_hour_utc:
             return
@@ -8102,6 +8303,54 @@ def render_timeline_rows(label: str, rows: List[Tuple[int, Optional[int], str, s
         stamp = datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S") if created_at else ""
         lines.append(f"[{stamp}] ({message_type}) {truncate_text(content, 280)}")
     return "\n".join(lines)
+
+
+def build_ai_chat_memory_prompt(
+    chat_id: int,
+    rows: List[Tuple[int, Optional[int], str, str, str, str, str, str]],
+    current_summary: str,
+    facts: List[str],
+) -> str:
+    lines: List[str] = []
+    for created_at, user_id, username, first_name, last_name, role, message_type, content in rows[-32:]:
+        stamp = datetime.fromtimestamp(created_at).strftime("%m-%d %H:%M") if created_at else "--:--"
+        actor = build_actor_name(user_id, username or "", first_name or "", last_name or "", role)
+        lines.append(f"[{stamp}] {actor} ({message_type}): {truncate_text(content, 220)}")
+    facts_block = "\n".join(f"- {truncate_text(fact, 140)}" for fact in facts[:5]) or "- нет"
+    return (
+        "Сделай компактную summary-memory сводку по Telegram-чату на русском.\n"
+        "Нужно 4-7 коротких строк, без воды.\n"
+        "Только наблюдаемые факты: темы, активные участники, повторяющиеся мотивы, что важно помнить дальше.\n"
+        "Не выдумывай скрытые мотивы, диагнозы или биографию.\n"
+        "Если есть remembered facts, учитывай их как отдельный слой.\n\n"
+        f"chat_id={chat_id}\n\n"
+        f"Текущая rolling summary:\n{truncate_text(current_summary, 800) or 'пока нет'}\n\n"
+        f"Remembered facts:\n{facts_block}\n\n"
+        "Последние события:\n"
+        + "\n".join(lines)
+    )
+
+
+def build_ai_user_memory_prompt(
+    profile_label: str,
+    rows: List[Tuple[int, Optional[int], str, str, str, str, str]],
+    heuristic_context: str,
+) -> str:
+    lines: List[str] = []
+    for created_at, user_id, username, first_name, last_name, message_type, content in rows[-14:]:
+        stamp = datetime.fromtimestamp(created_at).strftime("%m-%d %H:%M") if created_at else "--:--"
+        lines.append(f"[{stamp}] ({message_type}) {truncate_text(content, 220)}")
+    return (
+        "Сделай user-memory summary по участнику чата на русском.\n"
+        "Формат: 3-5 коротких предложений.\n"
+        "Опирайся только на реальные сообщения.\n"
+        "Нужно зафиксировать: стиль общения, типичные темы, полезные особенности для будущих ответов.\n"
+        "Не придумывай личные факты, диагнозы, политику или скрытые намерения.\n\n"
+        f"Участник: {profile_label}\n\n"
+        f"Текущий эвристический профиль:\n{truncate_text(heuristic_context, 700) or 'пока нет'}\n\n"
+        "Сообщения:\n"
+        + "\n".join(lines)
+    )
 
 
 def should_include_event_context(user_text: str) -> bool:
