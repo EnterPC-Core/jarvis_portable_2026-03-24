@@ -1,6 +1,6 @@
 {
   "database": "/home/userland/projects/bots/jarvis_portable_2026-03-24/jarvis_memory.db",
-  "generated_at_utc": "2026-03-25T12:26:33+00:00",
+  "generated_at_utc": "2026-03-25T13:06:31+00:00",
   "tables": [
     "achievement_catalog",
     "appeal_events",
@@ -44,17 +44,17 @@
     "achievement_catalog": 17,
     "appeal_events": 4,
     "appeals": 3,
-    "autobiographical_memory": 0,
+    "autobiographical_memory": 1,
     "bot_meta": 7,
-    "chat_events": 1121,
-    "chat_events_fts": 1121,
+    "chat_events": 1129,
+    "chat_events_fts": 1129,
     "chat_events_fts_config": 1,
-    "chat_events_fts_data": 29,
-    "chat_events_fts_docsize": 1121,
-    "chat_events_fts_idx": 27,
-    "chat_history": 339,
+    "chat_events_fts_data": 30,
+    "chat_events_fts_docsize": 1129,
+    "chat_events_fts_idx": 28,
+    "chat_history": 341,
     "chat_modes": 1,
-    "chat_participants": 21,
+    "chat_participants": 22,
     "chat_runtime_cache": 2,
     "chat_summaries": 5,
     "drive_scores": 6,
@@ -64,20 +64,20 @@
     "moderation_journal": 0,
     "progression_profiles": 1001,
     "reflections": 0,
-    "relation_memory": 24,
-    "request_diagnostics": 76,
-    "score_events": 2391,
+    "relation_memory": 25,
+    "request_diagnostics": 77,
+    "score_events": 2395,
     "self_model_state": 1,
     "skill_memory": 5,
-    "summary_snapshots": 175,
+    "summary_snapshots": 177,
     "ui_sessions": 3,
     "user_achievement_state": 16932,
-    "user_memory_profiles": 20,
+    "user_memory_profiles": 21,
     "warn_settings": 0,
     "warnings": 0,
     "welcome_settings": 1,
     "world_state_registry": 5,
-    "world_state_snapshots": 0
+    "world_state_snapshots": 3
   },
   "safe_table_rows": {
     "bot_meta": [
@@ -91,7 +91,7 @@
       },
       {
         "key": "last_update_id",
-        "value": "955148370"
+        "value": "955148376"
       },
       {
         "key": "pending_restart_chat_id",
@@ -135,11 +135,11 @@
       "content_exported": false
     },
     "chat_events": {
-      "rows": 1121,
+      "rows": 1129,
       "content_exported": false
     },
     "chat_history": {
-      "rows": 339,
+      "rows": 341,
       "content_exported": false
     },
     "memory_facts": {

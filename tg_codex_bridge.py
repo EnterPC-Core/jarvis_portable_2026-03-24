@@ -25,7 +25,142 @@ from requests import Response, Session
 from requests.exceptions import RequestException
 
 from appeals_service import AppealsService
+from handlers.command_parsers import (
+    normalize_mode as _normalize_mode,
+    parse_autobio_command as _parse_autobio_command,
+    parse_chat_digest_command as _parse_chat_digest_command,
+    parse_daily_command as _parse_daily_command,
+    parse_digest_command as _parse_digest_command,
+    parse_drives_command as _parse_drives_command,
+    parse_errors_command as _parse_errors_command,
+    parse_events_command as _parse_events_command,
+    parse_export_command as _parse_export_command,
+    parse_git_last_command as _parse_git_last_command,
+    parse_git_status_command as _parse_git_status_command,
+    parse_history_command as _parse_history_command,
+    parse_memory_chat_command as _parse_memory_chat_command,
+    parse_memory_summary_command as _parse_memory_summary_command,
+    parse_memory_user_command as _parse_memory_user_command,
+    parse_mode_command as _parse_mode_command,
+    parse_moderation_command as _parse_moderation_command,
+    parse_owner_autofix_command as _parse_owner_autofix_command,
+    parse_owner_report_command as _parse_owner_report_command,
+    parse_password_command as _parse_password_command,
+    parse_portrait_command as _parse_portrait_command,
+    parse_recall_command as _parse_recall_command,
+    parse_reflections_command as _parse_reflections_command,
+    parse_remember_command as _parse_remember_command,
+    parse_routes_command as _parse_routes_command,
+    parse_sd_list_command as _parse_sd_list_command,
+    parse_sd_save_command as _parse_sd_save_command,
+    parse_sd_send_command as _parse_sd_send_command,
+    parse_search_command as _parse_search_command,
+    parse_self_state_command as _parse_self_state_command,
+    parse_skills_command as _parse_skills_command,
+    parse_upgrade_command as _parse_upgrade_command,
+    parse_warn_command as _parse_warn_command,
+    parse_who_said_command as _parse_who_said_command,
+    parse_world_state_command as _parse_world_state_command,
+)
 from legacy_jarvis_adapter import LegacyJarvisAdapter
+from utils.text_utils import (
+    build_download_name as _build_download_name,
+    normalize_whitespace as _normalize_whitespace,
+    split_long_message as _split_long_message,
+    trim_generic_followup as _trim_generic_followup,
+    truncate_text as _truncate_text,
+)
+from utils.runtime_utils import (
+    cleanup_temp_file as _cleanup_temp_file,
+    parse_allowed_user_ids as _parse_allowed_user_ids,
+    prepare_tmp_dir as _prepare_tmp_dir,
+    read_bool_env as _read_bool_env,
+    read_int_env as _read_int_env,
+    should_include_code_backup_file as _should_include_code_backup_file,
+    split_file_parts as _split_file_parts,
+)
+from utils.chat_text import (
+    contains_voice_trigger_name as _contains_voice_trigger_name,
+    extract_assistant_persona as _extract_assistant_persona,
+    normalize_incoming_text as _normalize_incoming_text,
+    should_process_group_message as _should_process_group_message,
+)
+from utils.file_utils import (
+    ensure_sdcard_save_target_writable as _ensure_sdcard_save_target_writable,
+    extract_message_media_file as _extract_message_media_file,
+    format_file_size as _format_file_size,
+    normalize_sdcard_alias as _normalize_sdcard_alias,
+    read_document_excerpt as _read_document_excerpt,
+    resolve_sdcard_path as _resolve_sdcard_path,
+    resolve_sdcard_save_target as _resolve_sdcard_save_target,
+)
+from utils.ops_utils import (
+    is_error_log_line as _is_error_log_line,
+    is_operational_log_line as _is_operational_log_line,
+    read_recent_log_highlights as _read_recent_log_highlights,
+    read_recent_operational_highlights as _read_recent_operational_highlights,
+    render_git_last_commits as _render_git_last_commits,
+    render_git_status_summary as _render_git_status_summary,
+    run_git_command as _run_git_command,
+)
+from utils.report_utils import (
+    extract_meminfo_value as _extract_meminfo_value,
+    format_swap_line as _format_swap_line,
+    render_disk_summary as _render_disk_summary,
+    render_event_rows as _render_event_rows,
+    render_network_summary as _render_network_summary,
+    render_resource_summary as _render_resource_summary,
+    render_route_diagnostics_rows as _render_route_diagnostics_rows,
+    render_timeline_rows as _render_timeline_rows,
+    render_top_processes as _render_top_processes,
+)
+from utils.help_utils import (
+    build_help_panel_markup as _build_help_panel_markup,
+    build_help_panel_text as _build_help_panel_text,
+    build_voice_transcription_help as _build_voice_transcription_help,
+)
+from utils.message_utils import (
+    build_service_actor_name as _build_service_actor_name,
+    describe_message_media_kind as _describe_message_media_kind,
+    extract_forward_origin as _extract_forward_origin,
+    format_reaction_count_payload as _format_reaction_count_payload,
+    format_reaction_payload as _format_reaction_payload,
+    summarize_message_for_pin as _summarize_message_for_pin,
+)
+from utils.memory_renderers import (
+    render_autobiographical_context as _render_autobiographical_context,
+    render_chat_memory_context as _render_chat_memory_context,
+    render_drive_context as _render_drive_context,
+    render_reflection_context as _render_reflection_context,
+    render_relation_memory_context as _render_relation_memory_context,
+    render_self_model_context as _render_self_model_context,
+    render_skill_memory_context as _render_skill_memory_context,
+    render_summary_memory_context as _render_summary_memory_context,
+    render_user_memory_context as _render_user_memory_context,
+    render_world_state_context as _render_world_state_context,
+)
+from prompts.builders import (
+    build_ai_chat_memory_prompt as _build_ai_chat_memory_prompt,
+    build_ai_user_memory_prompt as _build_ai_user_memory_prompt,
+    build_fts_query as _build_fts_query,
+    build_portrait_prompt as _build_portrait_prompt,
+    build_prompt as _build_prompt,
+    dedupe_history as _dedupe_history,
+    extract_keywords as _extract_keywords,
+    format_history as _format_history,
+)
+from services.orchestration_utils import (
+    apply_self_check_contract as _apply_self_check_contract,
+    build_guardrail_note as _build_guardrail_note,
+    build_route_summary_text as _build_route_summary_text,
+    classify_answer_outcome as _classify_answer_outcome,
+    has_freshness_marker as _has_freshness_marker,
+    validate_route_decision as _validate_route_decision,
+)
+from services.context_bundle_utils import (
+    build_context_bundle as _build_context_bundle,
+    should_include_entity_context as _should_include_entity_context,
+)
 
 try:
     import psutil
@@ -1735,41 +1870,13 @@ class BridgeState:
         if not rows:
             return ""
         participant_map = {int(row[0]): row for row in participant_rows if row[0] is not None}
-        lines = ["User memory:"]
-        for row in rows:
-            label = row[2] or build_actor_name(row[0], row[1] or "", "", "", "user")
-            lines.append(f"- {label}")
-            preferred_summary = row[4] or row[3] or ""
-            if preferred_summary:
-                lines.append(f"  summary: {truncate_text(preferred_summary, 260)}")
-            if row[3] and row[4] and row[4] != row[3]:
-                lines.append(f"  heuristic: {truncate_text(row[3], 180)}")
-            if row[5]:
-                lines.append(f"  style: {truncate_text(row[5], 180)}")
-            if row[6]:
-                lines.append(f"  topics: {truncate_text(row[6], 180)}")
-            participant = participant_map.get(int(row[0])) if row[0] is not None else None
-            if participant:
-                participant_bits: List[str] = []
-                if int(participant[1] or 0):
-                    participant_bits.append("admin")
-                if participant[2]:
-                    participant_bits.append(f"status={participant[2]}")
-                participant_bits.append(f"last_seen={int(participant[3] or 0)}")
-                if participant[4] is not None:
-                    participant_bits.append(f"join={int(participant[4] or 0)}")
-                if participant[5] is not None:
-                    participant_bits.append(f"leave={int(participant[5] or 0)}")
-                lines.append(f"  participant: {', '.join(participant_bits)}")
-        if relation_rows:
-            lines.append("Reply links:")
-            for source_user_id, target_reply_user_id, count in relation_rows[:4]:
-                source_row = next((row for row in rows if row[0] == source_user_id), None)
-                target_row = next((row for row in rows if row[0] == target_reply_user_id), None)
-                source_label = (source_row[2] if source_row else "") or build_actor_name(source_user_id, "", "", "", "user")
-                target_label = (target_row[2] if target_row else "") or build_actor_name(target_reply_user_id, "", "", "", "user")
-                lines.append(f"- {source_label} -> {target_label}: {int(count)}")
-        return "\n".join(lines)
+        return _render_user_memory_context(
+            rows,
+            participant_map,
+            relation_rows,
+            build_actor_name_func=build_actor_name,
+            truncate_text_func=truncate_text,
+        )
 
     def get_actor_labels(self, chat_id: int, user_ids: List[int]) -> Dict[int, str]:
         normalized_ids = sorted({int(user_id) for user_id in user_ids if user_id is not None})
@@ -2025,29 +2132,7 @@ class BridgeState:
         for row in rows:
             user_ids.extend([int(row[0]), int(row[1])])
         labels = self.get_actor_labels(chat_id, user_ids)
-        lines = ["Relation memory:"]
-        for row in rows[: max(2, limit)]:
-            low_id = int(row[0])
-            high_id = int(row[1])
-            lines.append(
-                f"- {labels.get(low_id, f'user_id={low_id}')} <-> {labels.get(high_id, f'user_id={high_id}')}: "
-                f"replies {int(row[2])}/{int(row[3])}; co_presence={int(row[4])}; "
-                f"confidence={float(row[11]):.2f}"
-            )
-            if row[9]:
-                lines.append(f"  summary: {truncate_text(row[9], 260)}")
-            if row[8]:
-                lines.append(f"  topics: {truncate_text(row[8], 180)}")
-            tone_bits: List[str] = []
-            if int(row[5] or 0) > 0:
-                tone_bits.append(f"humor={int(row[5])}")
-            if int(row[6] or 0) > 0:
-                tone_bits.append(f"rough={int(row[6])}")
-            if int(row[7] or 0) > 0:
-                tone_bits.append(f"support={int(row[7])}")
-            if tone_bits:
-                lines.append(f"  markers: {', '.join(tone_bits)}")
-        return "\n".join(lines)
+        return _render_relation_memory_context(rows, labels, limit=limit, truncate_text_func=truncate_text)
 
     def get_self_model_state(self) -> sqlite3.Row:
         with self.db_lock:
@@ -2097,23 +2182,7 @@ class BridgeState:
 
     def get_self_model_context(self, persona: str) -> str:
         row = self.get_self_model_state()
-        style = row["enterprise_style_invariants"] if persona == "enterprise" else row["jarvis_style_invariants"]
-        lines = [
-            "Self model:",
-            f"- identity: {truncate_text(row['identity'] or '', 180)}",
-            f"- active_mode: {row['active_mode'] or ''}",
-            f"- capabilities: {truncate_text(row['capabilities'] or '', 260)}",
-            f"- hard_limitations: {truncate_text(row['hard_limitations'] or '', 320)}",
-            f"- trusted_tools: {truncate_text(row['trusted_tools'] or '', 260)}",
-            f"- confidence_policy: {truncate_text(row['confidence_policy'] or '', 220)}",
-            f"- current_goals: {truncate_text(row['current_goals'] or '', 220)}",
-            f"- active_constraints: {truncate_text(row['active_constraints'] or '', 220)}",
-            f"- honesty_rules: {truncate_text(row['honesty_rules'] or '', 220)}",
-            f"- style_invariants: {truncate_text(style or '', 220)}",
-        ]
-        if row["last_route_kind"] or row["last_outcome"]:
-            lines.append(f"- recent_runtime: route={row['last_route_kind'] or '-'}; outcome={row['last_outcome'] or '-'}")
-        return "\n".join(lines)
+        return _render_self_model_context(row, persona, truncate_text)
 
     def record_autobiographical_event(
         self,
@@ -2203,16 +2272,7 @@ class BridgeState:
                 break
         if not selected:
             selected = rows[:limit]
-        lines = ["Autobiographical memory:"]
-        for row in selected[:limit]:
-            stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
-            lines.append(
-                f"- [{stamp}] {row['category']}/{row['event_type']}: {truncate_text(row['title'] or '', 140)}; "
-                f"status={row['status'] or '-'}; open={row['open_state'] or '-'}; importance={int(row['importance'] or 0)}"
-            )
-            if row["details"]:
-                lines.append(f"  details: {truncate_text(row['details'] or '', 220)}")
-        return "\n".join(lines)
+        return _render_autobiographical_context(selected[:limit], truncate_text)
 
     def get_recent_autobiographical_rows(self, limit: int = 8) -> List[sqlite3.Row]:
         with self.db_lock:
@@ -2272,13 +2332,7 @@ class BridgeState:
 
     def get_reflection_context(self, limit: int = 4) -> str:
         rows = self.get_recent_reflections(limit=limit)
-        if not rows:
-            return ""
-        lines = ["Recent reflections:"]
-        for row in rows:
-            stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
-            lines.append(f"- [{stamp}] {row['route_kind'] or '-'}: {truncate_text(row['lesson'] or row['observed_outcome'] or '', 220)}")
-        return "\n".join(lines)
+        return _render_reflection_context(rows, truncate_text)
 
     def mark_skill_used(self, skill_key: str, success: bool) -> None:
         with self.db_lock:
@@ -2326,14 +2380,7 @@ class BridgeState:
             matched = [row for row in rows if "live" in (row["trigger_tags"] or "").lower()][:limit]
         if not matched:
             matched = rows[: min(limit, 2)]
-        lines = ["Skill memory:"]
-        for row in matched[:limit]:
-            lines.append(
-                f"- {row['skill_key']}: reliability={float(row['reliability'] or 0):.2f}; uses={int(row['use_count'] or 0)}; "
-                f"triggers={truncate_text(row['trigger_tags'] or '', 120)}"
-            )
-            lines.append(f"  procedure: {truncate_text(row['procedure'] or '', 220)}")
-        return "\n".join(lines)
+        return _render_skill_memory_context(matched, truncate_text, limit)
 
     def upsert_world_state_entry(
         self,
@@ -2400,17 +2447,7 @@ class BridgeState:
                 ).fetchall()
         if not rows:
             return ""
-        lines = ["World state:"]
-        for row in rows:
-            value_parts: List[str] = [row["status"] or "-"]
-            if row["value_number"] is not None:
-                value_parts.append(f"value={float(row['value_number']):.1f}")
-            if row["value_text"]:
-                value_parts.append(truncate_text(row["value_text"] or "", 160))
-            if row["source"]:
-                value_parts.append(f"source={row['source']}")
-            lines.append(f"- {row['category']}/{row['state_key']}: {'; '.join(value_parts)}")
-        return "\n".join(lines)
+        return _render_world_state_context(rows, truncate_text)
 
     def get_recent_world_state_snapshots(self, limit: int = 5) -> List[sqlite3.Row]:
         with self.db_lock:
@@ -2440,12 +2477,7 @@ class BridgeState:
 
     def get_drive_context(self) -> str:
         rows = self.get_drive_scores()
-        if not rows:
-            return ""
-        lines = ["Drive pressures:"]
-        for row in rows:
-            lines.append(f"- {row['drive_name']}: {float(row['score'] or 0):.1f}; reason={truncate_text(row['reason'] or '', 180)}")
-        return "\n".join(lines)
+        return _render_drive_context(rows, truncate_text)
 
     def get_summary_memory_context(self, chat_id: int, limit: int = 3) -> str:
         with self.db_lock:
@@ -2457,13 +2489,7 @@ class BridgeState:
                 LIMIT ?""",
                 (chat_id, max(1, min(6, limit))),
             ).fetchall()
-        if not rows:
-            return ""
-        lines = ["Summary memory:"]
-        for scope, summary, created_at in reversed(rows):
-            stamp = datetime.fromtimestamp(int(created_at)).strftime("%m-%d %H:%M") if created_at else "--:--"
-            lines.append(f"- [{stamp}] {scope}: {truncate_text(summary or '', 220)}")
-        return "\n".join(lines)
+        return _render_summary_memory_context(rows, truncate_text)
 
     def add_summary_snapshot(self, chat_id: int, scope: str, summary: str) -> None:
         cleaned = truncate_text(normalize_whitespace(summary), 1800)
@@ -2581,22 +2607,15 @@ class BridgeState:
                 LIMIT 5""",
                 (chat_id,),
             ).fetchall()
-        lines = ["Chat memory:"]
-        if summary:
-            lines.append(f"- rolling summary: {truncate_text(summary, 260)}")
-        if rows:
-            active = ", ".join(
-                f"{build_actor_name(row[0], row[1] or '', row[2] or '', row[3] or '', 'user')}={int(row[4])}"
-                for row in rows
-            )
-            lines.append(f"- most active participants: {truncate_text(active, 260)}")
-        if facts:
-            lines.append("- remembered facts:")
-            lines.extend(f"  • {truncate_text(fact, 140)}" for fact in facts[:4])
         dynamics = self.get_chat_dynamics_context(chat_id, query=query)
-        if dynamics:
-            lines.append(dynamics)
-        return "\n".join(lines) if len(lines) > 1 else ""
+        return _render_chat_memory_context(
+            summary=summary,
+            rows=rows,
+            facts=facts,
+            dynamics=dynamics,
+            build_actor_name_func=build_actor_name,
+            truncate_text_func=truncate_text,
+        )
 
     def get_chat_dynamics_context(self, chat_id: int, query: str = "", limit: int = 60) -> str:
         if not detect_local_chat_query(query):
@@ -7063,13 +7082,15 @@ class TelegramBridge:
         event_context = self.state.get_event_context(chat_id, user_text, limit=40 if detect_local_chat_query(user_text) else 24) if route_decision.use_events else ""
         database_context = self.state.get_database_context(chat_id, user_text) if route_decision.use_database else ""
         reply_to = ((message or {}).get("reply_to_message") or {}).get("from") or {}
-        include_entity_context = (
-            route_decision.persona == "enterprise"
-            or route_decision.use_workspace
-            or detect_local_chat_query(user_text)
-            or is_owner_private_chat(user_id, chat_id)
+        include_entity_context = _should_include_entity_context(
+            persona=route_decision.persona,
+            use_workspace=route_decision.use_workspace,
+            query_text=user_text,
+            is_owner_chat=is_owner_private_chat(user_id, chat_id),
+            detect_local_chat_query_func=detect_local_chat_query,
         )
-        return ContextBundle(
+        return _build_context_bundle(
+            ContextBundle,
             summary_text=self.state.get_summary(chat_id),
             facts_text=self.state.render_facts(chat_id, query=user_text, limit=10),
             event_context=event_context,
@@ -7099,8 +7120,9 @@ class TelegramBridge:
     ) -> ContextBundle:
         from_user = (message or {}).get("from") or {}
         reply_to_user = (((message or {}).get("reply_to_message") or {}).get("from") or {})
-        include_entity_context = bool(prompt_text) and (detect_local_chat_query(prompt_text) or True)
-        return ContextBundle(
+        include_entity_context = bool(prompt_text)
+        return _build_context_bundle(
+            ContextBundle,
             summary_text=self.state.get_summary(chat_id),
             facts_text=self.state.render_facts(chat_id, query=prompt_text, limit=10),
             event_context=self.state.get_event_context(chat_id, prompt_text) if should_include_event_context(prompt_text) else "",
@@ -8725,375 +8747,171 @@ class TemporaryWorkspace:
 
 
 def should_include_code_backup_file(path: Path) -> bool:
-    include_suffixes = {".py", ".sh", ".md", ".txt", ".env", ".example", ".json", ".yaml", ".yml", ".toml", ".ini"}
-    include_names = {"Dockerfile", "Makefile"}
-    return path.suffix.lower() in include_suffixes or path.name in include_names
+    return _should_include_code_backup_file(path)
 
 
 def split_file_parts(file_path: Path, part_size_bytes: int) -> List[Path]:
-    if file_path.stat().st_size <= part_size_bytes:
-        return [file_path]
-    parts: List[Path] = []
-    with file_path.open("rb") as source:
-        index = 1
-        while True:
-            chunk = source.read(part_size_bytes)
-            if not chunk:
-                break
-            part_path = file_path.with_name(f"{file_path.name}.part{index:02d}")
-            part_path.write_bytes(chunk)
-            parts.append(part_path)
-            index += 1
-    return parts
+    return _split_file_parts(file_path, part_size_bytes)
 
 
 def read_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
-    raw_value = os.getenv(name, "").strip()
-    if not raw_value:
-        return default
-    try:
-        value = int(raw_value)
-    except ValueError:
-        return default
-    return max(minimum, min(value, maximum))
+    return _read_int_env(name, default, minimum, maximum)
 
 
 def read_bool_env(name: str, default: bool) -> bool:
-    raw_value = os.getenv(name, "").strip().lower()
-    if not raw_value:
-        return default
-    return raw_value in {"1", "true", "yes", "on"}
+    return _read_bool_env(name, default)
 
 
 def parse_allowed_user_ids(raw_value: str) -> Set[int]:
-    result: Set[int] = set()
-    for part in raw_value.split(","):
-        cleaned = part.strip()
-        if not cleaned:
-            continue
-        try:
-            result.add(int(cleaned))
-        except ValueError:
-            log(f"ignored invalid ALLOWED_USER_ID value: {cleaned}")
-    return result
+    return _parse_allowed_user_ids(raw_value, invalid_logger=lambda cleaned: log(f"ignored invalid ALLOWED_USER_ID value: {cleaned}"))
 
 
 def prepare_tmp_dir(raw_path: str) -> Optional[Path]:
-    if not raw_path:
-        return None
-    path = Path(raw_path).expanduser()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return _prepare_tmp_dir(raw_path)
 
 
 def normalize_mode(raw_mode: Optional[str]) -> str:
-    candidate = (raw_mode or DEFAULT_MODE_NAME).strip().lower()
-    if candidate == "chat":
-        candidate = "jarvis"
-    if candidate in MODE_PROMPTS:
-        return candidate
-    return DEFAULT_MODE_NAME
+    return _normalize_mode(raw_mode, set(MODE_PROMPTS), DEFAULT_MODE_NAME)
 
 
 def parse_mode_command(text: str) -> Optional[str]:
-    if not text.startswith("/mode"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return normalize_mode(parts[1])
+    return _parse_mode_command(text, set(MODE_PROMPTS), DEFAULT_MODE_NAME)
 
 
 def parse_upgrade_command(text: str) -> Optional[str]:
-    if not text.startswith("/upgrade"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_upgrade_command(text)
 
 
 def parse_remember_command(text: str) -> Optional[str]:
-    if not text.startswith("/remember"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_remember_command(text)
 
 
 def parse_recall_command(text: str) -> Optional[str]:
-    if not text.startswith("/recall"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_recall_command(text)
 
 
 def parse_search_command(text: str) -> Optional[str]:
-    if not text.startswith("/search"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_search_command(text)
 
 
 def parse_sd_list_command(text: str) -> Optional[str]:
-    if not text.startswith("/sdls"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_sd_list_command(text)
 
 
 def parse_sd_send_command(text: str) -> Optional[str]:
-    if not text.startswith("/sdsend"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_sd_send_command(text)
 
 
 def parse_sd_save_command(text: str) -> Optional[str]:
-    if not text.startswith("/sdsave"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_sd_save_command(text)
 
 
 def extract_assistant_persona(text: str) -> Tuple[str, str]:
-    cleaned = normalize_whitespace(text)
-    if not cleaned:
-        return "", ""
-    lowered = cleaned.lower()
-    prefixes = [
-        ("jarvis", "jarvis"),
-        ("джарвис", "jarvis"),
-        ("джервис", "jarvis"),
-        ("enterprise", "enterprise"),
-        ("энтерапрайз", "enterprise"),
-        ("энтерпрайз", "enterprise"),
-    ]
-    for prefix, persona in prefixes:
-        if lowered == prefix:
-            return persona, ""
-        if lowered.startswith(f"{prefix} "):
-            return persona, cleaned[len(prefix):].strip()
-        if lowered.startswith(f"{prefix}:") or lowered.startswith(f"{prefix},") or lowered.startswith(f"{prefix}-"):
-            return persona, cleaned[len(prefix) + 1:].strip()
-    return "", cleaned
+    return _extract_assistant_persona(text, normalize_whitespace)
 
 
 def parse_who_said_command(text: str) -> Optional[str]:
-    if not text.startswith("/who_said"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_who_said_command(text)
 
 
 def parse_history_command(text: str) -> Optional[str]:
-    if not text.startswith("/history"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_history_command(text)
 
 
 def parse_daily_command(text: str) -> Optional[str]:
-    if not text.startswith("/daily"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_daily_command(text)
 
 
 def parse_digest_command(text: str) -> Optional[str]:
-    if not text.startswith("/digest"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_digest_command(text)
 
 
 def parse_owner_report_command(text: str) -> bool:
-    return text.strip() == "/ownerreport"
+    return _parse_owner_report_command(text)
 
 
 def parse_routes_command(text: str) -> Optional[str]:
-    if not text.startswith("/routes"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_routes_command(text)
 
 
 def parse_memory_chat_command(text: str) -> Optional[str]:
-    if not text.startswith("/memorychat"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_memory_chat_command(text)
 
 
 def parse_memory_user_command(text: str) -> Optional[str]:
-    if not text.startswith("/memoryuser"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_memory_user_command(text)
 
 
 def parse_memory_summary_command(text: str) -> bool:
-    return text.strip() == "/memorysummary"
+    return _parse_memory_summary_command(text)
 
 
 def parse_self_state_command(text: str) -> bool:
-    return text.strip() == "/selfstate"
+    return _parse_self_state_command(text)
 
 
 def parse_world_state_command(text: str) -> bool:
-    return text.strip() == "/worldstate"
+    return _parse_world_state_command(text)
 
 
 def parse_drives_command(text: str) -> bool:
-    return text.strip() == "/drives"
+    return _parse_drives_command(text)
 
 
 def parse_autobio_command(text: str) -> Optional[str]:
-    if not text.startswith("/autobio"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_autobio_command(text)
 
 
 def parse_skills_command(text: str) -> Optional[str]:
-    if not text.startswith("/skills"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_skills_command(text)
 
 
 def parse_reflections_command(text: str) -> Optional[str]:
-    if not text.startswith("/reflections"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_reflections_command(text)
 
 
 def parse_chat_digest_command(text: str) -> Optional[str]:
-    if not text.startswith("/chatdigest"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_chat_digest_command(text)
 
 
 def parse_git_status_command(text: str) -> bool:
-    return text.strip() == "/gitstatus"
+    return _parse_git_status_command(text)
 
 
 def parse_git_last_command(text: str) -> Optional[str]:
-    if not text.startswith("/gitlast"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_git_last_command(text)
 
 
 def parse_errors_command(text: str) -> Optional[str]:
-    if not text.startswith("/errors"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_errors_command(text)
 
 
 def parse_events_command(text: str) -> Optional[str]:
-    if not text.startswith("/events"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_events_command(text)
 
 
 def parse_export_command(text: str) -> Optional[str]:
-    if not text.startswith("/export"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return "chat"
-    return parts[1].strip()
+    return _parse_export_command(text)
 
 
 def parse_portrait_command(text: str) -> Optional[str]:
-    if not text.startswith("/portrait"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_portrait_command(text)
 
 
 def parse_owner_autofix_command(text: str) -> Optional[str]:
-    if not text.startswith("/ownerautofix"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return "status"
-    return parts[1].strip()
+    return _parse_owner_autofix_command(text)
 
 
 def parse_password_command(text: str) -> Optional[str]:
-    if not text.startswith("/password"):
-        return None
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].strip()
+    return _parse_password_command(text)
 
 
 def parse_moderation_command(text: str) -> Optional[Tuple[str, str]]:
-    for command in ("ban", "unban", "mute", "unmute", "kick", "tban", "tmute"):
-        prefix = f"/{command}"
-        if text.startswith(prefix):
-            parts = text.split(maxsplit=1)
-            payload = parts[1].strip() if len(parts) > 1 else ""
-            return command, payload
-    return None
+    return _parse_moderation_command(text)
 
 
 def parse_warn_command(text: str) -> Optional[Tuple[str, str]]:
-    for command in ("warnreasons", "setwarnlimit", "setwarnmode", "warntime", "resetwarn", "rmwarn", "warns", "warn", "dwarn", "swarn", "modlog"):
-        prefix = f"/{command}"
-        if text.startswith(prefix):
-            parts = text.split(maxsplit=1)
-            payload = parts[1].strip() if len(parts) > 1 else ""
-            return command, payload
-    return None
+    return _parse_warn_command(text)
 
 
 def parse_welcome_command(text: str) -> Optional[Tuple[str, str]]:
@@ -9591,184 +9409,18 @@ def is_codex_network_error_output(text: str) -> bool:
 
 
 def build_help_panel_text(section: str) -> str:
-    owner_line = f"Создатель: {OWNER_USERNAME}\nID владельца: {OWNER_USER_ID}"
-    panels = {
-        "public": PUBLIC_HELP_TEXT,
-        "public_achievements": PUBLIC_ACHIEVEMENTS_HELP_TEXT,
-        "public_appeal": PUBLIC_APPEAL_HELP_TEXT,
-        "main": (
-            "JARVIS • ГЛАВНОЕ МЕНЮ\n\n"
-            "Выбирай раздел кнопками ниже.\n"
-            "Сообщение обновляется на месте, без мусора в чате.\n\n"
-            "Быстрый старт:\n"
-            "• /status — состояние бота\n"
-            "• /rating — ваш уровень и прогресс\n"
-            "• /achievements — ваши достижения\n"
-            "• /top — общий топ участников\n"
-            "• /stats — статистика чата\n\n"
-            "Режимы ответа:\n"
-            "• /mode jarvis — обычный режим\n"
-            "• /mode code — инженерный режим\n"
-            "• /mode strict — короткие ответы\n\n"
-            "Сервис:\n"
-            "• /help — открыть это меню\n"
-            "• /commands — открыть это меню\n"
-            "• /ping — проверка отклика\n"
-            "• /appeal <текст> — апелляция владельцу\n\n"
-            + owner_line
-        ),
-        "access": (
-            "ДОСТУП И РЕЖИМЫ\n\n"
-            "Личный доступ:\n"
-            "• /password <пароль> — открыть доступ в личке\n"
-            "• владелец проходит без пароля\n\n"
-            "Как бот отвечает:\n"
-            "• в личке — после авторизации\n"
-            "• в группе — по команде, reply или явному обращению\n\n"
-            "Режимы:\n"
-            "• /mode jarvis\n"
-            "• /mode code\n"
-            "• /mode strict\n\n"
-            "Автоисправление владельца:\n"
-            "• /ownerautofix on\n"
-            "• /ownerautofix off\n"
-            "• /ownerautofix status"
-        ),
-        "memory": (
-            "ПАМЯТЬ И СТАТИСТИКА\n\n"
-            "Память и поиск:\n"
-            "• /remember <факт>\n"
-            "• /recall [запрос]\n"
-            "• /search <запрос>\n"
-            "• /who_said <запрос>\n\n"
-            "История и профили:\n"
-            "• /history [@username|user_id]\n"
-            "• /portrait [@username]\n"
-            "• /daily [YYYY-MM-DD]\n"
-            "• /digest [YYYY-MM-DD]\n"
-            "• /chatdigest <chat_id> [YYYY-MM-DD]\n"
-            "• /export [chat|today|@username|user_id]\n\n"
-            "Активность:\n"
-            "• /top\n"
-            "• /topweek\n"
-            "• /topday\n"
-            "• /stats\n"
-            "• /reset"
-        ),
-        "moderation": (
-            "МОДЕРАЦИЯ\n\n"
-            "Работает в группе и супергруппе.\n"
-            "Цель можно указать reply, @username или user_id.\n\n"
-            "Основные действия:\n"
-            "• /ban <цель> [причина]\n"
-            "• /unban <цель>\n"
-            "• /mute <цель> [причина]\n"
-            "• /unmute <цель>\n"
-            "• /kick <цель> [причина]\n"
-            "• /tban 1d <цель> [причина]\n"
-            "• /tmute 1h <цель> [причина]"
-        ),
-        "warns": (
-            "ПРЕДУПРЕЖДЕНИЯ\n\n"
-            "Быстрые команды:\n"
-            "• /warn <цель> [причина]\n"
-            "• /dwarn <цель> [причина]\n"
-            "• /swarn <цель> [причина]\n"
-            "• /warns <цель>\n"
-            "• /warnreasons <цель>\n"
-            "• /rmwarn <цель>\n"
-            "• /resetwarn <цель>\n\n"
-            "Настройки системы:\n"
-            "• /setwarnlimit <число>\n"
-            "• /setwarnmode mute|tmute 1h|ban|tban 1d|kick\n"
-            "• /warntime 7d|off\n"
-            "• /modlog"
-        ),
-        "welcome": (
-            "ПРИВЕТСТВИЕ\n\n"
-            "Управление:\n"
-            "• /welcome on\n"
-            "• /welcome off\n"
-            "• /welcome status\n"
-            "• /setwelcome <текст>\n"
-            "• /resetwelcome\n\n"
-            "Переменные шаблона:\n"
-            "• {first_name}\n"
-            "• {last_name}\n"
-            "• {full_name}\n"
-            "• {username}\n"
-            "• {chat_title}"
-        ),
-        "creator": (
-            "ВЛАДЕЛЕЦ И СЕРВИС\n\n"
-            "Служебные команды:\n"
-            "• /upgrade <что изменить>\n"
-            "• /restart\n"
-            "• /status\n"
-            "• /ownerreport\n"
-            "• /gitstatus\n"
-            "• /gitlast [количество]\n"
-            "• /errors [количество]\n"
-            "• /routes [количество]\n"
-            "• /appeals\n"
-            "• /appeal_review <id>\n"
-            "• /appeal_approve <id> [решение]\n"
-            "• /appeal_reject <id> [решение]\n"
-            "• /help\n"
-            "• /commands\n\n"
-            "Интеграция:\n"
-            "• owner id синхронизирован с основной системой Jarvis\n"
-            "• рейтинг, достижения и апелляции идут через legacy jarvis.db\n"
-            "• если Enterprise Core недоступен, бот пишет: Enterprise Core выключен"
-        ),
-    }
-    default_section = "public" if section.startswith("public") else "main"
-    return panels.get(section, panels[default_section])
+    return _build_help_panel_text(
+        section,
+        owner_username=OWNER_USERNAME,
+        owner_user_id=OWNER_USER_ID,
+        public_help_text=PUBLIC_HELP_TEXT,
+        public_achievements_help_text=PUBLIC_ACHIEVEMENTS_HELP_TEXT,
+        public_appeal_help_text=PUBLIC_APPEAL_HELP_TEXT,
+    )
 
 
 def build_help_panel_markup(section: str) -> dict:
-    if section == "public":
-        return {
-            "inline_keyboard": [
-                [{"text": "Рейтинг", "callback_data": "ui:profile"}],
-                [{"text": "Ачивки", "callback_data": "help:public_achievements"}],
-                [{"text": "Апелляция", "callback_data": "help:public_appeal"}],
-                [{"text": "Главная", "callback_data": "ui:home"}],
-            ]
-        }
-    if section in {"public_achievements", "public_appeal"}:
-        return {
-            "inline_keyboard": [
-                [{"text": "Рейтинг", "callback_data": "ui:profile"}],
-                [{"text": "Общая инструкция", "callback_data": "help:public"}],
-                [{"text": "Главная", "callback_data": "ui:home"}],
-            ]
-        }
-    labels = {
-        "main": "Главная",
-        "access": "Доступ",
-        "memory": "Память",
-        "moderation": "Модерация",
-        "warns": "Варны",
-        "welcome": "Приветствие",
-        "creator": "Сервис",
-    }
-    rows = [
-        [
-            {"text": labels["main"], "callback_data": "help:main"},
-            {"text": labels["access"], "callback_data": "help:access"},
-            {"text": labels["memory"], "callback_data": "help:memory"},
-        ],
-        [
-            {"text": labels["moderation"], "callback_data": "help:moderation"},
-            {"text": labels["warns"], "callback_data": "help:warns"},
-            {"text": labels["welcome"], "callback_data": "help:welcome"},
-        ],
-        [
-            {"text": labels["creator"], "callback_data": "help:creator"},
-        ],
-    ]
-    return {"inline_keyboard": rows}
+    return _build_help_panel_markup(section)
 
 
 def build_welcome_text(template: str, user: dict, chat_title: str) -> str:
@@ -9980,72 +9632,20 @@ def is_term_only_voice_cleanup(original_text: str, fixed_text: str, context_term
 
 
 def should_process_group_message(message: dict, text: str, bot_username: str, trigger_name: str, bot_user_id: Optional[int] = None, allow_owner_reply: bool = False) -> bool:
-    stripped = (text or "").strip()
-    if not stripped:
-        return False
-    if stripped.startswith("/"):
-        return True
-
-    assistant_persona, _ = extract_assistant_persona(stripped)
-    if assistant_persona:
-        return True
-
-    reply_to = message.get("reply_to_message") or {}
-    reply_from = reply_to.get("from") or {}
-    reply_username = (reply_from.get("username") or "").lower()
-    reply_user_id = reply_from.get("id")
-    if reply_from.get("is_bot") and ((bot_username and reply_username == bot_username) or (bot_user_id is not None and reply_user_id == bot_user_id)):
-        return True
-
-    lowered = stripped.lower()
-    trigger = (trigger_name or DEFAULT_TRIGGER_NAME).lower()
-    trigger_prefixes = (
-        f"{trigger}:",
-        f"{trigger},",
-        f"{trigger} ",
-        f"{trigger}?",
-        f"{trigger}!",
-        f"{trigger}.",
+    return _should_process_group_message(
+        message,
+        text,
+        bot_username,
+        trigger_name,
+        extract_assistant_persona,
+        DEFAULT_TRIGGER_NAME,
+        bot_user_id=bot_user_id,
+        allow_owner_reply=allow_owner_reply,
     )
-    if trigger and (lowered == trigger or lowered.startswith(trigger_prefixes)):
-        return True
-
-    if bot_username and f"@{bot_username}" in lowered:
-        return True
-    return False
 
 
 def contains_voice_trigger_name(text: str, trigger_name: str, bot_username: str) -> bool:
-    lowered = (text or "").strip().lower()
-    if not lowered:
-        return False
-
-    variants = {
-        (trigger_name or DEFAULT_TRIGGER_NAME).strip().lower(),
-        DEFAULT_TRIGGER_NAME.lower(),
-        "джарвис",
-        "джервис",
-    }
-    if bot_username:
-        variants.add(bot_username.strip().lower())
-
-    compact = re.sub(r"\s+", " ", lowered)
-    for variant in variants:
-        if not variant:
-            continue
-        pattern = rf"(?<![\w@]){re.escape(variant)}(?![\w@])"
-        if re.search(pattern, compact, flags=re.IGNORECASE):
-            return True
-    tokens = re.findall(r"[a-zа-яё]+", compact, flags=re.IGNORECASE)
-    for token in tokens:
-        normalized = token.lower().replace("ё", "е")
-        if len(normalized) < 4:
-            continue
-        if SequenceMatcher(None, normalized, "джарвис").ratio() >= 0.62:
-            return True
-        if SequenceMatcher(None, normalized, "jarvis").ratio() >= 0.72:
-            return True
-    return False
+    return _contains_voice_trigger_name(text, trigger_name, bot_username, DEFAULT_TRIGGER_NAME)
 
 
 def should_include_database_context(user_text: str) -> bool:
@@ -10061,77 +9661,25 @@ def should_include_database_context(user_text: str) -> bool:
 
 
 def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: bool) -> Path:
-    base = Path("/sdcard").resolve()
-    writable_base = Path("/storage/internal").resolve(strict=False)
-    cleaned = normalize_sdcard_alias(raw_path)
-    if not cleaned:
-        if default_to_root:
-            return base
-        raise ValueError(SD_SEND_USAGE_TEXT)
-    candidate = Path(cleaned)
-    if candidate.is_absolute():
-        target = candidate
-    else:
-        target = base / candidate
-    resolved = target.resolve(strict=False)
-    try:
-        resolved.relative_to(base)
-    except ValueError as error:
-        raise ValueError("Разрешена работа только внутри /sdcard.") from error
-    if str(resolved).startswith(str(base)) and writable_base.exists():
-        relative = resolved.relative_to(base)
-        translated = (writable_base / relative).resolve(strict=False)
-        if translated.exists() or allow_missing:
-            return translated
-    if not allow_missing and not resolved.exists():
-        return resolved
-    return resolved
+    return _resolve_sdcard_path(
+        raw_path,
+        allow_missing=allow_missing,
+        default_to_root=default_to_root,
+        usage_text=SD_SEND_USAGE_TEXT,
+    )
 
 
 def resolve_sdcard_save_target(raw_target: str, suggested_name: str) -> Path:
-    base = Path("/sdcard").resolve()
-    writable_base = Path("/storage/internal").resolve(strict=False)
-    cleaned_name = Path(suggested_name or "file.bin").name or "file.bin"
-    cleaned_target = normalize_sdcard_alias(raw_target)
-    if not cleaned_target:
-        default_target = normalize_sdcard_alias(DEFAULT_SD_SAVE_ALIAS)
-        destination = resolve_sdcard_path(default_target, allow_missing=True, default_to_root=True) / cleaned_name
-    else:
-        candidate = resolve_sdcard_path(cleaned_target, allow_missing=True, default_to_root=True)
-        if cleaned_target.endswith("/") or candidate.exists() and candidate.is_dir():
-            destination = candidate / cleaned_name
-        else:
-            destination = candidate
-    destination = destination.resolve(strict=False)
-    allowed_roots = [base]
-    if writable_base.exists():
-        allowed_roots.append(writable_base)
-    if not any(_is_relative_to(destination, root) for root in allowed_roots):
-        raise ValueError("Разрешена работа только внутри /sdcard.")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    return destination
+    return _resolve_sdcard_save_target(
+        raw_target,
+        suggested_name,
+        default_sd_save_alias=DEFAULT_SD_SAVE_ALIAS,
+        usage_text=SD_SEND_USAGE_TEXT,
+    )
 
 
 def ensure_sdcard_save_target_writable(destination: Path) -> None:
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise ValueError(f"Каталог для сохранения недоступен: {destination.parent}") from error
-    probe_name = f".jarvis-write-test-{os.getpid()}-{int(time.time() * 1000)}"
-    probe_path = destination.parent / probe_name
-    try:
-        with probe_path.open("w", encoding="utf-8") as handle:
-            handle.write("ok")
-    except OSError as error:
-        raise ValueError(
-            "Нет доступа на запись в выбранный каталог /sdcard. "
-            "В этой среде используй доступный путь или настрой монтирование storage."
-        ) from error
-    finally:
-        try:
-            probe_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    _ensure_sdcard_save_target_writable(destination)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -10143,319 +9691,75 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def normalize_sdcard_alias(raw_path: str) -> str:
-    cleaned = (raw_path or "").strip()
-    if not cleaned:
-        return cleaned
-    mappings = [
-        ("/storage/emulated/0", "/sdcard"),
-        ("/storage/internal", "/storage/internal"),
-    ]
-    for prefix, target in mappings:
-        if cleaned == prefix:
-            return target
-        if cleaned.startswith(prefix + "/"):
-            suffix = cleaned[len(prefix):]
-            return target + suffix
-    return cleaned
+    return _normalize_sdcard_alias(raw_path)
 
 
 def extract_message_media_file(message: dict) -> Optional[Tuple[str, str]]:
-    if not message:
-        return None
-    if message.get("document"):
-        document = message.get("document") or {}
-        file_id = document.get("file_id")
-        file_name = document.get("file_name") or "document.bin"
-        if file_id:
-            return str(file_id), file_name
-    if message.get("audio"):
-        audio = message.get("audio") or {}
-        file_id = audio.get("file_id")
-        file_name = audio.get("file_name") or "audio.mp3"
-        if file_id:
-            return str(file_id), file_name
-    if message.get("voice"):
-        voice = message.get("voice") or {}
-        file_id = voice.get("file_id")
-        if file_id:
-            return str(file_id), "voice.ogg"
-    if message.get("video"):
-        video = message.get("video") or {}
-        file_id = video.get("file_id")
-        file_name = video.get("file_name") or "video.mp4"
-        if file_id:
-            return str(file_id), file_name
-    if message.get("photo"):
-        photos = message.get("photo") or []
-        if photos:
-            best_photo = max(photos, key=lambda item: item.get("file_size", 0))
-            file_id = best_photo.get("file_id")
-            if file_id:
-                return str(file_id), f"photo_{message.get('message_id') or int(time.time())}.jpg"
-    return None
+    return _extract_message_media_file(message)
 
 
 def format_file_size(size: int) -> str:
-    if size >= 1024 * 1024:
-        return f"{size / (1024 * 1024):.1f} MB"
-    if size >= 1024:
-        return f"{size / 1024:.1f} KB"
-    return f"{size} B"
+    return _format_file_size(size)
 
 
 def normalize_incoming_text(text: str, bot_username: str) -> str:
-    cleaned = (text or "").strip()
-    if bot_username:
-        cleaned = cleaned.replace(f"@{bot_username}", "")
-        cleaned = cleaned.replace(f"@{bot_username.capitalize()}", "")
-    return cleaned.strip(" ,:\n\t")
+    return _normalize_incoming_text(text, bot_username)
 
 
 def format_reaction_payload(reactions: List[dict]) -> str:
-    parts: List[str] = []
-    for reaction in reactions:
-        if not isinstance(reaction, dict):
-            continue
-        if reaction.get("type") == "emoji" and reaction.get("emoji"):
-            parts.append(str(reaction.get("emoji")))
-            continue
-        if reaction.get("type") == "custom_emoji" and reaction.get("custom_emoji_id"):
-            parts.append(f"custom:{reaction.get('custom_emoji_id')}")
-            continue
-        if reaction.get("type") == "paid":
-            parts.append("paid")
-    return ", ".join(parts)
+    return _format_reaction_payload(reactions)
 
 
 def build_service_actor_name(user: dict) -> str:
-    username = user.get("username") or ""
-    first_name = user.get("first_name") or ""
-    last_name = user.get("last_name") or ""
-    user_id = user.get("id")
-    return build_actor_name(user_id, username, first_name, last_name, "user")
+    return _build_service_actor_name(user, build_actor_name)
 
 
 def extract_forward_origin(message: dict) -> str:
-    origin = message.get("forward_origin") or {}
-    if not origin:
-        return ""
-    origin_type = origin.get("type") or ""
-    if origin_type == "user":
-        sender = origin.get("sender_user") or {}
-        return build_service_actor_name(sender)
-    if origin_type == "chat":
-        sender_chat = origin.get("sender_chat") or {}
-        title = sender_chat.get("title") or "chat"
-        username = sender_chat.get("username") or ""
-        return f"{title} @{username}".strip()
-    if origin_type == "channel":
-        chat = origin.get("chat") or {}
-        title = chat.get("title") or "channel"
-        username = chat.get("username") or ""
-        author = origin.get("author_signature") or ""
-        return " ".join(part for part in [title, f"@{username}" if username else "", author] if part).strip()
-    if origin_type == "hidden_user":
-        return origin.get("sender_user_name") or "hidden_user"
-    return origin_type
+    return _extract_forward_origin(message, build_service_actor_name)
 
 
 def summarize_message_for_pin(message: dict) -> str:
-    if message.get("text"):
-        return truncate_text(message.get("text") or "", 140)
-    if message.get("caption"):
-        return truncate_text(message.get("caption") or "", 140)
-    if message.get("photo"):
-        return "фото"
-    if message.get("voice"):
-        return "голосовое"
-    if message.get("video"):
-        return "видео"
-    if message.get("video_note"):
-        return "кружок"
-    if message.get("document"):
-        return (message.get("document") or {}).get("file_name") or "документ"
-    if message.get("sticker"):
-        return "стикер"
-    return "служебное сообщение"
+    return _summarize_message_for_pin(message, truncate_text)
 
 
 def describe_message_media_kind(message: dict) -> str:
-    if message.get("photo"):
-        return "photo"
-    if message.get("voice"):
-        return "voice"
-    if message.get("video"):
-        return "video"
-    if message.get("video_note"):
-        return "video_note"
-    if message.get("document"):
-        document = message.get("document") or {}
-        file_name = document.get("file_name") or "document"
-        mime_type = document.get("mime_type") or ""
-        return " ".join(part for part in [file_name, f"({mime_type})" if mime_type else ""] if part).strip()
-    if message.get("sticker"):
-        return "sticker"
-    if message.get("animation"):
-        return "gif"
-    if message.get("audio"):
-        return "audio"
-    return ""
+    return _describe_message_media_kind(message)
 
 
 def read_recent_log_highlights(log_path: Path, limit: int = 8) -> List[str]:
-    if not log_path.exists():
-        return []
-    try:
-        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except OSError:
-        return []
-    matched: List[str] = []
-    for line in reversed(lines[-300:]):
-        lowered = line.lower()
-        if is_error_log_line(lowered):
-            matched.append(truncate_text(normalize_whitespace(line), 220))
-        if len(matched) >= limit:
-            break
-    return list(reversed(matched))
+    return _read_recent_log_highlights(log_path, normalize_whitespace, truncate_text, limit)
 
 
 def is_error_log_line(lowered_line: str) -> bool:
-    if not lowered_line:
-        return False
-    ignore_markers = (
-        "config loaded",
-        "bot started",
-        "stt model loaded",
-        "stt model prewarmed",
-        "incoming text",
-        "incoming reaction",
-    )
-    if any(marker in lowered_line for marker in ignore_markers):
-        return False
-    error_markers = (
-        " error",
-        "error:",
-        "failed",
-        "traceback",
-        "unexpected",
-        "exception",
-        "timed out",
-        "timeout expired",
-    )
-    return any(marker in lowered_line for marker in error_markers)
+    return _is_error_log_line(lowered_line)
 
 
 def read_recent_operational_highlights(log_path: Path, limit: int = 8, category: str = "all") -> List[str]:
-    if not log_path.exists():
-        return []
-    try:
-        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except OSError:
-        return []
-    matched: List[str] = []
-    for line in reversed(lines[-400:]):
-        lowered = line.lower()
-        if is_operational_log_line(lowered, category=category):
-            matched.append(truncate_text(normalize_whitespace(line), 220))
-        if len(matched) >= limit:
-            break
-    return list(reversed(matched))
+    return _read_recent_operational_highlights(log_path, normalize_whitespace, truncate_text, limit, category)
 
 
 def is_operational_log_line(lowered_line: str, category: str = "all") -> bool:
-    if not lowered_line:
-        return False
-    category_markers = {
-        "restart": (
-            "restart requested",
-            "bridge exited",
-        ),
-        "access": (
-            "blocked user_id",
-        ),
-        "system": (
-            "restart requested",
-            "bridge exited",
-        ),
-        "all": (
-            "restart requested",
-            "bridge exited",
-            "blocked user_id",
-        ),
-    }
-    markers = category_markers.get(category, category_markers["all"])
-    return any(marker in lowered_line for marker in markers)
+    return _is_operational_log_line(lowered_line, category)
 
 
 def run_git_command(repo_path: Path, args: List[str], timeout_seconds: int = 20) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(repo_path)] + args,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            env=build_subprocess_env(),
-        )
-    except (subprocess.TimeoutExpired, OSError) as error:
-        return f"git command failed: {error}"
-    output = normalize_whitespace((result.stdout or "").strip() or (result.stderr or "").strip())
-    if result.returncode != 0:
-        return output or f"git exited with code {result.returncode}"
-    return output or "Нет вывода."
+    return _run_git_command(repo_path, args, build_subprocess_env, normalize_whitespace, timeout_seconds)
 
 
 def render_git_status_summary(repo_path: Path) -> str:
-    branch = run_git_command(repo_path, ["branch", "--show-current"])
-    status = run_git_command(repo_path, ["status", "--short"])
-    remote = run_git_command(repo_path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
-    lines = ["Git status", f"Repo: {repo_path}", f"Branch: {branch}"]
-    if remote and "fatal:" not in remote and "git command failed" not in remote:
-        lines.append(f"Upstream: {remote}")
-    if not status or status == "Нет вывода.":
-        lines.append("Worktree: clean")
-    else:
-        lines.append("Изменения:")
-        lines.extend(f"- {line}" for line in status.splitlines()[:20])
-    return "\n".join(lines)
+    return _render_git_status_summary(repo_path, run_git_command)
 
 
 def render_git_last_commits(repo_path: Path, limit: int = 5) -> str:
-    output = run_git_command(repo_path, ["log", f"-{limit}", "--pretty=format:%h %ad %s", "--date=short"])
-    if not output or output.startswith("fatal:") or output.startswith("git command failed:"):
-        return f"Последние коммиты получить не удалось.\n{output}"
-    return "Последние коммиты:\n" + "\n".join(f"- {line}" for line in output.splitlines())
+    return _render_git_last_commits(repo_path, run_git_command, limit)
 
 
 def read_document_excerpt(file_path: Path, mime_type: str, max_chars: int = 3500) -> str:
-    text_like_suffixes = {".txt", ".md", ".py", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".log", ".csv", ".xml", ".html", ".js", ".ts", ".sh"}
-    suffix = file_path.suffix.lower()
-    mime_lower = (mime_type or "").lower()
-    is_text_like = suffix in text_like_suffixes or mime_lower.startswith("text/") or "json" in mime_lower or "xml" in mime_lower
-    if not is_text_like:
-        return ""
-    try:
-        if file_path.stat().st_size > 256 * 1024:
-            return f"[Файл большой, показан только header]\n{truncate_text(file_path.read_text(encoding='utf-8', errors='ignore')[:1200], 1200)}"
-        content = file_path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return ""
-    cleaned = normalize_whitespace(content)
-    return truncate_text(cleaned, max_chars)
+    return _read_document_excerpt(file_path, mime_type, truncate_text, max_chars=max_chars)
 
 
 def format_reaction_count_payload(reactions: List[dict]) -> str:
-    parts: List[str] = []
-    for reaction in reactions:
-        if not isinstance(reaction, dict):
-            continue
-        reaction_type = reaction.get("type") or {}
-        count = reaction.get("total_count")
-        if reaction_type.get("type") == "emoji" and reaction_type.get("emoji"):
-            parts.append(f"{reaction_type.get('emoji')} x{count}")
-            continue
-        if reaction_type.get("type") == "custom_emoji" and reaction_type.get("custom_emoji_id"):
-            parts.append(f"custom:{reaction_type.get('custom_emoji_id')} x{count}")
-    return ", ".join(parts)
+    return _format_reaction_count_payload(reactions)
 
 
 def is_dangerous_request(text: str) -> bool:
@@ -10511,130 +9815,58 @@ def build_prompt(
     chat_memory_text: str = "",
     summary_memory_text: str = "",
 ) -> str:
-    mode_prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS[DEFAULT_MODE_NAME])
-    history_block = format_history(history, user_text)
-    intent = detect_intent(user_text)
-    response_shape = response_shape_hint(intent)
-    attachment_block = f"Attachment note:\n{attachment_note}\n\n" if attachment_note else ""
-    summary_block = f"Chat summary:\n{truncate_text(summary_text, 1800)}\n\n" if summary_text else ""
-    facts_block = f"Relevant facts:\n{truncate_text(facts_text, 1800)}\n\n" if facts_text else ""
-    events_block = f"Relevant archived events:\n{truncate_text(event_context, 2600)}\n\n" if event_context and event_context != "История событий пуста." else ""
-    database_block = f"Relevant database context:\n{truncate_text(database_context, 3200)}\n\n" if database_context else ""
-    reply_block = f"Reply context:\n{truncate_text(reply_context, 2200)}\n\n" if reply_context else ""
-    persona_block = f"Persona note:\n{persona_note}\n\n" if persona_note else ""
-    web_block = f"Web context:\n{truncate_text(web_context, 3200)}\n\n" if web_context else ""
-    route_block = f"Route summary:\n{truncate_text(route_summary, 1200)}\n\n" if route_summary else ""
-    guardrail_block = f"Self-check and guardrails:\n{truncate_text(guardrail_note, 1600)}\n\n" if guardrail_note else ""
-    self_model_block = f"Self model:\n{truncate_text(self_model_text, 2200)}\n\n" if self_model_text else ""
-    autobiography_block = f"Autobiographical memory:\n{truncate_text(autobiographical_text, 2000)}\n\n" if autobiographical_text else ""
-    skills_block = f"Skill memory:\n{truncate_text(skill_memory_text, 1800)}\n\n" if skill_memory_text else ""
-    world_state_block = f"World state:\n{truncate_text(world_state_text, 1800)}\n\n" if world_state_text else ""
-    drives_block = f"Drive pressures:\n{truncate_text(drive_state_text, 1600)}\n\n" if drive_state_text else ""
-    user_memory_block = f"User memory:\n{truncate_text(user_memory_text, 1800)}\n\n" if user_memory_text else ""
-    relation_memory_block = f"Relation memory:\n{truncate_text(relation_memory_text, 1800)}\n\n" if relation_memory_text else ""
-    chat_memory_block = f"Chat memory:\n{truncate_text(chat_memory_text, 1800)}\n\n" if chat_memory_text else ""
-    summary_memory_block = f"Summary memory:\n{truncate_text(summary_memory_text, 1800)}\n\n" if summary_memory_text else ""
-    identity_block = ""
-    if include_identity_prompt:
-        identity_block = (
-            "Identity:\n"
-            f"Ты отвечаешь от лица {identity_label}. Не называй себя ботом и не описывай внутреннюю реализацию.\n\n"
-        )
-    return (
-        f"System:\n{BASE_SYSTEM_PROMPT}\n\n"
-        f"{identity_block}"
-        f"{persona_block}"
-        f"{route_block}"
-        f"{guardrail_block}"
-        f"{self_model_block}"
-        f"{autobiography_block}"
-        f"{skills_block}"
-        f"{world_state_block}"
-        f"{drives_block}"
-        f"{user_memory_block}"
-        f"{relation_memory_block}"
-        f"{chat_memory_block}"
-        f"{summary_memory_block}"
-        f"Mode:\n{mode_prompt}\n\n"
-        f"Intent:\n{intent}\n\n"
-        f"Response shape:\n{response_shape}\n\n"
-        f"{attachment_block}"
-        f"{summary_block}"
-        f"{facts_block}"
-        f"{web_block}"
-        f"{database_block}"
-        f"{reply_block}"
-        f"Relevant chat context:\n{history_block}\n\n"
-        f"{events_block}"
-        f"User message:\n{user_text}\n\n"
-        "Сформируй финальный ответ пользователю."
+    return _build_prompt(
+        mode=mode,
+        history=history,
+        user_text=user_text,
+        mode_prompts=MODE_PROMPTS,
+        default_mode_name=DEFAULT_MODE_NAME,
+        base_system_prompt=BASE_SYSTEM_PROMPT,
+        detect_intent_func=detect_intent,
+        response_shape_hint_func=response_shape_hint,
+        truncate_text_func=truncate_text,
+        max_history_item_chars=MAX_HISTORY_ITEM_CHARS,
+        attachment_note=attachment_note,
+        summary_text=summary_text,
+        facts_text=facts_text,
+        event_context=event_context,
+        database_context=database_context,
+        reply_context=reply_context,
+        identity_label=identity_label,
+        include_identity_prompt=include_identity_prompt,
+        persona_note=persona_note,
+        web_context=web_context,
+        route_summary=route_summary,
+        guardrail_note=guardrail_note,
+        self_model_text=self_model_text,
+        autobiographical_text=autobiographical_text,
+        skill_memory_text=skill_memory_text,
+        world_state_text=world_state_text,
+        drive_state_text=drive_state_text,
+        user_memory_text=user_memory_text,
+        relation_memory_text=relation_memory_text,
+        chat_memory_text=chat_memory_text,
+        summary_memory_text=summary_memory_text,
     )
 
 def format_history(history: List[Tuple[str, str]], user_text: str) -> str:
-    if not history:
-        return "No prior context."
-
-    keywords = extract_keywords(user_text)
-    relevant: List[Tuple[str, str]] = []
-    fallback: List[Tuple[str, str]] = history[-6:]
-
-    for role, content in history:
-        shortened = truncate_text(content, MAX_HISTORY_ITEM_CHARS)
-        lowered = shortened.lower()
-        if not keywords or any(keyword in lowered for keyword in keywords):
-            relevant.append((role, shortened))
-
-    selected = dedupe_history(relevant[-8:] + fallback)
-    if not selected:
-        selected = fallback
-
-    lines: List[str] = []
-    for role, content in selected[-10:]:
-        label = "User" if role == "user" else "Jarvis"
-        lines.append(f"{label}: {content}")
-    return "\n".join(lines)
+    return _format_history(history, user_text, truncate_text, MAX_HISTORY_ITEM_CHARS)
 
 
 def dedupe_history(items: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
-    seen: Set[Tuple[str, str]] = set()
-    result: List[Tuple[str, str]] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
+    return _dedupe_history(items)
 
 
 def extract_keywords(text: str) -> Set[str]:
-    words: List[str] = []
-    for raw_word in text.lower().replace("\n", " ").split():
-        word = "".join(ch for ch in raw_word if ch.isalnum() or ch in {"_", "-"})
-        if len(word) >= 4:
-            words.append(word)
-    return set(words[:12])
+    return _extract_keywords(text)
 
 
 def build_portrait_prompt(label: str, context: str) -> str:
-    return (
-        "Ты делаешь краткий поведенческий портрет участника чата по его реальным сообщениям. "
-        "Не выдумывай биографию, диагнозы, политические взгляды, психологические расстройства или скрытые факты. "
-        "Опирайся только на наблюдаемую манеру общения, темы, тон, частотные интересы и роль в чате. "
-        "Структура ответа: 1) краткий портрет, 2) стиль общения, 3) типичные темы, 4) что важно учитывать в диалоге с ним. "
-        f"Участник: {label}\n\nДанные из чата:\n{context}"
-    )
+    return _build_portrait_prompt(label, context)
 
 
 def build_fts_query(text: str) -> str:
-    words = []
-    for raw_word in (text or "").lower().replace("\n", " ").split():
-        word = "".join(ch for ch in raw_word if ch.isalnum() or ch in {"_", "-"})
-        if len(word) >= 2:
-            words.append(word)
-    if not words:
-        cleaned = (text or "").strip().lower()
-        return f'"{cleaned}"' if cleaned else ""
-    return " AND ".join(f'"{word}"' for word in words[:8])
+    return _build_fts_query(text)
 
 
 def build_actor_name(user_id: Optional[int], username: str, first_name: str, last_name: str, role: str) -> str:
@@ -10648,20 +9880,11 @@ def build_actor_name(user_id: Optional[int], username: str, first_name: str, las
     return f"user_id={user_id}" if user_id is not None else "user"
 
 def render_event_rows(rows: List[Tuple[int, Optional[int], str, str, str, str, str, str]], title: str = "Events") -> str:
-    lines = [title]
-    for created_at, user_id, username, first_name, last_name, role, message_type, content in rows:
-        stamp = datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S") if created_at else ""
-        actor = build_actor_name(user_id, username, first_name, last_name, role)
-        lines.append(f"[{stamp}] {actor} ({message_type}): {truncate_text(content, 280)}")
-    return "\n".join(lines)
+    return _render_event_rows(rows, title, build_actor_name, truncate_text)
 
 
 def render_timeline_rows(label: str, rows: List[Tuple[int, Optional[int], str, str, str, str, str]]) -> str:
-    lines = [f"Timeline: {label}"]
-    for created_at, user_id, username, first_name, last_name, message_type, content in rows:
-        stamp = datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S") if created_at else ""
-        lines.append(f"[{stamp}] ({message_type}) {truncate_text(content, 280)}")
-    return "\n".join(lines)
+    return _render_timeline_rows(label, rows, truncate_text)
 
 
 def build_ai_chat_memory_prompt(
@@ -10670,24 +9893,7 @@ def build_ai_chat_memory_prompt(
     current_summary: str,
     facts: List[str],
 ) -> str:
-    lines: List[str] = []
-    for created_at, user_id, username, first_name, last_name, role, message_type, content in rows[-32:]:
-        stamp = datetime.fromtimestamp(created_at).strftime("%m-%d %H:%M") if created_at else "--:--"
-        actor = build_actor_name(user_id, username or "", first_name or "", last_name or "", role)
-        lines.append(f"[{stamp}] {actor} ({message_type}): {truncate_text(content, 220)}")
-    facts_block = "\n".join(f"- {truncate_text(fact, 140)}" for fact in facts[:5]) or "- нет"
-    return (
-        "Сделай компактную summary-memory сводку по Telegram-чату на русском.\n"
-        "Нужно 4-7 коротких строк, без воды.\n"
-        "Только наблюдаемые факты: темы, активные участники, повторяющиеся мотивы, что важно помнить дальше.\n"
-        "Не выдумывай скрытые мотивы, диагнозы или биографию.\n"
-        "Если есть remembered facts, учитывай их как отдельный слой.\n\n"
-        f"chat_id={chat_id}\n\n"
-        f"Текущая rolling summary:\n{truncate_text(current_summary, 800) or 'пока нет'}\n\n"
-        f"Remembered facts:\n{facts_block}\n\n"
-        "Последние события:\n"
-        + "\n".join(lines)
-    )
+    return _build_ai_chat_memory_prompt(chat_id, rows, current_summary, facts, build_actor_name, truncate_text)
 
 
 def build_ai_user_memory_prompt(
@@ -10695,21 +9901,7 @@ def build_ai_user_memory_prompt(
     rows: List[Tuple[int, Optional[int], str, str, str, str, str]],
     heuristic_context: str,
 ) -> str:
-    lines: List[str] = []
-    for created_at, user_id, username, first_name, last_name, message_type, content in rows[-14:]:
-        stamp = datetime.fromtimestamp(created_at).strftime("%m-%d %H:%M") if created_at else "--:--"
-        lines.append(f"[{stamp}] ({message_type}) {truncate_text(content, 220)}")
-    return (
-        "Сделай user-memory summary по участнику чата на русском.\n"
-        "Формат: 3-5 коротких предложений.\n"
-        "Опирайся только на реальные сообщения.\n"
-        "Нужно зафиксировать: стиль общения, типичные темы, полезные особенности для будущих ответов.\n"
-        "Не придумывай личные факты, диагнозы, политику или скрытые намерения.\n\n"
-        f"Участник: {profile_label}\n\n"
-        f"Текущий эвристический профиль:\n{truncate_text(heuristic_context, 700) or 'пока нет'}\n\n"
-        "Сообщения:\n"
-        + "\n".join(lines)
-    )
+    return _build_ai_user_memory_prompt(profile_label, rows, heuristic_context, truncate_text)
 
 
 def detect_local_chat_query(user_text: str) -> bool:
@@ -10905,305 +10097,73 @@ def analyze_request_route(
 
 
 def validate_route_decision(decision: RouteDecision) -> None:
-    if decision.route_kind not in ALLOWED_ROUTE_KINDS:
-        raise ValueError(f"unsupported route_kind: {decision.route_kind}")
-    if decision.use_live != decision.route_kind.startswith("live_"):
-        raise ValueError(f"route/live contract mismatch: {decision.route_kind}")
-    if decision.use_workspace != (decision.route_kind == "codex_workspace"):
-        raise ValueError(f"route/workspace contract mismatch: {decision.route_kind}")
+    return _validate_route_decision(decision, ALLOWED_ROUTE_KINDS)
 
 
 def build_route_summary_text(route_info: RouteDecision) -> str:
-    active_layers: List[str] = []
-    if route_info.use_reply:
-        active_layers.append("reply-context")
-    if route_info.use_events:
-        active_layers.append("event-context")
-    if route_info.use_database:
-        active_layers.append("database-context")
-    if route_info.use_web:
-        active_layers.append("web-context")
-    if route_info.use_live:
-        active_layers.append(f"live:{route_info.route_kind.replace('live_', '')}")
-    if "runtime-verification" in route_info.guardrails:
-        active_layers.append("runtime-check")
-    if not active_layers:
-        active_layers.append("history+summary+facts")
-    return (
-        f"intent={route_info.intent}; persona={route_info.persona}; "
-        f"chat_type={route_info.chat_type}; "
-        f"route={route_info.route_kind}; "
-        f"workspace_mode={'yes' if route_info.use_workspace else 'no'}; "
-        f"active_layers={', '.join(active_layers)}; "
-        f"guardrails={', '.join(route_info.guardrails[:8])}"
-    )
+    return _build_route_summary_text(route_info)
 
 
 def build_guardrail_note(route_info: RouteDecision) -> str:
-    lines = [
-        "- перед финальным ответом проверь, что ответ опирается только на доступные контекстные слои и источники",
-        "- не заявляй о выполненных действиях, если действие не было реально выполнено маршрутом или инструментом",
-        "- различай observed / inferred / uncertain и не скрывай, где был только вывод, а не прямое наблюдение",
-        "- не описывай внутренние переживания, сознание или эмоции как реальное состояние системы",
-    ]
-    if "respect-enterprise-mode" in route_info.guardrails:
-        lines.append("- если пользователь зовёт Enterprise, держи инженерный режим ответа и не сваливайся в общий бытовой тон Jarvis")
-    if route_info.use_live or route_info.use_web:
-        lines.append("- если данные могли устареть или не подтверждаются уверенно, прямо скажи это")
-        lines.append("- не выдавай косвенные сниппеты за окончательно подтверждённый факт")
-    if "cite-source" in route_info.guardrails:
-        lines.append("- для live-data запросов обязательно оставляй явный маркер источника и свежести ответа")
-    if route_info.use_events or route_info.use_database or route_info.use_reply:
-        lines.append("- не придумывай детали вне chat history, memory facts, reply context, archived events и database context")
-    if "runtime-verification" in route_info.guardrails:
-        lines.append("- для RAM, CPU, диска, uptime и других метрик среды опирайся только на реальную runtime-проверку; если её не было, честно скажи, что состояние не подтверждено")
-        lines.append("- не подменяй проверку среды общими рассуждениями, устаревшими примерами или советом выполнить команду так, будто ответ уже подтверждён")
-    if "no-system-actions" in route_info.guardrails:
-        lines.append("- не выполняй системные действия и не описывай их как выполненные")
-    if "heightened-uncertainty" in route_info.guardrails:
-        lines.append("- в этом ответе системная неопределённость повышена: держи формулировки консервативными и не сглаживай uncertainty")
-    if "runtime-risk-attention" in route_info.guardrails:
-        lines.append("- сейчас повышен runtime-risk: если не хватает прямого подтверждения, лучше честно ограничить вывод и сослаться на observed state")
-    if "doc-sync-attention" in route_info.guardrails:
-        lines.append("- есть сигнал doc/runtime drift: не делай вид, что документация точно соответствует состоянию без проверки")
-    if "stale-memory-attention" in route_info.guardrails:
-        lines.append("- локальная память могла устареть: приоритет у свежих events и recent relation context")
-    lines.append("- если уверенности мало, честно обозначь ограничение и предложи следующий безопасный шаг")
-    return "\n".join(lines)
+    return _build_guardrail_note(route_info)
 
 
 def classify_answer_outcome(answer: str) -> str:
-    lowered = (answer or "").lower()
-    if not lowered:
-        return "empty"
-    if "не удалось" in lowered or "ошибка" in lowered or "выключен" in lowered:
-        return "error"
-    if "не подтверж" in lowered or "не уверен" in lowered or "предполож" in lowered:
-        return "uncertain"
-    return "ok"
+    return _classify_answer_outcome(answer)
 
 
 def has_freshness_marker(text: str) -> bool:
-    lowered = (text or "").lower()
-    return any(marker in lowered for marker in FRESHNESS_MARKERS)
+    return _has_freshness_marker(text, FRESHNESS_MARKERS)
 
 
 def apply_self_check_contract(answer: str, route_decision: RouteDecision) -> SelfCheckReport:
-    cleaned = normalize_whitespace(answer)
-    flags: List[str] = []
-    final_answer = cleaned
-    observed_basis: List[str] = []
-    uncertain_points: List[str] = []
-    if not cleaned:
-        return SelfCheckReport(
-            outcome="empty",
-            answer="Пустой ответ. Переформулируй запрос.",
-            flags=("empty-answer",),
-            observed_basis=(),
-            uncertain_points=("empty-answer",),
-        )
-
-    if route_decision.use_live or route_decision.use_web:
-        observed_basis.append("external-sources")
-        lowered = cleaned.lower()
-        if "источник:" not in lowered and "http" not in lowered:
-            final_answer = final_answer + f"\n\nИсточник: {route_decision.source_label}."
-            flags.append("added-source-marker")
-            lowered = final_answer.lower()
-        if route_decision.use_live and not has_freshness_marker(lowered):
-            final_answer = final_answer + "\nАктуальность: live-проверка на момент запроса."
-            flags.append("added-freshness-marker")
-            lowered = final_answer.lower()
-        if route_decision.route_kind == "live_current_fact" and "подтверждение:" not in lowered and "не подтверж" not in lowered:
-            final_answer = final_answer + "\n\nПроверка: это вывод по найденным внешним источникам, а не абсолютная гарантия факта."
-            flags.append("added-current-fact-disclaimer")
-            uncertain_points.append("current-fact-is-inferred")
-            lowered = final_answer.lower()
-
-    if "no-system-actions" in route_decision.guardrails:
-        lowered = final_answer.lower()
-        action_markers = ("создал", "удалил", "установил", "запустил", "перезапустил", "выполнил")
-        if any(marker in lowered for marker in action_markers):
-            final_answer += "\n\nПроверка: этот маршрут не подтверждает выполнение системных действий."
-            flags.append("added-no-action-disclaimer")
-            uncertain_points.append("action-claim-without-tool-proof")
-
-    if "runtime-verification" in route_decision.guardrails and not route_decision.use_workspace:
-        lowered = final_answer.lower()
-        if all(marker not in lowered for marker in ("не подтверж", "не удалось", "ограничен", "недоступ", "нельзя проверить")):
-            final_answer += "\n\nПроверка: этот маршрут не подтверждает реальные метрики среды. Для точных RAM/CPU/disk/uptime данных нужен runtime/workspace маршрут."
-            flags.append("added-runtime-verification-disclaimer")
-            uncertain_points.append("runtime-not-verified")
-    if route_decision.use_workspace:
-        observed_basis.append("workspace-runtime")
-    if route_decision.use_events or route_decision.use_database or route_decision.use_reply:
-        observed_basis.append("local-memory")
-    if "heightened-uncertainty" in route_decision.guardrails:
-        uncertain_points.append("system-uncertainty-pressure-high")
-    if "runtime-risk-attention" in route_decision.guardrails:
-        uncertain_points.append("runtime-risk-pressure-high")
-
-    return SelfCheckReport(
-        outcome=classify_answer_outcome(final_answer),
-        answer=final_answer,
-        flags=tuple(flags),
-        observed_basis=tuple(dict.fromkeys(observed_basis)),
-        uncertain_points=tuple(dict.fromkeys(uncertain_points)),
+    return _apply_self_check_contract(
+        answer,
+        route_decision,
+        normalize_whitespace_func=normalize_whitespace,
+        freshness_markers=FRESHNESS_MARKERS,
+        has_freshness_marker_func=_has_freshness_marker,
+        classify_answer_outcome_func=_classify_answer_outcome,
+        self_check_factory=SelfCheckReport,
     )
 
 
 def render_route_diagnostics_rows(rows: List[sqlite3.Row]) -> str:
-    if not rows:
-        return "Route diagnostics пока пусты."
-    lines = ["Route diagnostics"]
-    for row in rows:
-        stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
-        layers: List[str] = []
-        if int(row["used_live"] or 0):
-            layers.append("live")
-        if int(row["used_web"] or 0):
-            layers.append("web")
-        if int(row["used_events"] or 0):
-            layers.append("events")
-        if int(row["used_database"] or 0):
-            layers.append("db")
-        if int(row["used_reply"] or 0):
-            layers.append("reply")
-        if int(row["used_workspace"] or 0):
-            layers.append("workspace")
-        layers_text = ",".join(layers) if layers else "base"
-        lines.append(
-            f"- [{stamp}] chat={int(row['chat_id'])} persona={row['persona'] or '-'} "
-            f"intent={row['intent'] or '-'} route={row['route_kind'] or '-'} "
-            f"source={row['source_label'] or '-'} outcome={row['outcome'] or '-'} "
-            f"latency={int(row['latency_ms'] or 0)}ms layers={layers_text}"
-        )
-        if row["query_text"]:
-            lines.append(f"  {truncate_text(row['query_text'], 180)}")
-    return "\n".join(lines)
+    return _render_route_diagnostics_rows(rows, truncate_text)
 
 
 def render_resource_summary() -> str:
-    lines = ["Ресурсы системы"]
-    lines.append(f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    try:
-        with open("/proc/loadavg", "r", encoding="utf-8") as handle:
-            lines.append(f"Load average: {handle.read().strip()}")
-    except OSError:
-        pass
-    if psutil is not None:
-        vm = psutil.virtual_memory()
-        cpu_percent = psutil.cpu_percent(interval=0.5)
-        boot_time = datetime.utcfromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M:%S")
-        lines.append(f"CPU: {cpu_percent:.1f}%")
-        lines.append(f"RAM: {vm.percent:.1f}% ({format_bytes(vm.used)} / {format_bytes(vm.total)})")
-        lines.append(f"Swap: {format_swap_line()}")
-        lines.append(f"CPU cores: logical={psutil.cpu_count()} physical={psutil.cpu_count(logical=False) or 'n/a'}")
-        lines.append(f"Boot time UTC: {boot_time}")
-    else:
-        lines.append("psutil не установлен, показываю только базовые данные из /proc.")
-        try:
-            with open("/proc/meminfo", "r", encoding="utf-8") as handle:
-                meminfo = handle.read()
-            total = extract_meminfo_value(meminfo, "MemTotal")
-            available = extract_meminfo_value(meminfo, "MemAvailable")
-            if total and available is not None:
-                used = max(0, total - available)
-                percent = (used / total) * 100 if total else 0
-                lines.append(f"RAM: {percent:.1f}% ({format_bytes(used * 1024)} / {format_bytes(total * 1024)})")
-        except OSError:
-            pass
-    return "\n".join(lines)
+    return _render_resource_summary(
+        psutil_module=psutil,
+        format_bytes_func=format_bytes,
+        format_swap_line_func=format_swap_line,
+        extract_meminfo_value_func=extract_meminfo_value,
+    )
 
 
 def render_top_processes(limit: int = 8) -> str:
-    lines = ["Топ процессов"]
-    if psutil is None:
-        lines.append("psutil не установлен.")
-        return "\n".join(lines)
-    samples: List[Tuple[float, int, str, float, int]] = []
-    for process in psutil.process_iter(["pid", "name", "memory_info"]):
-        try:
-            cpu = process.cpu_percent(interval=None)
-            memory = process.info["memory_info"].rss if process.info.get("memory_info") else 0
-            samples.append((cpu, process.info["pid"], process.info.get("name") or "unknown", memory, memory))
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    time.sleep(0.3)
-    samples = []
-    for process in psutil.process_iter(["pid", "name", "memory_info"]):
-        try:
-            cpu = process.cpu_percent(interval=None)
-            memory = process.info["memory_info"].rss if process.info.get("memory_info") else 0
-            samples.append((cpu, process.info["pid"], process.info.get("name") or "unknown", memory, memory))
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    samples.sort(key=lambda item: (-item[0], -item[3], item[1]))
-    if not samples:
-        lines.append("Процессы не найдены.")
-        return "\n".join(lines)
-    for cpu, pid, name, memory, _ in samples[:limit]:
-        lines.append(f"- pid={pid} cpu={cpu:.1f}% ram={format_bytes(memory)} name={truncate_text(name, 60)}")
-    return "\n".join(lines)
+    return _render_top_processes(
+        psutil_module=psutil,
+        format_bytes_func=format_bytes,
+        truncate_text_func=truncate_text,
+        limit=limit,
+    )
 
 
 def render_disk_summary() -> str:
-    lines = ["Диски"]
-    for mount in ("/", "/sdcard", "/home/userland"):
-        try:
-            usage = shutil.disk_usage(mount)
-        except OSError:
-            continue
-        used = usage.total - usage.free
-        percent = (used / usage.total) * 100 if usage.total else 0
-        lines.append(
-            f"- {mount}: {percent:.1f}% ({format_bytes(used)} / {format_bytes(usage.total)}), свободно {format_bytes(usage.free)}"
-        )
-    return "\n".join(lines)
+    return _render_disk_summary(format_bytes)
 
 
 def render_network_summary() -> str:
-    lines = ["Сеть"]
-    if psutil is not None:
-        counters = psutil.net_io_counters(pernic=True)
-        for name, stats in sorted(counters.items()):
-            if name == "lo":
-                continue
-            lines.append(
-                f"- {name}: recv={format_bytes(stats.bytes_recv)} sent={format_bytes(stats.bytes_sent)}"
-            )
-        if len(lines) == 1:
-            lines.append("Нет активных сетевых интерфейсов.")
-        return "\n".join(lines)
-    try:
-        with open("/proc/net/dev", "r", encoding="utf-8") as handle:
-            rows = handle.read().splitlines()[2:]
-        for row in rows:
-            name, payload = row.split(":", 1)
-            iface = name.strip()
-            if iface == "lo":
-                continue
-            parts = payload.split()
-            recv = int(parts[0])
-            sent = int(parts[8])
-            lines.append(f"- {iface}: recv={format_bytes(recv)} sent={format_bytes(sent)}")
-    except OSError:
-        lines.append("Не удалось прочитать /proc/net/dev")
-    return "\n".join(lines)
+    return _render_network_summary(psutil_module=psutil, format_bytes_func=format_bytes)
 
 
 def format_swap_line() -> str:
-    if psutil is None:
-        return "n/a"
-    swap = psutil.swap_memory()
-    return f"{swap.percent:.1f}% ({format_bytes(swap.used)} / {format_bytes(swap.total)})"
+    return _format_swap_line(psutil_module=psutil, format_bytes_func=format_bytes)
 
 
 def extract_meminfo_value(text: str, key: str) -> Optional[int]:
-    match = re.search(rf"^{re.escape(key)}:\s+(\d+)\s+kB$", text, flags=re.MULTILINE)
-    if not match:
-        return None
-    return int(match.group(1))
+    return _extract_meminfo_value(text, key)
 
 
 def format_bytes(value: int) -> str:
@@ -11247,82 +10207,23 @@ def strip_banned_openers(text: str) -> str:
 
 
 def trim_generic_followup(text: str) -> str:
-    cleaned = normalize_whitespace(text)
-    if not cleaned:
-        return cleaned
-    paragraphs = [part.strip() for part in cleaned.split("\n\n") if part.strip()]
-    if len(paragraphs) < 2:
-        return cleaned
-    last = paragraphs[-1].lower()
-    generic_starters = (
-        "если хочешь, я могу",
-        "если хочешь могу",
-        "могу следующим сообщением",
-        "если хочешь, следующим сообщением",
-        "практический вывод для меня дальше",
-        "дальше буду отвечать",
-    )
-    if any(last.startswith(starter) for starter in generic_starters):
-        return "\n\n".join(paragraphs[:-1]).strip()
-    return cleaned
+    return _trim_generic_followup(text)
 
 
 def normalize_whitespace(text: str) -> str:
-    lines = [line.rstrip() for line in (text or "").replace("\r", "").split("\n")]
-    collapsed: List[str] = []
-    blank_count = 0
-    for line in lines:
-        if not line.strip():
-            blank_count += 1
-            if blank_count <= 1:
-                collapsed.append("")
-            continue
-        blank_count = 0
-        collapsed.append(line.strip())
-    return "\n".join(collapsed).strip()
+    return _normalize_whitespace(text)
 
 
 def truncate_text(text: str, limit: int) -> str:
-    cleaned = (text or "").strip()
-    if len(cleaned) <= limit:
-        return cleaned
-    if limit <= 3:
-        return cleaned[:limit]
-    return cleaned[: limit - 3].rstrip() + "..."
+    return _truncate_text(text, limit)
 
 
 def split_long_message(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> List[str]:
-    cleaned = normalize_whitespace(text) or "Пустой ответ."
-    if len(cleaned) <= limit:
-        return [cleaned]
-
-    chunks: List[str] = []
-    remaining = cleaned
-    while len(remaining) > limit:
-        split_at = remaining.rfind("\n\n", 0, limit)
-        if split_at < limit // 3:
-            split_at = remaining.rfind("\n", 0, limit)
-        if split_at < limit // 3:
-            split_at = remaining.rfind(" ", 0, limit)
-        if split_at < limit // 3:
-            split_at = limit
-
-        chunk = remaining[:split_at].strip()
-        if not chunk:
-            chunk = remaining[:limit].strip()
-            split_at = limit
-
-        chunks.append(chunk)
-        remaining = remaining[split_at:].lstrip()
-
-    if remaining:
-        chunks.append(remaining)
-    return chunks
+    return _split_long_message(text, limit)
 
 
 def build_download_name(file_path: str, fallback_name: str) -> str:
-    candidate = Path(file_path).name.strip()
-    return candidate or fallback_name
+    return _build_download_name(file_path, fallback_name)
 
 
 def build_whisper_command(audio_path: Path, output_dir: Path, model_name: str, language: str) -> Optional[List[str]]:
@@ -11399,69 +10300,12 @@ def resolve_ffmpeg_binary(preferred_binary: str) -> str:
 
 
 def build_voice_transcription_help(config: BotConfig) -> str:
-    issues: List[str] = []
-
-    ffmpeg_path = shutil.which(config.ffmpeg_binary)
-    bundled_ffmpeg_path = ""
-    if ffmpeg_path is None:
-        try:
-            import imageio_ffmpeg  # type: ignore
-
-            bundled_ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-        except Exception:
-            bundled_ffmpeg_path = ""
-    if ffmpeg_path is None:
-        if bundled_ffmpeg_path:
-            ffmpeg_path = bundled_ffmpeg_path
-        else:
-            issues.append(f"ffmpeg не найден в PATH: {config.ffmpeg_binary}")
-
-    whisper_cli_path = shutil.which("whisper")
-    python_whisper_available = False
-    try:
-        import whisper  # type: ignore  # noqa: F401
-    except ImportError:
-        python_whisper_available = False
-    else:
-        python_whisper_available = True
-
-    faster_whisper_available = False
-    try:
-        import faster_whisper  # type: ignore  # noqa: F401
-    except ImportError:
-        faster_whisper_available = False
-    else:
-        faster_whisper_available = True
-
-    whisper_cpp_bin = Path(WHISPER_CPP_BIN)
-    whisper_cpp_model = Path(WHISPER_CPP_MODELS_DIR) / f"ggml-{config.whisper_model}.bin"
-    whisper_cpp_ready = whisper_cpp_bin.exists() and whisper_cpp_model.exists()
-
-    if whisper_cli_path is None and not python_whisper_available and not faster_whisper_available and not whisper_cpp_ready:
-        issues.append(
-            "не найден ни один backend whisper: CLI `whisper`, Python-модуль `whisper`, Python-модуль "
-            f"`faster_whisper` или `{whisper_cpp_bin}` с моделью `{whisper_cpp_model.name}`"
-        )
-    elif whisper_cpp_bin.exists() and not whisper_cpp_model.exists():
-        issues.append(f"для whisper.cpp отсутствует модель `{whisper_cpp_model.name}`")
-
-    if config.tmp_dir is not None:
-        if not config.tmp_dir.exists():
-            issues.append(f"TMP_DIR недоступен: {config.tmp_dir}")
-        elif not os.access(config.tmp_dir, os.W_OK):
-            issues.append(f"нет прав на запись в TMP_DIR: {config.tmp_dir}")
-
-    if not issues:
-        return (
-            "Не удалось распознать голосовое. Дополнительные Android/Telegram-права для этого не нужны. "
-            "Проблема, вероятно, в формате аудио или в локальном окружении whisper. "
-            "Проверь лог `tg_codex_bridge.py`."
-        )
-
-    details = "\n".join(f"- {item}" for item in issues)
-    return (
-        "Не удалось распознать голосовое. Дополнительные Android/Telegram-права для этого не нужны.\n"
-        f"{details}"
+    return _build_voice_transcription_help(
+        ffmpeg_binary=config.ffmpeg_binary,
+        tmp_dir=config.tmp_dir,
+        whisper_model=config.whisper_model,
+        whisper_cpp_bin_path=WHISPER_CPP_BIN,
+        whisper_cpp_models_dir=WHISPER_CPP_MODELS_DIR,
     )
 
 
@@ -11482,10 +10326,7 @@ def build_subprocess_env() -> dict:
 
 def cleanup_temp_file(path: Path) -> None:
     try:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        elif path.exists():
-            path.unlink(missing_ok=True)
+        _cleanup_temp_file(path)
     except OSError as error:
         log(f"temp cleanup failed for {path}: {error}")
 
