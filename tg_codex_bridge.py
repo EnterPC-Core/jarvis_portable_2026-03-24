@@ -7189,7 +7189,6 @@ def describe_message_media_kind(message: dict) -> str:
 def read_recent_log_highlights(log_path: Path, limit: int = 8) -> List[str]:
     if not log_path.exists():
         return []
-    markers = ("error", "failed", "traceback", "unexpected", "timeout", "exception")
     try:
         lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
@@ -7197,11 +7196,40 @@ def read_recent_log_highlights(log_path: Path, limit: int = 8) -> List[str]:
     matched: List[str] = []
     for line in reversed(lines[-300:]):
         lowered = line.lower()
-        if any(marker in lowered for marker in markers):
+        if is_error_log_line(lowered):
             matched.append(truncate_text(normalize_whitespace(line), 220))
         if len(matched) >= limit:
             break
     return list(reversed(matched))
+
+
+def is_error_log_line(lowered_line: str) -> bool:
+    if not lowered_line:
+        return False
+    ignore_markers = (
+        "config loaded",
+        "bot started",
+        "stt model loaded",
+        "stt model prewarmed",
+        "incoming text",
+        "incoming reaction",
+    )
+    if any(marker in lowered_line for marker in ignore_markers):
+        return False
+    error_markers = (
+        " error",
+        "error:",
+        "failed",
+        "traceback",
+        "unexpected",
+        "exception",
+        "timed out",
+        "timeout expired",
+        "restart requested",
+        "bridge exited",
+        "blocked user_id",
+    )
+    return any(marker in lowered_line for marker in error_markers)
 
 
 def run_git_command(repo_path: Path, args: List[str], timeout_seconds: int = 20) -> str:
