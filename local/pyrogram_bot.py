@@ -1,6 +1,20 @@
 import os
-from pyrogram import Client, filters
-from openai import OpenAI
+
+try:
+    from pyrogram import Client, filters
+except ImportError as error:
+    raise RuntimeError(
+        "Pyrogram runtime не готов: установи зависимости из local/requirements-pyrogram.txt "
+        "(минимум `pyrogram` и `TgCrypto`)."
+    ) from error
+
+try:
+    from openai import OpenAI
+except ImportError as error:
+    raise RuntimeError(
+        "Pyrogram runtime не готов: отсутствует пакет `openai`. "
+        "Установи зависимости из local/requirements-pyrogram.txt."
+    ) from error
 
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')

@@ -441,6 +441,7 @@ STOCK_ALIASES = {
 
 OWNER_AUTOFIX_USAGE = "Используй: /ownerautofix on|off|status"
 JARVIS_OFFLINE_TEXT = "Enterprise Core выключен."
+JARVIS_NETWORK_ERROR_TEXT = "Enterprise Core недоступен. Похоже, пропал интернет или внешний сервис не отвечает. Попробуй повторить запрос, когда сеть стабилизируется."
 ADMIN_HELP_PANEL_SECTIONS = ("main", "access", "memory", "moderation", "warns", "welcome", "creator")
 PUBLIC_HELP_PANEL_SECTIONS = ("public", "public_achievements", "public_appeal")
 CONTROL_PANEL_SECTIONS = (
@@ -4800,6 +4801,12 @@ class TelegramBridge:
         except ValueError as error:
             self.safe_send_text(chat_id, str(error))
             return True
+        try:
+            ensure_sdcard_save_target_writable(destination)
+        except ValueError as error:
+            log(f"sd save unavailable target={destination} error={error}")
+            self.safe_send_text(chat_id, str(error))
+            return True
         file_info = self.get_file_info(file_id)
         file_path = file_info.get("file_path")
         if not file_path:
@@ -5856,6 +5863,8 @@ class TelegramBridge:
         if result.returncode != 0:
             log(f"codex error code={result.returncode} stderr={shorten_for_log(stderr)}")
             details = stderr or stdout or "Движок Enterprise Core завершился с ошибкой без вывода."
+            if is_codex_network_error_output(details):
+                return JARVIS_NETWORK_ERROR_TEXT
             if is_codex_unavailable_output(details):
                 return JARVIS_OFFLINE_TEXT
             if approval_policy == "never" and sandbox_mode == "workspace-write":
@@ -6055,6 +6064,8 @@ class TelegramBridge:
         if returncode != 0:
             log(f"codex error code={returncode} stderr={shorten_for_log(stderr)}")
             details = stderr or stdout or "Движок Enterprise Core завершился с ошибкой без вывода."
+            if is_codex_network_error_output(details):
+                return JARVIS_NETWORK_ERROR_TEXT
             if is_codex_unavailable_output(details):
                 return JARVIS_OFFLINE_TEXT
             if approval_policy == "never" and sandbox_mode == "workspace-write":
@@ -6093,16 +6104,16 @@ class TelegramBridge:
     ) -> None:
         if status_message_id is None:
             return
-        if replace_status_with_answer and answer and answer != JARVIS_OFFLINE_TEXT:
+        if replace_status_with_answer and answer and answer not in {JARVIS_OFFLINE_TEXT, JARVIS_NETWORK_ERROR_TEXT}:
             self.edit_status_message(chat_id, status_message_id, answer)
             return
         if progress_style == "enterprise":
-            if answer == JARVIS_OFFLINE_TEXT:
+            if answer in {JARVIS_OFFLINE_TEXT, JARVIS_NETWORK_ERROR_TEXT}:
                 status_text = (
                     f"{initial_status}\n\n"
                     "✖ Enterprise сейчас недоступен.\n"
-                    "Дмитрий, движок не поднялся как надо.\n"
-                    "Придётся чинить маршрут, а не делать вид, что всё ок."
+                    "Дмитрий, либо движок не поднялся, либо сеть отвалилась.\n"
+                    "Нужен рабочий маршрут, а не повтор сырой ошибки."
                 )
             elif answer == UPGRADE_TIMEOUT_TEXT or answer.startswith("Слишком долгий ответ."):
                 status_text = (
@@ -6126,11 +6137,11 @@ class TelegramBridge:
                     "Можно идти смотреть результат и делать вид, что так и было задумано."
                 )
         else:
-            if answer == JARVIS_OFFLINE_TEXT:
+            if answer in {JARVIS_OFFLINE_TEXT, JARVIS_NETWORK_ERROR_TEXT}:
                 status_text = (
                     f"{initial_status}\n\n"
                     "✖ Jarvis сейчас не отвечает как надо.\n"
-                    "Дмитрий, тут надо не ждать вдохновения, а чинить запуск."
+                    "Дмитрий, тут проблема либо в запуске, либо в сети до внешнего сервиса."
                 )
             elif answer == UPGRADE_TIMEOUT_TEXT or answer.startswith("Слишком долгий ответ."):
                 status_text = (
@@ -7482,6 +7493,47 @@ def is_codex_unavailable_output(text: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def is_codex_network_error_output(text: str) -> bool:
+    lowered = normalize_whitespace(text or "").lower()
+    markers = (
+        "api connection error",
+        "apiconnectionerror",
+        "network error",
+        "connection error",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "connection timed out",
+        "connect timeout",
+        "read timeout",
+        "timed out",
+        "timeout was reached",
+        "temporary failure in name resolution",
+        "name or service not known",
+        "nodename nor servname provided",
+        "failed to resolve host",
+        "could not resolve host",
+        "dns",
+        "econnreset",
+        "econnrefused",
+        "enetunreach",
+        "ehostunreach",
+        "enotfound",
+        "service unavailable",
+        "502 bad gateway",
+        "503 service unavailable",
+        "504 gateway timeout",
+        "stream disconnected before completion",
+        "error sending request for url",
+        "connection to api.openai.com",
+        "peer closed connection",
+        "socket is not connected",
+        "clientconnectorerror",
+        "all connection attempts failed",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 def build_help_panel_text(section: str) -> str:
     owner_line = f"Создатель: {OWNER_USERNAME}\nID владельца: {OWNER_USER_ID}"
     panels = {
@@ -8002,6 +8054,28 @@ def resolve_sdcard_save_target(raw_target: str, suggested_name: str) -> Path:
         raise ValueError("Разрешена работа только внутри /sdcard.")
     destination.parent.mkdir(parents=True, exist_ok=True)
     return destination
+
+
+def ensure_sdcard_save_target_writable(destination: Path) -> None:
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ValueError(f"Каталог для сохранения недоступен: {destination.parent}") from error
+    probe_name = f".jarvis-write-test-{os.getpid()}-{int(time.time() * 1000)}"
+    probe_path = destination.parent / probe_name
+    try:
+        with probe_path.open("w", encoding="utf-8") as handle:
+            handle.write("ok")
+    except OSError as error:
+        raise ValueError(
+            "Нет доступа на запись в выбранный каталог /sdcard. "
+            "В этой среде используй доступный путь или настрой монтирование storage."
+        ) from error
+    finally:
+        try:
+            probe_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -9292,7 +9366,10 @@ def acquire_instance_lock(lock_path: str):
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         handle.close()
-        raise RuntimeError("Another tg_codex_bridge.py instance is already running")
+        raise RuntimeError(
+            "Another tg_codex_bridge.py instance is already running. "
+            "Single-instance lock is active; stop the old process before starting a new one."
+        )
     handle.seek(0)
     handle.truncate()
     handle.write(str(os.getpid()))
@@ -9312,7 +9389,11 @@ def log(message: str) -> None:
 def main() -> None:
     global INSTANCE_LOCK_HANDLE
     config = BotConfig()
-    INSTANCE_LOCK_HANDLE = acquire_instance_lock(config.lock_path)
+    try:
+        INSTANCE_LOCK_HANDLE = acquire_instance_lock(config.lock_path)
+    except RuntimeError as error:
+        log(f"instance lock conflict lock_path={config.lock_path}: {error}")
+        raise
     log(
         "config loaded "
         f"mode={config.default_mode} history_limit={config.history_limit} "

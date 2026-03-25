@@ -1,6 +1,6 @@
 {
   "database": "/home/userland/projects/bots/jarvis_portable_2026-03-24/jarvis_memory.db",
-  "generated_at_utc": "2026-03-25T04:52:49+00:00",
+  "generated_at_utc": "2026-03-25T05:43:05+00:00",
   "tables": [
     "achievement_catalog",
     "appeal_events",
@@ -35,13 +35,13 @@
     "appeal_events": 2,
     "appeals": 2,
     "bot_meta": 6,
-    "chat_events": 690,
-    "chat_events_fts": 690,
+    "chat_events": 742,
+    "chat_events_fts": 742,
     "chat_events_fts_config": 1,
-    "chat_events_fts_data": 17,
-    "chat_events_fts_docsize": 690,
-    "chat_events_fts_idx": 15,
-    "chat_history": 181,
+    "chat_events_fts_data": 16,
+    "chat_events_fts_docsize": 742,
+    "chat_events_fts_idx": 14,
+    "chat_history": 213,
     "chat_modes": 1,
     "chat_summaries": 4,
     "memory_facts": 0,
@@ -49,12 +49,12 @@
     "moderation_actions": 0,
     "moderation_journal": 0,
     "progression_profiles": 999,
-    "request_diagnostics": 0,
-    "score_events": 2102,
-    "summary_snapshots": 5,
+    "request_diagnostics": 16,
+    "score_events": 2124,
+    "summary_snapshots": 37,
     "ui_sessions": 2,
     "user_achievement_state": 16932,
-    "user_memory_profiles": 1,
+    "user_memory_profiles": 5,
     "warn_settings": 0,
     "warnings": 0,
     "welcome_settings": 1
@@ -71,7 +71,7 @@
       },
       {
         "key": "last_update_id",
-        "value": "955148014"
+        "value": "955148049"
       },
       {
         "key": "pending_restart_chat_id",
@@ -111,11 +111,11 @@
       "content_exported": false
     },
     "chat_events": {
-      "rows": 690,
+      "rows": 742,
       "content_exported": false
     },
     "chat_history": {
-      "rows": 181,
+      "rows": 213,
       "content_exported": false
     },
     "memory_facts": {

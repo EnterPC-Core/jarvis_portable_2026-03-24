@@ -7,7 +7,6 @@ from pathlib import Path
 
 
 WORKER_PROTECTED_PATHS = (
-    "tg_codex_bridge.py",
     "run_jarvis_supervisor.sh",
     "enterprise_worker.py",
     ".env",
