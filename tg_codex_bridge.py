@@ -193,6 +193,9 @@ REMEMBER_USAGE_TEXT = "Используй: /remember <что нужно запо
 RECALL_USAGE_TEXT = "Используй: /recall [запрос]"
 PORTRAIT_USAGE_TEXT = "Используй: /portrait @username или reply на сообщение участника"
 SEARCH_USAGE_TEXT = "Используй: /search <запрос>"
+SD_LIST_USAGE_TEXT = "Используй: /sdls [/sdcard/путь]"
+SD_SEND_USAGE_TEXT = "Используй: /sdsend /sdcard/путь/к/файлу"
+SD_SAVE_USAGE_TEXT = "Используй: /sdsave /sdcard/папка/или/файл и отправь команду reply на медиа либо подписью к документу"
 WHO_SAID_USAGE_TEXT = "Используй: /who_said <запрос>"
 HISTORY_USAGE_TEXT = "Используй: /history @username, /history user_id или reply на сообщение участника"
 EXPORT_USAGE_TEXT = "Используй: /export chat, /export today, /export @username или /export user_id"
@@ -225,6 +228,9 @@ COMMANDS_LIST_TEXT = (
     "/remember <факт>\n"
     "/recall [запрос]\n"
     "/search <запрос>\n"
+    "/sdls [/sdcard/путь]\n"
+    "/sdsend /sdcard/путь/к/файлу\n"
+    "/sdsave /sdcard/папка/или/файл\n"
     "/who_said <запрос>\n"
     "/history [@username|user_id]\n"
     "/daily [YYYY-MM-DD]\n"
@@ -1996,6 +2002,9 @@ class TelegramBridge:
             if message.get("text"):
                 self.handle_text_message(chat_id, user_id, message, chat_type)
                 return
+            if message.get("document"):
+                self.handle_document_message(chat_id, user_id, message, chat_type)
+                return
             if message.get("photo"):
                 self.handle_photo_message(chat_id, user_id, message)
                 return
@@ -2377,6 +2386,27 @@ class TelegramBridge:
         )
         worker.start()
 
+    def handle_document_message(self, chat_id: int, user_id: Optional[int], message: dict, chat_type: str) -> None:
+        document = message.get("document") or {}
+        file_id = document.get("file_id")
+        caption = (message.get("caption") or "").strip()
+        file_name = document.get("file_name") or "document"
+        log(f"incoming document chat={chat_id} user={user_id} file={shorten_for_log(file_name)} caption={shorten_for_log(caption)}")
+
+        if not file_id:
+            self.safe_send_text(chat_id, "Не удалось получить файл документа.")
+            return
+
+        save_target = parse_sd_save_command(caption)
+        if save_target is not None:
+            if not is_owner_private_chat(user_id, chat_id):
+                self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+                return
+            self.handle_sd_save_command(chat_id, user_id, save_target, message)
+            return
+
+        self.safe_send_text(chat_id, "Документ получен. Чтобы сохранить его в /sdcard, добавь подпись /sdsave /sdcard/путь или ответь командой /sdsave на сообщение с файлом.")
+
     def handle_voice_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
         voice = message.get("voice") or {}
         file_id = voice.get("file_id")
@@ -2642,6 +2672,15 @@ class TelegramBridge:
         search_value = parse_search_command(text)
         if search_value is not None:
             return self.handle_search_command(chat_id, search_value)
+        sd_list_value = parse_sd_list_command(text)
+        if sd_list_value is not None:
+            return self.handle_sd_list_command(chat_id, user_id, sd_list_value)
+        sd_send_value = parse_sd_send_command(text)
+        if sd_send_value is not None:
+            return self.handle_sd_send_command(chat_id, user_id, sd_send_value)
+        sd_save_value = parse_sd_save_command(text)
+        if sd_save_value is not None:
+            return self.handle_sd_save_command(chat_id, user_id, sd_save_value, message)
         who_said_value = parse_who_said_command(text)
         if who_said_value is not None:
             return self.handle_who_said_command(chat_id, who_said_value)
@@ -3486,6 +3525,87 @@ class TelegramBridge:
             self.safe_send_text(chat_id, "Совпадений не найдено.")
             return True
         self.safe_send_text(chat_id, render_event_rows(rows, title=f"Поиск: {query}"))
+        return True
+
+    def handle_sd_list_command(self, chat_id: int, user_id: Optional[int], raw_path: str) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        try:
+            target = resolve_sdcard_path(raw_path, allow_missing=False, default_to_root=True)
+        except ValueError as error:
+            self.safe_send_text(chat_id, str(error))
+            return True
+        if not target.exists():
+            self.safe_send_text(chat_id, f"Путь не найден: {target}")
+            return True
+        if not target.is_dir():
+            self.safe_send_text(chat_id, f"Это не папка: {target}")
+            return True
+        items = sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+        if not items:
+            self.safe_send_text(chat_id, f"Папка пуста: {target}")
+            return True
+        lines = [f"/sdcard список: {target}"]
+        for item in items[:60]:
+            marker = "DIR" if item.is_dir() else "FILE"
+            size_part = ""
+            if item.is_file():
+                try:
+                    size_part = f" ({format_file_size(item.stat().st_size)})"
+                except OSError:
+                    size_part = ""
+            lines.append(f"- [{marker}] {item.name}{size_part}")
+        if len(items) > 60:
+            lines.append(f"... ещё: {len(items) - 60}")
+        self.safe_send_text(chat_id, "\n".join(lines))
+        return True
+
+    def handle_sd_send_command(self, chat_id: int, user_id: Optional[int], raw_path: str) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        if not raw_path:
+            self.safe_send_text(chat_id, SD_SEND_USAGE_TEXT)
+            return True
+        try:
+            target = resolve_sdcard_path(raw_path, allow_missing=False, default_to_root=False)
+        except ValueError as error:
+            self.safe_send_text(chat_id, str(error))
+            return True
+        if not target.exists():
+            self.safe_send_text(chat_id, f"Файл не найден: {target}")
+            return True
+        if not target.is_file():
+            self.safe_send_text(chat_id, f"Нужен именно файл, а не папка: {target}")
+            return True
+        self.send_document(chat_id, target, caption=f"Файл из /sdcard\n{target}")
+        return True
+
+    def handle_sd_save_command(self, chat_id: int, user_id: Optional[int], raw_target: str, message: Optional[dict] = None) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        source_message = message or {}
+        if source_message.get("text"):
+            source_message = (source_message.get("reply_to_message") or {})
+        media = extract_message_media_file(source_message)
+        if media is None:
+            self.safe_send_text(chat_id, "Нужен reply на сообщение с файлом/медиа или подпись /sdsave у документа.")
+            return True
+        file_id, suggested_name = media
+        try:
+            destination = resolve_sdcard_save_target(raw_target, suggested_name)
+        except ValueError as error:
+            self.safe_send_text(chat_id, str(error))
+            return True
+        file_info = self.get_file_info(file_id)
+        file_path = file_info.get("file_path")
+        if not file_path:
+            self.safe_send_text(chat_id, "Telegram не вернул путь к файлу.")
+            return True
+        self.download_telegram_file(file_path, destination)
+        self.safe_send_text(chat_id, f"Сохранено в /sdcard:\n{destination}")
         return True
 
     def handle_who_said_command(self, chat_id: int, query: str) -> bool:
@@ -4572,6 +4692,33 @@ def parse_search_command(text: str) -> Optional[str]:
     return parts[1].strip()
 
 
+def parse_sd_list_command(text: str) -> Optional[str]:
+    if not text.startswith("/sdls"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def parse_sd_send_command(text: str) -> Optional[str]:
+    if not text.startswith("/sdsend"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def parse_sd_save_command(text: str) -> Optional[str]:
+    if not text.startswith("/sdsave"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
 def extract_assistant_persona(text: str) -> Tuple[str, str]:
     cleaned = normalize_whitespace(text)
     if not cleaned:
@@ -4736,6 +4883,10 @@ def can_use_upgrade_write(allowed_user_ids: Set[int], user_id: Optional[int]) ->
 
 def can_owner_use_workspace_mode(user_id: Optional[int], chat_type: str, assistant_persona: str = "") -> bool:
     return user_id == OWNER_USER_ID and chat_type == "private" and assistant_persona == "enterprise"
+
+
+def is_owner_private_chat(user_id: Optional[int], chat_id: int) -> bool:
+    return user_id == OWNER_USER_ID and chat_id > 0
 
 
 def is_allowed_user(allowed_user_ids: Set[int], user_id: Optional[int]) -> bool:
@@ -5273,6 +5424,93 @@ def should_include_database_context(user_text: str) -> bool:
         "модер", "наруш", "профил", "статист", "лог", "факт", "remember", "recall",
     )
     return any(marker in lowered for marker in markers)
+
+
+def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: bool) -> Path:
+    base = Path("/sdcard").resolve()
+    cleaned = (raw_path or "").strip()
+    if not cleaned:
+        if default_to_root:
+            return base
+        raise ValueError(SD_SEND_USAGE_TEXT)
+    candidate = Path(cleaned)
+    if candidate.is_absolute():
+        target = candidate
+    else:
+        target = base / candidate
+    resolved = target.resolve(strict=False)
+    try:
+        resolved.relative_to(base)
+    except ValueError as error:
+        raise ValueError("Разрешена работа только внутри /sdcard.") from error
+    if not allow_missing and not resolved.exists():
+        return resolved
+    return resolved
+
+
+def resolve_sdcard_save_target(raw_target: str, suggested_name: str) -> Path:
+    base = Path("/sdcard").resolve()
+    cleaned_name = Path(suggested_name or "file.bin").name or "file.bin"
+    cleaned_target = (raw_target or "").strip()
+    if not cleaned_target:
+        destination = base / cleaned_name
+    else:
+        candidate = resolve_sdcard_path(cleaned_target, allow_missing=True, default_to_root=True)
+        if cleaned_target.endswith("/") or candidate.exists() and candidate.is_dir():
+            destination = candidate / cleaned_name
+        else:
+            destination = candidate
+    destination = destination.resolve(strict=False)
+    try:
+        destination.relative_to(base)
+    except ValueError as error:
+        raise ValueError("Разрешена работа только внутри /sdcard.") from error
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    return destination
+
+
+def extract_message_media_file(message: dict) -> Optional[Tuple[str, str]]:
+    if not message:
+        return None
+    if message.get("document"):
+        document = message.get("document") or {}
+        file_id = document.get("file_id")
+        file_name = document.get("file_name") or "document.bin"
+        if file_id:
+            return str(file_id), file_name
+    if message.get("audio"):
+        audio = message.get("audio") or {}
+        file_id = audio.get("file_id")
+        file_name = audio.get("file_name") or "audio.mp3"
+        if file_id:
+            return str(file_id), file_name
+    if message.get("voice"):
+        voice = message.get("voice") or {}
+        file_id = voice.get("file_id")
+        if file_id:
+            return str(file_id), "voice.ogg"
+    if message.get("video"):
+        video = message.get("video") or {}
+        file_id = video.get("file_id")
+        file_name = video.get("file_name") or "video.mp4"
+        if file_id:
+            return str(file_id), file_name
+    if message.get("photo"):
+        photos = message.get("photo") or []
+        if photos:
+            best_photo = max(photos, key=lambda item: item.get("file_size", 0))
+            file_id = best_photo.get("file_id")
+            if file_id:
+                return str(file_id), f"photo_{message.get('message_id') or int(time.time())}.jpg"
+    return None
+
+
+def format_file_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
 
 
 def normalize_incoming_text(text: str, bot_username: str) -> str:
