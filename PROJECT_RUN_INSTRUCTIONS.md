@@ -215,7 +215,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/gitstatus` — текущее состояние git-ветки и worktree
 - `/gitlast [N]` — последние коммиты
 - `/errors [N]` — только реальные ошибки и поломки из `tg_codex_bridge.log`
-- `/events [N]` — рестарты, блокировки и служебные события
+- `/events [restart|access|system|all] [N]` — служебные события с фильтром по категории
 
 ## Owner Panel
 

@@ -195,7 +195,7 @@ NET_USAGE_TEXT = "Используй: /net"
 GIT_STATUS_USAGE_TEXT = "Используй: /gitstatus"
 GIT_LAST_USAGE_TEXT = "Используй: /gitlast [количество]"
 ERRORS_USAGE_TEXT = "Используй: /errors [количество]"
-EVENTS_USAGE_TEXT = "Используй: /events [количество]"
+EVENTS_USAGE_TEXT = "Используй: /events [restart|access|system|all] [количество]"
 WHO_SAID_USAGE_TEXT = "Используй: /who_said <запрос>"
 HISTORY_USAGE_TEXT = "Используй: /history @username, /history user_id или reply на сообщение участника"
 DIGEST_USAGE_TEXT = "Используй: /digest [YYYY-MM-DD]"
@@ -289,7 +289,7 @@ COMMANDS_LIST_TEXT = (
     "/gitstatus\n"
     "/gitlast [количество]\n"
     "/errors [количество]\n"
-    "/events [количество]\n"
+    "/events [restart|access|system|all] [количество]\n"
     "/sdls [/sdcard/путь]\n"
     "/sdsend /sdcard/путь/к/файлу\n"
     "/sdsave /sdcard/папка/или/файл\n"
@@ -1974,12 +1974,17 @@ class TelegramBridge:
                 "• /gitstatus — worktree, branch, upstream\n"
                 "• /gitlast 5 — последние коммиты, число можно менять\n"
                 "• /errors 10 — только реальные ошибки и поломки\n"
-                "• /events 10 — рестарты, блокировки и служебные события\n"
+                "• /events 10 — все служебные события\n"
+                "• /events restart 10 — только рестарты\n"
+                "• /events access 10 — только блокировки доступа\n"
+                "• /events system 10 — только системные operational-события\n"
                 "• /upgrade <что изменить> — постановка задачи на изменение кода\n\n"
                 "Примеры:\n"
                 "• /gitlast 12\n"
                 "• /errors 20\n"
                 "• /events 20\n"
+                "• /events restart 20\n"
+                "• /events access 20\n"
                 "• /upgrade добавь новый route для ..."
             )
             markup = {
@@ -4082,18 +4087,25 @@ class TelegramBridge:
         if not is_owner_private_chat(user_id, chat_id):
             self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
             return True
+        category = "all"
         limit = 12
         if payload:
-            try:
-                limit = max(1, min(30, int(payload)))
-            except ValueError:
-                self.safe_send_text(chat_id, EVENTS_USAGE_TEXT)
-                return True
-        lines = read_recent_operational_highlights(self.log_path, limit=limit)
+            parts = payload.split()
+            for part in parts:
+                lowered = part.lower()
+                if lowered in {"restart", "access", "system", "all"}:
+                    category = lowered
+                    continue
+                try:
+                    limit = max(1, min(30, int(part)))
+                except ValueError:
+                    self.safe_send_text(chat_id, EVENTS_USAGE_TEXT)
+                    return True
+        lines = read_recent_operational_highlights(self.log_path, limit=limit, category=category)
         if not lines:
             self.safe_send_text(chat_id, "В последних логах заметных служебных событий не найдено.")
             return True
-        self.safe_send_text(chat_id, "Служебные события из хвоста лога:\n" + "\n".join(f"- {line}" for line in lines))
+        self.safe_send_text(chat_id, f"Служебные события из хвоста лога ({category}):\n" + "\n".join(f"- {line}" for line in lines))
         return True
 
     def handle_topproc_command(self, chat_id: int, user_id: Optional[int]) -> bool:
@@ -7263,7 +7275,7 @@ def is_error_log_line(lowered_line: str) -> bool:
     return any(marker in lowered_line for marker in error_markers)
 
 
-def read_recent_operational_highlights(log_path: Path, limit: int = 8) -> List[str]:
+def read_recent_operational_highlights(log_path: Path, limit: int = 8, category: str = "all") -> List[str]:
     if not log_path.exists():
         return []
     try:
@@ -7273,21 +7285,35 @@ def read_recent_operational_highlights(log_path: Path, limit: int = 8) -> List[s
     matched: List[str] = []
     for line in reversed(lines[-400:]):
         lowered = line.lower()
-        if is_operational_log_line(lowered):
+        if is_operational_log_line(lowered, category=category):
             matched.append(truncate_text(normalize_whitespace(line), 220))
         if len(matched) >= limit:
             break
     return list(reversed(matched))
 
 
-def is_operational_log_line(lowered_line: str) -> bool:
+def is_operational_log_line(lowered_line: str, category: str = "all") -> bool:
     if not lowered_line:
         return False
-    markers = (
-        "restart requested",
-        "bridge exited",
-        "blocked user_id",
-    )
+    category_markers = {
+        "restart": (
+            "restart requested",
+            "bridge exited",
+        ),
+        "access": (
+            "blocked user_id",
+        ),
+        "system": (
+            "restart requested",
+            "bridge exited",
+        ),
+        "all": (
+            "restart requested",
+            "bridge exited",
+            "blocked user_id",
+        ),
+    }
+    markers = category_markers.get(category, category_markers["all"])
     return any(marker in lowered_line for marker in markers)
 
 
