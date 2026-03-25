@@ -57,6 +57,7 @@ DEFAULT_BACKUP_INTERVAL_DAYS = 7
 DEFAULT_BACKUP_PART_SIZE_MB = 45
 DEFAULT_OWNER_AUTOFIX = True
 DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90
+DEFAULT_ENTERPRISE_TASK_TIMEOUT = 240
 DEFAULT_LEGACY_JARVIS_DB_PATH = str((Path(__file__).resolve().parent.parent / "jarvis_legacy_data" / "jarvis.db"))
 OWNER_USER_ID = int((os.getenv("OWNER_USER_ID", os.getenv("ADMIN_ID", "6102780373")) or "6102780373").strip())
 OWNER_USERNAME = (os.getenv("OWNER_USERNAME", "@DmitryUnboxing") or "@DmitryUnboxing").strip()
@@ -446,6 +447,7 @@ class BotConfig:
         self.backup_chat_id = int(os.getenv("BACKUP_CHAT_ID", str(OWNER_USER_ID)).strip() or str(OWNER_USER_ID))
         self.owner_autofix = read_bool_env("OWNER_AUTOFIX", DEFAULT_OWNER_AUTOFIX)
         self.legacy_jarvis_db_path = os.getenv("LEGACY_JARVIS_DB_PATH", DEFAULT_LEGACY_JARVIS_DB_PATH).strip() or DEFAULT_LEGACY_JARVIS_DB_PATH
+        self.enterprise_task_timeout = read_int_env("ENTERPRISE_TASK_TIMEOUT", DEFAULT_ENTERPRISE_TASK_TIMEOUT, minimum=60, maximum=1200)
 
 
 class BridgeState:
@@ -1398,6 +1400,7 @@ class TelegramBridge:
         self.session = Session()
         self.script_path = Path(__file__).resolve()
         self.log_path = self.script_path.with_name("tg_codex_bridge.log")
+        self.enterprise_worker_path = self.script_path.with_name("enterprise_worker.py")
         self.bot_username = config.bot_username
         self.bot_user_id: Optional[int] = None
         self.backup_lock = Lock()
@@ -3842,7 +3845,7 @@ class TelegramBridge:
     def run_upgrade_task(self, chat_id: int, task: str) -> None:
         try:
             prompt = build_upgrade_prompt(task)
-            answer = self.run_codex_with_progress(
+            answer = self.run_enterprise_worker_with_progress(
                 chat_id,
                 prompt,
                 initial_status=UPGRADE_RUNNING_TEXT,
@@ -3926,7 +3929,7 @@ class TelegramBridge:
         )
         if can_owner_use_workspace_mode(user_id, chat_type, assistant_persona):
             owner_prompt = OWNER_WORKSPACE_REQUEST_TEMPLATE.format(base_prompt=prompt)
-            return self.run_codex_with_progress(
+            return self.run_enterprise_worker_with_progress(
                 chat_id,
                 owner_prompt,
                 initial_status=OWNER_AGENT_RUNNING_TEXT,
@@ -3934,6 +3937,68 @@ class TelegramBridge:
                 approval_policy="never",
             )
         return self.run_codex(prompt)
+
+    def run_enterprise_worker_with_progress(
+        self,
+        chat_id: int,
+        prompt: str,
+        *,
+        initial_status: str,
+        sandbox_mode: str,
+        approval_policy: str,
+    ) -> str:
+        if not self.enterprise_worker_path.exists():
+            return "Enterprise worker не найден."
+        status_message_id = self.send_status_message(chat_id, initial_status)
+        started_at = time.perf_counter()
+        with self.temp_workspace() as workspace:
+            task_path = workspace / "enterprise_task.json"
+            result_path = workspace / "enterprise_result.json"
+            payload = {
+                "prompt": prompt,
+                "sandbox_mode": sandbox_mode,
+                "approval_policy": approval_policy,
+                "codex_timeout": self.config.enterprise_task_timeout,
+            }
+            task_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            process = subprocess.Popen(
+                [sys.executable, str(self.enterprise_worker_path), str(task_path), str(result_path)],
+                cwd=str(self.script_path.parent),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=build_subprocess_env(),
+            )
+            phase_index = 0
+            next_update_at = 0.0
+            while True:
+                return_code = process.poll()
+                elapsed = int(max(1, time.perf_counter() - started_at))
+                if return_code is not None:
+                    break
+                now = time.perf_counter()
+                if now >= next_update_at:
+                    self.send_chat_action(chat_id, "typing")
+                    self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index)
+                    phase_index += 1
+                    next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
+                if elapsed >= self.config.enterprise_task_timeout:
+                    process.kill()
+                    process.wait(timeout=5)
+                    if status_message_id is not None:
+                        self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nWorker превысил лимит {self.config.enterprise_task_timeout} сек.")
+                    return UPGRADE_TIMEOUT_TEXT
+                time.sleep(0.5)
+
+            if not result_path.exists():
+                answer = "Enterprise worker завершился без результата."
+            else:
+                try:
+                    result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+                    answer = normalize_whitespace(result_payload.get("answer") or "")
+                except Exception as error:
+                    answer = f"Не удалось прочитать результат Enterprise worker: {error}"
+        self._finish_progress_status(chat_id, status_message_id, initial_status, answer)
+        return answer or "Пустой ответ. Переформулируй запрос."
 
     def build_web_search_context(self, query: str, limit: int = 5) -> str:
         normalized_query = normalize_whitespace(query)
