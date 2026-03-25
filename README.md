@@ -88,7 +88,7 @@
 - также работает через один обновляемый статусный message flow
 - у владельца есть `/ownerreport` для быстрой сводки по runtime и ошибкам
 - ежедневный digest и еженедельный owner-report могут отправляться автоматически владельцу по UTC-расписанию
-- есть отдельные owner-команды `/gitstatus`, `/gitlast`, `/errors`, `/chatdigest`
+- есть отдельные owner-команды `/gitstatus`, `/gitlast`, `/errors`, `/events`, `/routes`, `/chatdigest`
 
 ## Где смотреть дальше
 

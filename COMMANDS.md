@@ -53,7 +53,7 @@
 - `/topproc`
 - `/disk`
 - `/net`
-- `/restart` — после подъёма bot присылает отдельное подтверждение, что сервер перезапущен
+- `/restart` — одно сообщение: сначала `Enterprise Core перезапускается...`, потом оно же обновляется в подтверждение перезапуска
 - `/ownerautofix on|off|status`
 
 ## Owner / Git И Логи
@@ -62,6 +62,7 @@
 - `/gitlast [количество]`
 - `/errors [количество]`
 - `/events [restart|access|system|all] [количество]`
+- `/routes [количество]`
 - `/chatdigest <chat_id> [YYYY-MM-DD]`
 
 ## Owner / Файлы

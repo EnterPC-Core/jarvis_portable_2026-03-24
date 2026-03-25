@@ -203,6 +203,7 @@ HISTORY_USAGE_TEXT = "Используй: /history @username, /history user_id �
 DIGEST_USAGE_TEXT = "Используй: /digest [YYYY-MM-DD]"
 CHAT_DIGEST_USAGE_TEXT = "Используй: /chatdigest <chat_id> [YYYY-MM-DD]"
 OWNER_REPORT_USAGE_TEXT = "Используй: /ownerreport"
+ROUTES_USAGE_TEXT = "Используй: /routes [количество]"
 EXPORT_USAGE_TEXT = "Используй: /export chat, /export today, /export @username или /export user_id"
 APPEAL_USAGE_TEXT = "Используй: /appeal <текст апелляции>"
 MODERATION_USAGE_TEXT = "Используй reply или: /ban @username [причина], /mute @username [причина], /tban 1d @username [причина], /tmute 1h @username [причина]"
@@ -292,6 +293,7 @@ COMMANDS_LIST_TEXT = (
     "/gitlast [количество]\n"
     "/errors [количество]\n"
     "/events [restart|access|system|all] [количество]\n"
+    "/routes [количество]\n"
     "/sdls [/sdcard/путь]\n"
     "/sdsend /sdcard/путь/к/файлу\n"
     "/sdsave /sdcard/папка/или/файл\n"
@@ -661,6 +663,29 @@ class BridgeState:
                 "CREATE TABLE IF NOT EXISTS bot_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
             self.db.execute(
+                """CREATE TABLE IF NOT EXISTS request_diagnostics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER,
+                    chat_type TEXT NOT NULL DEFAULT '',
+                    persona TEXT NOT NULL DEFAULT '',
+                    intent TEXT NOT NULL DEFAULT '',
+                    route_kind TEXT NOT NULL DEFAULT '',
+                    source_label TEXT NOT NULL DEFAULT '',
+                    used_live INTEGER NOT NULL DEFAULT 0,
+                    used_web INTEGER NOT NULL DEFAULT 0,
+                    used_events INTEGER NOT NULL DEFAULT 0,
+                    used_database INTEGER NOT NULL DEFAULT 0,
+                    used_reply INTEGER NOT NULL DEFAULT 0,
+                    used_workspace INTEGER NOT NULL DEFAULT 0,
+                    guardrails TEXT NOT NULL DEFAULT '',
+                    outcome TEXT NOT NULL DEFAULT '',
+                    latency_ms INTEGER NOT NULL DEFAULT 0,
+                    query_text TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
                 "CREATE TABLE IF NOT EXISTS moderation_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), expires_at INTEGER, active INTEGER NOT NULL DEFAULT 1, completed_at INTEGER)"
             )
             self.db.execute(
@@ -668,6 +693,9 @@ class BridgeState:
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_moderation_actions_chat_user ON moderation_actions(chat_id, user_id, action, active)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_request_diagnostics_chat_id_id ON request_diagnostics(chat_id, id)"
             )
             self.db.execute(
                 "CREATE TABLE IF NOT EXISTS warnings (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, expires_at INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
@@ -1229,12 +1257,89 @@ class BridgeState:
             facts_count = self.db.execute("SELECT COUNT(*) FROM memory_facts WHERE chat_id = ?", (chat_id,)).fetchone()[0]
             history_count = self.db.execute("SELECT COUNT(*) FROM chat_history WHERE chat_id = ?", (chat_id,)).fetchone()[0]
             total_events = self.db.execute("SELECT COUNT(*) FROM chat_events").fetchone()[0]
+            total_route_decisions = self.db.execute("SELECT COUNT(*) FROM request_diagnostics").fetchone()[0]
         return {
             "events_count": events_count,
             "facts_count": facts_count,
             "history_count": history_count,
             "total_events": total_events,
+            "total_route_decisions": total_route_decisions,
         }
+
+    def record_request_diagnostic(
+        self,
+        chat_id: int,
+        user_id: Optional[int],
+        chat_type: str,
+        persona: str,
+        intent: str,
+        route_kind: str,
+        source_label: str,
+        used_live: bool,
+        used_web: bool,
+        used_events: bool,
+        used_database: bool,
+        used_reply: bool,
+        used_workspace: bool,
+        guardrails: str,
+        outcome: str,
+        latency_ms: int,
+        query_text: str,
+    ) -> None:
+        with self.db_lock:
+            self.db.execute(
+                """INSERT INTO request_diagnostics(
+                    chat_id, user_id, chat_type, persona, intent, route_kind, source_label,
+                    used_live, used_web, used_events, used_database, used_reply, used_workspace,
+                    guardrails, outcome, latency_ms, query_text
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    chat_id,
+                    user_id,
+                    chat_type,
+                    persona,
+                    intent,
+                    route_kind,
+                    source_label,
+                    1 if used_live else 0,
+                    1 if used_web else 0,
+                    1 if used_events else 0,
+                    1 if used_database else 0,
+                    1 if used_reply else 0,
+                    1 if used_workspace else 0,
+                    guardrails,
+                    outcome,
+                    max(0, int(latency_ms)),
+                    truncate_text(normalize_whitespace(query_text), 900),
+                ),
+            )
+            self.db.commit()
+
+    def get_recent_request_diagnostics(self, limit: int = 8, chat_id: Optional[int] = None) -> List[sqlite3.Row]:
+        effective_limit = max(1, min(30, int(limit)))
+        with self.db_lock:
+            if chat_id is None:
+                rows = self.db.execute(
+                    """SELECT created_at, chat_id, user_id, chat_type, persona, intent, route_kind, source_label,
+                              used_live, used_web, used_events, used_database, used_reply, used_workspace,
+                              guardrails, outcome, latency_ms, query_text
+                       FROM request_diagnostics
+                       ORDER BY id DESC
+                       LIMIT ?""",
+                    (effective_limit,),
+                ).fetchall()
+            else:
+                rows = self.db.execute(
+                    """SELECT created_at, chat_id, user_id, chat_type, persona, intent, route_kind, source_label,
+                              used_live, used_web, used_events, used_database, used_reply, used_workspace,
+                              guardrails, outcome, latency_ms, query_text
+                       FROM request_diagnostics
+                       WHERE chat_id = ?
+                       ORDER BY id DESC
+                       LIMIT ?""",
+                    (chat_id, effective_limit),
+                ).fetchall()
+        return rows
 
     def get_meta(self, key: str, default: str = "") -> str:
         with self.db_lock:
@@ -2010,6 +2115,7 @@ class TelegramBridge:
                 "• /events restart 10 — только рестарты\n"
                 "• /events access 10 — только блокировки доступа\n"
                 "• /events system 10 — только системные operational-события\n"
+                "• /routes 10 — последние route decisions и self-check telemetry\n"
                 "• /upgrade <что изменить> — постановка задачи на изменение кода\n\n"
                 "Примеры:\n"
                 "• /gitlast 12\n"
@@ -2017,6 +2123,7 @@ class TelegramBridge:
                 "• /events 20\n"
                 "• /events restart 20\n"
                 "• /events access 20\n"
+                "• /routes 10\n"
                 "• /upgrade добавь новый route для ..."
             )
             markup = {
@@ -3201,6 +3308,9 @@ class TelegramBridge:
         digest_value = parse_digest_command(text)
         if digest_value is not None:
             return self.handle_digest_command(chat_id, digest_value)
+        routes_value = parse_routes_command(text)
+        if routes_value is not None:
+            return self.handle_routes_command(chat_id, user_id, routes_value)
         chat_digest_value = parse_chat_digest_command(text)
         if chat_digest_value is not None:
             return self.handle_chat_digest_command(chat_id, user_id, chat_digest_value)
@@ -4047,6 +4157,7 @@ class TelegramBridge:
             f"Факты: {snapshot['facts_count']}",
             f"История: {snapshot['history_count']}",
             f"Всего событий в БД: {snapshot['total_events']}",
+            f"Route decisions в БД: {snapshot['total_route_decisions']}",
             f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
             f"STT backend: {self.config.stt_backend}",
             f"Только безопасный чат: {self.config.safe_chat_only}",
@@ -4313,6 +4424,20 @@ class TelegramBridge:
         self.safe_send_text(chat_id, self.render_chat_digest_text(chat_id, day))
         return True
 
+    def handle_routes_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        limit = 8
+        if payload:
+            try:
+                limit = max(1, min(20, int(payload)))
+            except ValueError:
+                self.safe_send_text(chat_id, ROUTES_USAGE_TEXT)
+                return True
+        self.safe_send_text(chat_id, render_route_diagnostics_rows(self.state.get_recent_request_diagnostics(limit=limit)))
+        return True
+
     def handle_chat_digest_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
         if not is_owner_private_chat(user_id, chat_id):
             self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
@@ -4387,6 +4512,7 @@ class TelegramBridge:
             last_backup_value = 0.0
         backup_text = datetime.utcfromtimestamp(last_backup_value).strftime("%Y-%m-%d %H:%M:%S UTC") if last_backup_value > 0 else "ещё не было"
         recent_errors = read_recent_log_highlights(self.log_path, limit=8)
+        recent_routes = self.state.get_recent_request_diagnostics(limit=5)
         lines = [
             "OWNER REPORT",
             f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
@@ -4395,6 +4521,7 @@ class TelegramBridge:
             f"Факты в этом чате: {status_snapshot['facts_count']}",
             f"История в этом чате: {status_snapshot['history_count']}",
             f"Всего событий в БД: {status_snapshot['total_events']}",
+            f"Route decisions в БД: {status_snapshot['total_route_decisions']}",
             f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
             f"Heartbeat: {self.config.heartbeat_path}",
             f"Последний backup: {backup_text}",
@@ -4402,6 +4529,8 @@ class TelegramBridge:
             "Ресурсы:",
             render_resource_summary(),
         ]
+        if recent_routes:
+            lines.extend(["", "Последние route decisions:", render_route_diagnostics_rows(recent_routes)])
         if recent_errors:
             lines.extend(["", "Недавние ошибки/сбои:", *[f"- {item}" for item in recent_errors]])
         else:
@@ -4564,32 +4693,59 @@ class TelegramBridge:
         return command
 
     def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "", message: Optional[dict] = None) -> str:
+        started_at = time.perf_counter()
+        reply_context = self.build_reply_context(chat_id, message)
+        route_info = analyze_request_route(
+            user_text,
+            assistant_persona=assistant_persona,
+            chat_type=chat_type,
+            user_id=user_id,
+            reply_context=reply_context,
+        )
         live_answer = self.try_handle_live_data_query(user_text)
         if live_answer:
-            return postprocess_answer(live_answer)
+            answer = postprocess_answer(live_answer)
+            self.state.record_request_diagnostic(
+                chat_id=chat_id,
+                user_id=user_id,
+                chat_type=chat_type,
+                persona=str(route_info.get("persona") or assistant_persona or "jarvis"),
+                intent=str(route_info.get("intent") or detect_intent(user_text)),
+                route_kind=str(route_info.get("live_route") or "live"),
+                source_label=str(route_info.get("source_label") or "live"),
+                used_live=True,
+                used_web=bool(route_info.get("use_web")),
+                used_events=bool(route_info.get("use_events")),
+                used_database=bool(route_info.get("use_database")),
+                used_reply=bool(route_info.get("use_reply")),
+                used_workspace=bool(route_info.get("use_workspace")),
+                guardrails=", ".join(list(route_info.get("guardrails") or [])),
+                outcome=classify_answer_outcome(answer),
+                latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+                query_text=user_text,
+            )
+            return answer
         summary_text = self.state.get_summary(chat_id)
         facts_text = self.state.render_facts(chat_id, query=user_text, limit=10)
         event_context = ""
         database_context = ""
-        reply_context = ""
         persona_note = ""
         identity_label = "Jarvis"
         include_identity_prompt = True
         web_context = ""
         if assistant_persona == "jarvis":
             persona_note = JARVIS_ASSISTANT_PERSONA_NOTE
-            if should_use_web_research(user_text):
+            if bool(route_info.get("use_web")):
                 web_context = self.build_web_search_context(user_text)
         elif assistant_persona == "enterprise":
             identity_label = "Enterprise"
             persona_note = ENTERPRISE_ASSISTANT_PERSONA_NOTE
-            if should_use_web_research(user_text):
+            if bool(route_info.get("use_web")):
                 web_context = self.build_web_search_context(user_text)
-        if should_include_event_context(user_text):
+        if bool(route_info.get("use_events")):
             event_context = self.state.get_event_context(chat_id, user_text)
-        if should_include_database_context(user_text):
+        if bool(route_info.get("use_database")):
             database_context = self.state.get_database_context(chat_id, user_text)
-        reply_context = self.build_reply_context(chat_id, message)
         prompt = build_prompt(
             mode=self.state.get_mode(chat_id),
             history=list(self.state.get_history(chat_id)),
@@ -4603,9 +4759,11 @@ class TelegramBridge:
             include_identity_prompt=include_identity_prompt,
             persona_note=persona_note,
             web_context=web_context,
+            route_summary=build_route_summary_text(route_info),
+            guardrail_note=build_guardrail_note(route_info),
         )
-        if can_owner_use_workspace_mode(user_id, chat_type, assistant_persona):
-            return self.run_codex_with_progress(
+        if bool(route_info.get("use_workspace")):
+            answer = self.run_codex_with_progress(
                 chat_id,
                 prompt,
                 initial_status=OWNER_AGENT_RUNNING_TEXT,
@@ -4615,18 +4773,58 @@ class TelegramBridge:
                 progress_style="enterprise",
                 replace_status_with_answer=True,
             )
+            self.state.record_request_diagnostic(
+                chat_id=chat_id,
+                user_id=user_id,
+                chat_type=chat_type,
+                persona=str(route_info.get("persona") or assistant_persona or "jarvis"),
+                intent=str(route_info.get("intent") or detect_intent(user_text)),
+                route_kind="workspace_codex",
+                source_label="codex",
+                used_live=False,
+                used_web=bool(route_info.get("use_web")),
+                used_events=bool(route_info.get("use_events")),
+                used_database=bool(route_info.get("use_database")),
+                used_reply=bool(route_info.get("use_reply")),
+                used_workspace=True,
+                guardrails=", ".join(list(route_info.get("guardrails") or [])),
+                outcome=classify_answer_outcome(answer),
+                latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+                query_text=user_text,
+            )
+            return answer
         jarvis_status = JARVIS_AGENT_RUNNING_TEXT
         progress_style = "jarvis"
         if assistant_persona == "enterprise":
             jarvis_status = OWNER_AGENT_RUNNING_TEXT
             progress_style = "enterprise"
-        return self.run_codex_with_progress(
+        answer = self.run_codex_with_progress(
             chat_id,
             prompt,
             initial_status=jarvis_status,
             progress_style=progress_style,
             replace_status_with_answer=True,
         )
+        self.state.record_request_diagnostic(
+            chat_id=chat_id,
+            user_id=user_id,
+            chat_type=chat_type,
+            persona=str(route_info.get("persona") or assistant_persona or "jarvis"),
+            intent=str(route_info.get("intent") or detect_intent(user_text)),
+            route_kind="codex",
+            source_label="codex",
+            used_live=False,
+            used_web=bool(route_info.get("use_web")),
+            used_events=bool(route_info.get("use_events")),
+            used_database=bool(route_info.get("use_database")),
+            used_reply=bool(route_info.get("use_reply")),
+            used_workspace=False,
+            guardrails=", ".join(list(route_info.get("guardrails") or [])),
+            outcome=classify_answer_outcome(answer),
+            latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+            query_text=user_text,
+        )
+        return answer
 
     def build_reply_context(self, chat_id: int, message: Optional[dict]) -> str:
         source = message or {}
@@ -6076,6 +6274,15 @@ def parse_owner_report_command(text: str) -> bool:
     return text.strip() == "/ownerreport"
 
 
+def parse_routes_command(text: str) -> Optional[str]:
+    if not text.startswith("/routes"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
 def parse_chat_digest_command(text: str) -> Optional[str]:
     if not text.startswith("/chatdigest"):
         return None
@@ -6698,6 +6905,7 @@ def build_help_panel_text(section: str) -> str:
             "• /gitstatus\n"
             "• /gitlast [количество]\n"
             "• /errors [количество]\n"
+            "• /routes [количество]\n"
             "• /appeals\n"
             "• /appeal_review <id>\n"
             "• /appeal_approve <id> [решение]\n"
@@ -7464,6 +7672,8 @@ def build_prompt(
     include_identity_prompt: bool = True,
     persona_note: str = "",
     web_context: str = "",
+    route_summary: str = "",
+    guardrail_note: str = "",
 ) -> str:
     mode_prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS[DEFAULT_MODE_NAME])
     history_block = format_history(history, user_text)
@@ -7477,6 +7687,8 @@ def build_prompt(
     reply_block = f"Reply context:\n{truncate_text(reply_context, 2200)}\n\n" if reply_context else ""
     persona_block = f"Persona note:\n{persona_note}\n\n" if persona_note else ""
     web_block = f"Web context:\n{truncate_text(web_context, 3200)}\n\n" if web_context else ""
+    route_block = f"Route summary:\n{truncate_text(route_summary, 1200)}\n\n" if route_summary else ""
+    guardrail_block = f"Self-check and guardrails:\n{truncate_text(guardrail_note, 1600)}\n\n" if guardrail_note else ""
     identity_block = ""
     if include_identity_prompt:
         identity_block = (
@@ -7487,6 +7699,8 @@ def build_prompt(
         f"System:\n{BASE_SYSTEM_PROMPT}\n\n"
         f"{identity_block}"
         f"{persona_block}"
+        f"{route_block}"
+        f"{guardrail_block}"
         f"Mode:\n{mode_prompt}\n\n"
         f"Intent:\n{intent}\n\n"
         f"Response shape:\n{response_shape}\n\n"
@@ -7652,6 +7866,146 @@ def should_use_web_research(text: str) -> bool:
         "проверь",
     )
     return any(trigger in lowered for trigger in triggers)
+
+
+def analyze_request_route(
+    user_text: str,
+    assistant_persona: str,
+    chat_type: str,
+    user_id: Optional[int] = None,
+    reply_context: str = "",
+) -> Dict[str, object]:
+    normalized_text = normalize_whitespace(user_text)
+    intent = detect_intent(normalized_text)
+    live_route = ""
+    source_label = ""
+    if detect_weather_location(normalized_text):
+        live_route = "weather"
+        source_label = "open-meteo"
+    elif detect_currency_pair(normalized_text):
+        live_route = "fx"
+        source_label = "frankfurter"
+    elif detect_crypto_asset(normalized_text):
+        live_route = "crypto"
+        source_label = "coingecko"
+    elif detect_stock_symbol(normalized_text):
+        live_route = "stocks"
+        source_label = "yahoo-finance"
+    elif detect_current_fact_query(normalized_text):
+        live_route = "current_fact"
+        source_label = "duckduckgo+codex"
+    elif detect_news_query(normalized_text):
+        live_route = "news"
+        source_label = "google-news-rss"
+    use_web = should_use_web_research(normalized_text) and not live_route
+    use_events = should_include_event_context(normalized_text)
+    use_database = should_include_database_context(normalized_text)
+    use_reply = bool(reply_context.strip())
+    use_workspace = can_owner_use_workspace_mode(user_id, chat_type, assistant_persona)
+    guardrails: List[str] = []
+    if live_route:
+        guardrails.append("freshness")
+    if use_web:
+        guardrails.append("external-web")
+    if use_events or use_database or use_reply:
+        guardrails.append("ground-in-chat-state")
+    if intent in {"code", "analysis"}:
+        guardrails.append("be-explicit-about-assumptions")
+    if is_dangerous_request(normalized_text):
+        guardrails.append("no-system-actions")
+    return {
+        "intent": intent,
+        "persona": assistant_persona or "jarvis",
+        "chat_type": chat_type,
+        "live_route": live_route,
+        "source_label": source_label,
+        "use_web": use_web,
+        "use_events": use_events,
+        "use_database": use_database,
+        "use_reply": use_reply,
+        "use_workspace": use_workspace,
+        "guardrails": guardrails,
+    }
+
+
+def build_route_summary_text(route_info: Dict[str, object]) -> str:
+    active_layers: List[str] = []
+    if route_info.get("use_reply"):
+        active_layers.append("reply-context")
+    if route_info.get("use_events"):
+        active_layers.append("event-context")
+    if route_info.get("use_database"):
+        active_layers.append("database-context")
+    if route_info.get("use_web"):
+        active_layers.append("web-context")
+    if route_info.get("live_route"):
+        active_layers.append(f"live:{route_info.get('live_route')}")
+    if not active_layers:
+        active_layers.append("history+summary+facts")
+    return (
+        f"intent={route_info.get('intent')}; persona={route_info.get('persona')}; "
+        f"chat_type={route_info.get('chat_type')}; "
+        f"workspace_mode={'yes' if route_info.get('use_workspace') else 'no'}; "
+        f"active_layers={', '.join(active_layers)}"
+    )
+
+
+def build_guardrail_note(route_info: Dict[str, object]) -> str:
+    lines = [
+        "- перед финальным ответом проверь, что ответ опирается только на доступные контекстные слои и источники",
+        "- не заявляй о выполненных действиях, если действие не было реально выполнено маршрутом или инструментом",
+    ]
+    if route_info.get("live_route") or route_info.get("use_web"):
+        lines.append("- если данные могли устареть или не подтверждаются уверенно, прямо скажи это")
+        lines.append("- не выдавай косвенные сниппеты за окончательно подтверждённый факт")
+    if route_info.get("use_events") or route_info.get("use_database") or route_info.get("use_reply"):
+        lines.append("- не придумывай детали вне chat history, memory facts, reply context, archived events и database context")
+    if "no-system-actions" in list(route_info.get("guardrails") or []):
+        lines.append("- не выполняй системные действия и не описывай их как выполненные")
+    lines.append("- если уверенности мало, честно обозначь ограничение и предложи следующий безопасный шаг")
+    return "\n".join(lines)
+
+
+def classify_answer_outcome(answer: str) -> str:
+    lowered = (answer or "").lower()
+    if not lowered:
+        return "empty"
+    if "не удалось" in lowered or "ошибка" in lowered or "выключен" in lowered:
+        return "error"
+    if "не подтверж" in lowered or "не уверен" in lowered or "предполож" in lowered:
+        return "uncertain"
+    return "ok"
+
+
+def render_route_diagnostics_rows(rows: List[sqlite3.Row]) -> str:
+    if not rows:
+        return "Route diagnostics пока пусты."
+    lines = ["Route diagnostics"]
+    for row in rows:
+        stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
+        layers: List[str] = []
+        if int(row["used_live"] or 0):
+            layers.append("live")
+        if int(row["used_web"] or 0):
+            layers.append("web")
+        if int(row["used_events"] or 0):
+            layers.append("events")
+        if int(row["used_database"] or 0):
+            layers.append("db")
+        if int(row["used_reply"] or 0):
+            layers.append("reply")
+        if int(row["used_workspace"] or 0):
+            layers.append("workspace")
+        layers_text = ",".join(layers) if layers else "base"
+        lines.append(
+            f"- [{stamp}] chat={int(row['chat_id'])} persona={row['persona'] or '-'} "
+            f"intent={row['intent'] or '-'} route={row['route_kind'] or '-'} "
+            f"source={row['source_label'] or '-'} outcome={row['outcome'] or '-'} "
+            f"latency={int(row['latency_ms'] or 0)}ms layers={layers_text}"
+        )
+        if row["query_text"]:
+            lines.append(f"  {truncate_text(row['query_text'], 180)}")
+    return "\n".join(lines)
 
 
 def render_resource_summary() -> str:
