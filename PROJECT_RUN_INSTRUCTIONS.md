@@ -211,3 +211,9 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 
 - `/digest [YYYY-MM-DD]` — краткая сводка активности за день по чату
 - `/ownerreport` — приватный runtime-отчёт для владельца: ресурсы, backup, хвост ошибок
+
+## Автоматические owner-отчёты
+
+- daily digest владельцу отправляется автоматически после часа `OWNER_DAILY_DIGEST_HOUR_UTC`
+- weekly owner-report отправляется в день `OWNER_WEEKLY_DIGEST_WEEKDAY_UTC`
+- оба расписания работают по `UTC`, потому что сам runtime живёт в UTC-среде

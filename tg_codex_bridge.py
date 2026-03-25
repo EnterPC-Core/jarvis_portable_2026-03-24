@@ -59,6 +59,8 @@ DEFAULT_BACKUP_PART_SIZE_MB = 45
 DEFAULT_OWNER_AUTOFIX = True
 DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90
 DEFAULT_ENTERPRISE_TASK_TIMEOUT = 240
+DEFAULT_OWNER_DAILY_DIGEST_HOUR_UTC = 7
+DEFAULT_OWNER_WEEKLY_DIGEST_WEEKDAY_UTC = 0
 DEFAULT_LEGACY_JARVIS_DB_PATH = str((Path(__file__).resolve().parent.parent / "jarvis_legacy_data" / "jarvis.db"))
 OWNER_USER_ID = int((os.getenv("OWNER_USER_ID", os.getenv("ADMIN_ID", "6102780373")) or "6102780373").strip())
 OWNER_USERNAME = (os.getenv("OWNER_USERNAME", "@DmitryUnboxing") or "@DmitryUnboxing").strip()
@@ -582,6 +584,8 @@ class BotConfig:
         self.owner_autofix = read_bool_env("OWNER_AUTOFIX", DEFAULT_OWNER_AUTOFIX)
         self.legacy_jarvis_db_path = os.getenv("LEGACY_JARVIS_DB_PATH", DEFAULT_LEGACY_JARVIS_DB_PATH).strip() or DEFAULT_LEGACY_JARVIS_DB_PATH
         self.enterprise_task_timeout = read_int_env("ENTERPRISE_TASK_TIMEOUT", DEFAULT_ENTERPRISE_TASK_TIMEOUT, minimum=60, maximum=1200)
+        self.owner_daily_digest_hour_utc = read_int_env("OWNER_DAILY_DIGEST_HOUR_UTC", DEFAULT_OWNER_DAILY_DIGEST_HOUR_UTC, minimum=0, maximum=23)
+        self.owner_weekly_digest_weekday_utc = read_int_env("OWNER_WEEKLY_DIGEST_WEEKDAY_UTC", DEFAULT_OWNER_WEEKLY_DIGEST_WEEKDAY_UTC, minimum=0, maximum=6)
 
 
 class BridgeState:
@@ -1578,6 +1582,7 @@ class TelegramBridge:
         self.backup_lock = Lock()
         self.backup_in_progress = False
         self.next_backup_check_ts = 0.0
+        self.next_report_check_ts = 0.0
         self.next_moderation_check_ts = 0.0
         self.stt_models: Dict[str, object] = {}
         self.stt_failed_models: Set[str] = set()
@@ -1599,6 +1604,7 @@ class TelegramBridge:
             try:
                 self.beat_heartbeat()
                 self.maybe_start_weekly_backup()
+                self.maybe_start_scheduled_reports()
                 self.process_due_moderation_actions()
                 updates = self.get_updates(self.state.last_update_id)
                 if not updates.get("ok"):
@@ -2581,7 +2587,7 @@ class TelegramBridge:
         self.safe_send_status(chat_id, "Анализирую изображение...")
         worker = Thread(
             target=self.run_photo_task,
-            args=(chat_id, file_id, caption),
+            args=(chat_id, file_id, caption, message),
             daemon=True,
         )
         worker.start()
@@ -2604,8 +2610,27 @@ class TelegramBridge:
                 return
             self.handle_sd_save_command(chat_id, user_id, save_target, message)
             return
-        # Ordinary document uploads should stay silent; saving remains opt-in via /sdsave.
-        return
+        if chat_type in {"group", "supergroup"}:
+            should_handle_as_bot = should_process_group_message(
+                message,
+                caption or file_name,
+                self.bot_username,
+                self.config.trigger_name,
+                bot_user_id=self.bot_user_id,
+                allow_owner_reply=False,
+            )
+            if not should_handle_as_bot:
+                return
+        if not self.state.try_start_chat_task(chat_id):
+            self.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
+            return
+        self.safe_send_status(chat_id, "Смотрю файл...")
+        worker = Thread(
+            target=self.run_document_task,
+            args=(chat_id, file_id, document, caption, message),
+            daemon=True,
+        )
+        worker.start()
 
     def handle_voice_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
         voice = message.get("voice") or {}
@@ -2949,7 +2974,7 @@ class TelegramBridge:
         finally:
             self.state.finish_chat_task(chat_id)
 
-    def run_photo_task(self, chat_id: int, file_id: str, caption: str) -> None:
+    def run_photo_task(self, chat_id: int, file_id: str, caption: str, message: Optional[dict] = None) -> None:
         try:
             with self.temp_workspace() as workspace:
                 file_info = self.get_file_info(file_id)
@@ -2960,10 +2985,30 @@ class TelegramBridge:
 
                 local_path = workspace / build_download_name(file_path, fallback_name="photo.jpg")
                 self.download_telegram_file(file_path, local_path)
-                answer = self.ask_codex_with_image(chat_id, local_path, caption)
+                answer = self.ask_codex_with_image(chat_id, local_path, caption, message=message)
 
             summary = caption or "без подписи"
             self.state.append_history(chat_id, "user", f"[Пользователь отправил фото: caption={summary}]")
+            self.state.append_history(chat_id, "assistant", answer)
+            self.state.record_event(chat_id, None, "assistant", "answer", answer)
+            self.safe_send_text(chat_id, answer)
+        finally:
+            self.state.finish_chat_task(chat_id)
+
+    def run_document_task(self, chat_id: int, file_id: str, document: dict, caption: str, message: Optional[dict] = None) -> None:
+        try:
+            with self.temp_workspace() as workspace:
+                file_info = self.get_file_info(file_id)
+                file_path = file_info.get("file_path")
+                if not file_path:
+                    self.safe_send_text(chat_id, "Telegram не вернул путь к документу.")
+                    return
+                local_path = workspace / build_download_name(file_path, fallback_name=document.get("file_name") or "document.bin")
+                self.download_telegram_file(file_path, local_path)
+                file_excerpt = read_document_excerpt(local_path, document.get("mime_type") or "")
+                answer = self.ask_codex_with_document(chat_id, local_path, document, caption, file_excerpt, message=message)
+            summary = caption or document.get("file_name") or "документ"
+            self.state.append_history(chat_id, "user", f"[Пользователь отправил документ: {summary}]")
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
             self.safe_send_text(chat_id, answer)
@@ -3959,6 +4004,10 @@ class TelegramBridge:
         if not is_owner_private_chat(user_id, chat_id):
             self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
             return True
+        self.safe_send_text(chat_id, self.render_owner_report_text(chat_id))
+        return True
+
+    def render_owner_report_text(self, chat_id: int) -> str:
         status_snapshot = self.state.get_status_snapshot(chat_id)
         last_backup_raw = self.state.get_meta("last_backup_ts", "0")
         try:
@@ -3986,8 +4035,7 @@ class TelegramBridge:
             lines.extend(["", "Недавние ошибки/сбои:", *[f"- {item}" for item in recent_errors]])
         else:
             lines.extend(["", "Недавние ошибки/сбои:", "- Явных ошибок в хвосте лога не найдено."])
-        self.safe_send_text(chat_id, "\n".join(lines))
-        return True
+        return "\n".join(lines)
 
     def handle_export_command(self, chat_id: int, scope: str) -> bool:
         scope_clean = (scope or "chat").strip() or "chat"
@@ -4562,12 +4610,13 @@ class TelegramBridge:
             return ""
         return f"Свежий веб-контекст по запросу «{truncate_text(normalized_query, 180)}»:\n" + "\n".join(items)
 
-    def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str) -> str:
+    def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str, message: Optional[dict] = None) -> str:
         prompt_text = caption or DEFAULT_IMAGE_PROMPT
         summary_text = self.state.get_summary(chat_id)
         facts_text = self.state.render_facts(chat_id, query=prompt_text, limit=10)
         event_context = ""
         database_context = ""
+        reply_context = self.build_reply_context(chat_id, message)
         if should_include_event_context(prompt_text):
             event_context = self.state.get_event_context(chat_id, prompt_text)
         if should_include_database_context(prompt_text):
@@ -4581,8 +4630,55 @@ class TelegramBridge:
             facts_text=facts_text,
             event_context=event_context,
             database_context=database_context,
+            reply_context=reply_context,
         )
         return self.run_codex(prompt, image_path=image_path)
+
+    def ask_codex_with_document(
+        self,
+        chat_id: int,
+        document_path: Path,
+        document: dict,
+        caption: str,
+        file_excerpt: str,
+        message: Optional[dict] = None,
+    ) -> str:
+        file_name = document.get("file_name") or document_path.name
+        mime_type = document.get("mime_type") or "application/octet-stream"
+        file_size = document.get("file_size") or 0
+        prompt_text = caption or f"Разбери документ {file_name} и кратко скажи, что в нём важно."
+        summary_text = self.state.get_summary(chat_id)
+        facts_text = self.state.render_facts(chat_id, query=prompt_text, limit=10)
+        event_context = ""
+        database_context = ""
+        reply_context = self.build_reply_context(chat_id, message)
+        if should_include_event_context(prompt_text):
+            event_context = self.state.get_event_context(chat_id, prompt_text)
+        if should_include_database_context(prompt_text):
+            database_context = self.state.get_database_context(chat_id, prompt_text)
+        attachment_lines = [
+            "Пользователь прислал документ.",
+            f"Имя файла: {file_name}",
+            f"MIME: {mime_type}",
+            f"Размер: {format_file_size(int(file_size)) if file_size else 'неизвестно'}",
+        ]
+        if file_excerpt:
+            attachment_lines.append("Текстовый фрагмент файла:")
+            attachment_lines.append(file_excerpt)
+        else:
+            attachment_lines.append("Текстовый фрагмент файла недоступен. Анализируй только метаданные, подпись и контекст.")
+        prompt = build_prompt(
+            mode=self.state.get_mode(chat_id),
+            history=list(self.state.get_history(chat_id)),
+            user_text=prompt_text,
+            attachment_note="\n".join(attachment_lines),
+            summary_text=summary_text,
+            facts_text=facts_text,
+            event_context=event_context,
+            database_context=database_context,
+            reply_context=reply_context,
+        )
+        return self.run_codex(prompt)
 
     def run_codex(self, prompt: str, image_path: Optional[Path] = None, sandbox_mode: Optional[str] = None, approval_policy: Optional[str] = None, json_output: bool = False, postprocess: bool = True) -> str:
         command = self.build_codex_command(image_path=image_path, sandbox_mode=sandbox_mode, approval_policy=approval_policy, json_output=json_output)
@@ -5243,6 +5339,111 @@ class TelegramBridge:
             with self.backup_lock:
                 self.backup_in_progress = False
 
+    def maybe_start_scheduled_reports(self) -> None:
+        now = time.time()
+        if now < self.next_report_check_ts:
+            return
+        self.next_report_check_ts = now + 3600
+        worker = Thread(target=self.run_scheduled_reports, daemon=True)
+        worker.start()
+
+    def run_scheduled_reports(self) -> None:
+        now = datetime.utcnow()
+        try:
+            self.maybe_send_daily_owner_digest(now)
+            self.maybe_send_weekly_owner_report(now)
+        except Exception as error:
+            log(f"scheduled reports failed: {error}")
+
+    def maybe_send_daily_owner_digest(self, now: datetime) -> None:
+        if now.hour < self.config.owner_daily_digest_hour_utc:
+            return
+        target_day = datetime.utcfromtimestamp(time.time() - 86400).strftime("%Y-%m-%d")
+        if self.state.get_meta("owner_daily_digest_sent", "") == target_day:
+            return
+        report = self.render_global_digest_text(target_day)
+        self.notify_owner(report)
+        self.state.set_meta("owner_daily_digest_sent", target_day)
+        log(f"daily owner digest sent day={target_day}")
+
+    def maybe_send_weekly_owner_report(self, now: datetime) -> None:
+        if now.weekday() != self.config.owner_weekly_digest_weekday_utc:
+            return
+        if now.hour < self.config.owner_daily_digest_hour_utc:
+            return
+        iso_year, iso_week, _iso_weekday = now.isocalendar()
+        week_key = f"{iso_year}-W{iso_week:02d}"
+        if self.state.get_meta("owner_weekly_report_sent", "") == week_key:
+            return
+        report = self.render_weekly_owner_report_text(now)
+        self.notify_owner(report)
+        self.state.set_meta("owner_weekly_report_sent", week_key)
+        log(f"weekly owner report sent week={week_key}")
+
+    def render_global_digest_text(self, target_day: str) -> str:
+        chat_ids = self.state.get_managed_group_chat_ids()
+        if not chat_ids:
+            return f"Daily digest за {target_day}\n\nГрупповые чаты для сводки пока не найдены."
+        total_events = 0
+        total_user_messages = 0
+        chat_stats: List[Tuple[str, int, int]] = []
+        user_counts: Dict[str, int] = {}
+        highlights: List[str] = []
+        for chat_id in chat_ids:
+            day_value, rows = self.state.get_daily_summary_context(chat_id, target_day)
+            if not rows:
+                continue
+            group_events = len(rows)
+            group_user_messages = sum(1 for row in rows if row[5] == "user")
+            total_events += group_events
+            total_user_messages += group_user_messages
+            chat_stats.append((str(chat_id), group_events, group_user_messages))
+            for created_at, user_id, username, first_name, last_name, role, message_type, content in rows:
+                if role != "user":
+                    continue
+                actor = build_actor_name(user_id, username or "", first_name or "", last_name or "", role)
+                user_counts[actor] = user_counts.get(actor, 0) + 1
+                if len(highlights) < 8 and message_type in {"text", "caption", "edited_text", "photo", "voice", "document"}:
+                    stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
+                    highlights.append(f"[chat {chat_id} {stamp}] {actor}: {truncate_text(content, 120)}")
+        if total_events == 0:
+            return f"Daily digest за {target_day}\n\nЗа этот день по группам событий не нашлось."
+        lines = [
+            f"DAILY DIGEST • {target_day}",
+            f"Групп с активностью: {len(chat_stats)}",
+            f"Всего событий: {total_events}",
+            f"Сообщений пользователей: {total_user_messages}",
+        ]
+        top_chats = sorted(chat_stats, key=lambda item: (-item[1], item[0]))[:5]
+        if top_chats:
+            lines.extend(["", "Топ чатов по активности:"])
+            lines.extend(f"- chat {chat_id}: событий {events}, user-msg {user_messages}" for chat_id, events, user_messages in top_chats)
+        top_users = sorted(user_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+        if top_users:
+            lines.extend(["", "Топ участников по сообщениям:"])
+            lines.extend(f"- {name}: {count}" for name, count in top_users)
+        if highlights:
+            lines.extend(["", "Ключевые куски дня:"])
+            lines.extend(f"- {item}" for item in highlights)
+        return "\n".join(lines)
+
+    def render_weekly_owner_report_text(self, now: datetime) -> str:
+        lines = [
+            f"WEEKLY OWNER REPORT • {now.strftime('%Y-%m-%d %H:%M:%S')} UTC",
+            self.render_owner_report_text(OWNER_USER_ID),
+        ]
+        day_labels: List[str] = []
+        for delta in range(1, 8):
+            target_day = datetime.utcfromtimestamp(time.time() - delta * 86400).strftime("%Y-%m-%d")
+            digest = self.render_global_digest_text(target_day)
+            first_line = digest.splitlines()[0] if digest else f"Daily digest за {target_day}"
+            summary_line = next((line for line in digest.splitlines() if line.startswith("Всего событий:")), "Всего событий: 0")
+            day_labels.append(f"- {first_line} | {summary_line}")
+        if day_labels:
+            lines.extend(["", "Последние 7 дней:"])
+            lines.extend(day_labels)
+        return "\n\n".join(lines)
+
     def create_backup_archive(self, workspace: Path, full_project: bool = True) -> Path:
         archive_name = f"jarvis_backup_{datetime.now().strftime('%Y-%m-%d')}.zip"
         archive_path = workspace / archive_name
@@ -5747,6 +5948,27 @@ def detect_current_fact_query(text: str) -> str:
     lowered = cleaned.lower()
     if not lowered:
         return ""
+    role_markers = (
+        "президент",
+        "премьер",
+        "премьер-министр",
+        "мэр",
+        "губернатор",
+        "ceo",
+        "cfo",
+        "cto",
+        "owner",
+        "владелец",
+        "глава",
+        "руковод",
+        "директор",
+        "гендир",
+        "генеральный директор",
+        "председатель",
+        "канцлер",
+        "министр",
+    )
+    freshness_markers = ("кто", "сейчас", "current", "latest", "сегодня", "последний", "последняя", "последнее", "текущий", "нынешний")
     markers = (
         "кто сейчас",
         "кто президент",
@@ -5774,9 +5996,13 @@ def detect_current_fact_query(text: str) -> str:
         "кто сейчас правит",
         "кто сейчас управляет",
     )
-    if not any(marker in lowered for marker in markers):
-        return ""
-    return cleaned
+    if any(marker in lowered for marker in markers):
+        return cleaned
+    if any(role in lowered for role in role_markers) and any(marker in lowered for marker in freshness_markers):
+        return cleaned
+    if any(role in lowered for role in role_markers) and len(cleaned.split()) >= 2:
+        return cleaned
+    return ""
 
 
 def build_progress_bar(phase_index: int, elapsed_seconds: int, width: int = 10) -> str:
@@ -6639,6 +6865,23 @@ def read_recent_log_highlights(log_path: Path, limit: int = 8) -> List[str]:
         if len(matched) >= limit:
             break
     return list(reversed(matched))
+
+
+def read_document_excerpt(file_path: Path, mime_type: str, max_chars: int = 3500) -> str:
+    text_like_suffixes = {".txt", ".md", ".py", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".log", ".csv", ".xml", ".html", ".js", ".ts", ".sh"}
+    suffix = file_path.suffix.lower()
+    mime_lower = (mime_type or "").lower()
+    is_text_like = suffix in text_like_suffixes or mime_lower.startswith("text/") or "json" in mime_lower or "xml" in mime_lower
+    if not is_text_like:
+        return ""
+    try:
+        if file_path.stat().st_size > 256 * 1024:
+            return f"[Файл большой, показан только header]\n{truncate_text(file_path.read_text(encoding='utf-8', errors='ignore')[:1200], 1200)}"
+        content = file_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    cleaned = normalize_whitespace(content)
+    return truncate_text(cleaned, max_chars)
 
 
 def format_reaction_count_payload(reactions: List[dict]) -> str:
