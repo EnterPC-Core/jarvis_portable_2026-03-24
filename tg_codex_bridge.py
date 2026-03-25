@@ -3672,8 +3672,13 @@ class TelegramBridge:
         if not file_path:
             self.safe_send_text(chat_id, "Telegram не вернул путь к файлу.")
             return True
-        self.download_telegram_file(file_path, destination)
-        self.safe_send_text(chat_id, f"Сохранено в /sdcard:\n{destination}")
+        try:
+            self.download_telegram_file(file_path, destination)
+        except Exception as error:
+            log(f"sd save failed target={destination} error={error}")
+            self.safe_send_text(chat_id, f"Не удалось сохранить файл:\n{error}")
+            return True
+        self.safe_send_text(chat_id, f"Сохранено:\n{destination}")
         return True
 
     def handle_who_said_command(self, chat_id: int, query: str) -> bool:
@@ -5558,6 +5563,7 @@ def should_include_database_context(user_text: str) -> bool:
 
 def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: bool) -> Path:
     base = Path("/sdcard").resolve()
+    writable_base = Path("/storage/internal").resolve(strict=False)
     cleaned = (raw_path or "").strip()
     if not cleaned:
         if default_to_root:
@@ -5573,6 +5579,11 @@ def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: 
         resolved.relative_to(base)
     except ValueError as error:
         raise ValueError("Разрешена работа только внутри /sdcard.") from error
+    if str(resolved).startswith(str(base)) and writable_base.exists():
+        relative = resolved.relative_to(base)
+        translated = (writable_base / relative).resolve(strict=False)
+        if translated.exists() or allow_missing:
+            return translated
     if not allow_missing and not resolved.exists():
         return resolved
     return resolved
@@ -5580,10 +5591,11 @@ def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: 
 
 def resolve_sdcard_save_target(raw_target: str, suggested_name: str) -> Path:
     base = Path("/sdcard").resolve()
+    writable_base = Path("/storage/internal").resolve(strict=False)
     cleaned_name = Path(suggested_name or "file.bin").name or "file.bin"
     cleaned_target = (raw_target or "").strip()
     if not cleaned_target:
-        destination = base / cleaned_name
+        destination = (writable_base if writable_base.exists() else base) / cleaned_name
     else:
         candidate = resolve_sdcard_path(cleaned_target, allow_missing=True, default_to_root=True)
         if cleaned_target.endswith("/") or candidate.exists() and candidate.is_dir():
@@ -5591,12 +5603,21 @@ def resolve_sdcard_save_target(raw_target: str, suggested_name: str) -> Path:
         else:
             destination = candidate
     destination = destination.resolve(strict=False)
-    try:
-        destination.relative_to(base)
-    except ValueError as error:
-        raise ValueError("Разрешена работа только внутри /sdcard.") from error
+    allowed_roots = [base]
+    if writable_base.exists():
+        allowed_roots.append(writable_base)
+    if not any(_is_relative_to(destination, root) for root in allowed_roots):
+        raise ValueError("Разрешена работа только внутри /sdcard.")
     destination.parent.mkdir(parents=True, exist_ok=True)
     return destination
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def extract_message_media_file(message: dict) -> Optional[Tuple[str, str]]:
