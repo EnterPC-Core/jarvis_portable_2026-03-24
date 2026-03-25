@@ -65,6 +65,7 @@ DEFAULT_OWNER_DAILY_DIGEST_HOUR_UTC = 7
 DEFAULT_OWNER_WEEKLY_DIGEST_WEEKDAY_UTC = 0
 DEFAULT_MEMORY_REFRESH_INTERVAL_SECONDS = 1800
 DEFAULT_LEGACY_JARVIS_DB_PATH = str((Path(__file__).resolve().parent.parent / "jarvis_legacy_data" / "jarvis.db"))
+DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
 OWNER_USER_ID = int((os.getenv("OWNER_USER_ID", os.getenv("ADMIN_ID", "6102780373")) or "6102780373").strip())
 OWNER_USERNAME = (os.getenv("OWNER_USERNAME", "@DmitryUnboxing") or "@DmitryUnboxing").strip()
 DEFAULT_ACCESS_PASSWORD = "change-me"
@@ -9667,7 +9668,7 @@ def postprocess_answer(text: str, latency_ms: Optional[int] = None) -> str:
     cleaned = normalize_whitespace(text)
     cleaned = strip_banned_openers(cleaned)
     cleaned = trim_generic_followup(cleaned)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S MSK")
     footer = f"🕒 {timestamp}"
     if latency_ms is not None:
         footer = f"{footer}\n🏓 {latency_ms} ms"
