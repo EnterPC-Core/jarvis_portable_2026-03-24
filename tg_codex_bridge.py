@@ -204,6 +204,7 @@ SEARCH_USAGE_TEXT = "Используй: /search <запрос>"
 SD_LIST_USAGE_TEXT = "Используй: /sdls [/sdcard/путь]"
 SD_SEND_USAGE_TEXT = "Используй: /sdsend /sdcard/путь/к/файлу"
 SD_SAVE_USAGE_TEXT = "Используй: /sdsave /sdcard/папка/или/файл и отправь команду reply на медиа либо подписью к документу"
+DEFAULT_SD_SAVE_ALIAS = "/storage/emulated/0/Download/"
 RESOURCES_USAGE_TEXT = "Используй: /resources"
 TOPPROC_USAGE_TEXT = "Используй: /topproc"
 DISK_USAGE_TEXT = "Используй: /disk"
@@ -5564,7 +5565,7 @@ def should_include_database_context(user_text: str) -> bool:
 def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: bool) -> Path:
     base = Path("/sdcard").resolve()
     writable_base = Path("/storage/internal").resolve(strict=False)
-    cleaned = (raw_path or "").strip()
+    cleaned = normalize_sdcard_alias(raw_path)
     if not cleaned:
         if default_to_root:
             return base
@@ -5593,9 +5594,10 @@ def resolve_sdcard_save_target(raw_target: str, suggested_name: str) -> Path:
     base = Path("/sdcard").resolve()
     writable_base = Path("/storage/internal").resolve(strict=False)
     cleaned_name = Path(suggested_name or "file.bin").name or "file.bin"
-    cleaned_target = (raw_target or "").strip()
+    cleaned_target = normalize_sdcard_alias(raw_target)
     if not cleaned_target:
-        destination = (writable_base if writable_base.exists() else base) / cleaned_name
+        default_target = normalize_sdcard_alias(DEFAULT_SD_SAVE_ALIAS)
+        destination = resolve_sdcard_path(default_target, allow_missing=True, default_to_root=True) / cleaned_name
     else:
         candidate = resolve_sdcard_path(cleaned_target, allow_missing=True, default_to_root=True)
         if cleaned_target.endswith("/") or candidate.exists() and candidate.is_dir():
@@ -5618,6 +5620,23 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def normalize_sdcard_alias(raw_path: str) -> str:
+    cleaned = (raw_path or "").strip()
+    if not cleaned:
+        return cleaned
+    mappings = [
+        ("/storage/emulated/0", "/sdcard"),
+        ("/storage/internal", "/storage/internal"),
+    ]
+    for prefix, target in mappings:
+        if cleaned == prefix:
+            return target
+        if cleaned.startswith(prefix + "/"):
+            suffix = cleaned[len(prefix):]
+            return target + suffix
+    return cleaned
 
 
 def extract_message_media_file(message: dict) -> Optional[Tuple[str, str]]:
