@@ -36,6 +36,7 @@ DEFAULT_MODE_NAME = "jarvis"
 MAX_SEEN_MESSAGES = 500
 MAX_HISTORY_ITEM_CHARS = 900
 MAX_CODEX_OUTPUT_CHARS = 12000
+CODEX_PROGRESS_UPDATE_SECONDS = 8
 DEFAULT_STT_BACKEND = "whisper"
 DEFAULT_WHISPER_MODEL = "tiny"
 DEFAULT_WHISPER_ACCURACY_MODEL = "base"
@@ -158,10 +159,32 @@ UPGRADE_REQUEST_TEMPLATE = """Ты работаешь внутри проект�
 ГЛАВНАЯ ЦЕЛЬ:
 Сделать точечное улучшение без поломки проекта."""
 
+OWNER_WORKSPACE_REQUEST_TEMPLATE = """Ты работаешь как локальный Codex-агент внутри текущей среды проекта.
+
+РЕЖИМ:
+- это запрос от владельца бота в приватном чате
+- можно работать по текущему workspace так же, как в полноценной локальной agent-сессии
+- можно читать и изменять файлы проекта, если это реально нужно для задачи
+- можно запускать необходимые команды в рамках текущей среды и задачи
+- не нужно притворяться анализатором, если задача требует реальных изменений
+
+ПРАВИЛА:
+- сначала пойми, что именно просит пользователь
+- если нужно менять код, конфиг или окружение, делай это
+- если нужно проверить состояние среды, делай это
+- не делай разрушительных действий без явной необходимости
+- не переписывай проект целиком без причины
+- отвечай по факту: что сделал, что проверил, что осталось
+
+КОНТЕКСТ ДИАЛОГА:
+{base_prompt}
+"""
+
 UPGRADE_USAGE_TEXT = "Используй: /upgrade <что нужно изменить>"
 UPGRADE_RUNNING_TEXT = "Upgrade принят. Запускаю Codex..."
 UPGRADE_TIMEOUT_TEXT = "Upgrade не завершился вовремя. Попробуй сузить задачу."
 UPGRADE_FAILED_TEXT = "Upgrade завершился с ошибкой."
+OWNER_AGENT_RUNNING_TEXT = "Запрос принят. Запускаю Codex в режиме workspace-write..."
 UPGRADE_ALREADY_RUNNING_TEXT = "Upgrade уже выполняется. Дождись завершения текущей задачи."
 UPGRADE_PRIVATE_ONLY_TEXT = "Upgrade выполняется только в личном чате с создателем."
 UPGRADE_APPLIED_TEXT = "Изменения сохранены. Если нужно применить новый код, используй /restart."
@@ -405,6 +428,7 @@ class BridgeState:
         self.db_lock = Lock()
         self.db_path = db_path
         self.db = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self._init_db()
@@ -2234,7 +2258,7 @@ class TelegramBridge:
         if self.handle_command(chat_id, user_id, text, message):
             return
 
-        if self.config.safe_chat_only and is_dangerous_request(text):
+        if self.config.safe_chat_only and is_dangerous_request(text) and not can_owner_use_workspace_mode(user_id, chat_type):
             self.safe_send_text(chat_id, SAFE_MODE_REPLY)
             return
 
@@ -2245,7 +2269,7 @@ class TelegramBridge:
         self.send_chat_action(chat_id, "typing")
         worker = Thread(
             target=self.run_text_task,
-            args=(chat_id, text),
+            args=(chat_id, text, user_id, chat_type),
             daemon=True,
         )
         worker.start()
@@ -2654,9 +2678,9 @@ class TelegramBridge:
         self.safe_send_text(chat_id, f"Mode: {parsed_mode}")
         return True
 
-    def run_text_task(self, chat_id: int, text: str) -> None:
+    def run_text_task(self, chat_id: int, text: str, user_id: Optional[int] = None, chat_type: str = "private") -> None:
         try:
-            answer = self.ask_codex(chat_id, text)
+            answer = self.ask_codex(chat_id, text, user_id=user_id, chat_type=chat_type)
             self.state.append_history(chat_id, "user", text)
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
@@ -3620,7 +3644,13 @@ class TelegramBridge:
     def run_upgrade_task(self, chat_id: int, task: str) -> None:
         try:
             prompt = build_upgrade_prompt(task)
-            answer = self.run_codex(prompt, sandbox_mode="workspace-write", approval_policy="never")
+            answer = self.run_codex_with_progress(
+                chat_id,
+                prompt,
+                initial_status=UPGRADE_RUNNING_TEXT,
+                sandbox_mode="workspace-write",
+                approval_policy="never",
+            )
             self.state.append_history(chat_id, "user", f"[Upgrade request: {task}]")
             self.state.append_history(chat_id, "assistant", answer)
             self.safe_send_text(chat_id, answer)
@@ -3663,7 +3693,7 @@ class TelegramBridge:
             command.extend(["-i", str(image_path)])
         return command
 
-    def ask_codex(self, chat_id: int, user_text: str) -> str:
+    def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private") -> str:
         summary_text = self.state.get_summary(chat_id)
         facts_text = self.state.render_facts(chat_id, query=user_text, limit=10)
         event_context = ""
@@ -3681,6 +3711,15 @@ class TelegramBridge:
             event_context=event_context,
             database_context=database_context,
         )
+        if can_owner_use_workspace_mode(user_id, chat_type):
+            owner_prompt = OWNER_WORKSPACE_REQUEST_TEMPLATE.format(base_prompt=prompt)
+            return self.run_codex_with_progress(
+                chat_id,
+                owner_prompt,
+                initial_status=OWNER_AGENT_RUNNING_TEXT,
+                sandbox_mode="workspace-write",
+                approval_policy="never",
+            )
         return self.run_codex(prompt)
 
     def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str) -> str:
@@ -3764,6 +3803,233 @@ class TelegramBridge:
 
         latency_ms = max(1, int((time.perf_counter() - started_at) * 1000))
         return postprocess_answer(stdout, latency_ms=latency_ms) if postprocess else stdout
+
+    def run_codex_with_progress(
+        self,
+        chat_id: int,
+        prompt: str,
+        *,
+        initial_status: str,
+        image_path: Optional[Path] = None,
+        sandbox_mode: Optional[str] = None,
+        approval_policy: Optional[str] = None,
+        json_output: bool = False,
+        postprocess: bool = True,
+    ) -> str:
+        status_message_id = self.send_status_message(chat_id, initial_status)
+        command = self.build_codex_command(
+            image_path=image_path,
+            sandbox_mode=sandbox_mode,
+            approval_policy=approval_policy,
+            json_output=json_output,
+        )
+        stdin_command = command + ["-"]
+        started_at = time.perf_counter()
+
+        try:
+            with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_handle, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_handle:
+                process = subprocess.Popen(
+                    stdin_command,
+                    stdin=subprocess.PIPE,
+                    stdout=stdout_handle,
+                    stderr=stderr_handle,
+                    text=True,
+                    env=build_subprocess_env(),
+                )
+                assert process.stdin is not None
+                process.stdin.write(prompt)
+                process.stdin.close()
+
+                phase_index = 0
+                next_update_at = 0.0
+                while True:
+                    return_code = process.poll()
+                    elapsed = int(max(1, time.perf_counter() - started_at))
+                    if return_code is not None:
+                        break
+                    now = time.perf_counter()
+                    if now >= next_update_at:
+                        self.send_chat_action(chat_id, "typing")
+                        self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index)
+                        phase_index += 1
+                        next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
+                    if elapsed >= self.config.codex_timeout:
+                        process.kill()
+                        process.wait(timeout=5)
+                        if status_message_id is not None:
+                            self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {self.config.codex_timeout} сек.")
+                        if approval_policy == "never" and sandbox_mode == "workspace-write":
+                            return UPGRADE_TIMEOUT_TEXT
+                        return "Слишком долгий ответ. Повтори короче или уточни запрос."
+                    time.sleep(0.5)
+
+                stdout_handle.seek(0)
+                stderr_handle.seek(0)
+                stdout = normalize_whitespace(stdout_handle.read() or "")
+                stderr = normalize_whitespace(stderr_handle.read() or "")
+                result_code = process.returncode or 0
+        except OSError as error:
+            log(f"failed to start codex with progress: {error}")
+            if status_message_id is not None:
+                self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nНе удалось запустить Codex.")
+            return JARVIS_OFFLINE_TEXT
+
+        if result_code != 0 and "No prompt provided" in stderr:
+            log("codex stdin prompt rejected during progress run, retrying with prompt argument")
+            return self._retry_codex_with_progress(
+                chat_id,
+                status_message_id,
+                initial_status,
+                command + [prompt],
+                sandbox_mode=sandbox_mode,
+                approval_policy=approval_policy,
+                postprocess=postprocess,
+            )
+
+        answer = self._finalize_codex_result(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=result_code,
+            started_at=started_at,
+            sandbox_mode=sandbox_mode,
+            approval_policy=approval_policy,
+            postprocess=postprocess,
+        )
+        self._finish_progress_status(chat_id, status_message_id, initial_status, answer)
+        return answer
+
+    def _retry_codex_with_progress(
+        self,
+        chat_id: int,
+        status_message_id: Optional[int],
+        initial_status: str,
+        command: List[str],
+        *,
+        sandbox_mode: Optional[str] = None,
+        approval_policy: Optional[str] = None,
+        postprocess: bool = True,
+    ) -> str:
+        started_at = time.perf_counter()
+        try:
+            with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_handle, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_handle:
+                process = subprocess.Popen(
+                    command,
+                    stdout=stdout_handle,
+                    stderr=stderr_handle,
+                    text=True,
+                    env=build_subprocess_env(),
+                )
+                phase_index = 0
+                next_update_at = 0.0
+                while True:
+                    return_code = process.poll()
+                    elapsed = int(max(1, time.perf_counter() - started_at))
+                    if return_code is not None:
+                        break
+                    now = time.perf_counter()
+                    if now >= next_update_at:
+                        self.send_chat_action(chat_id, "typing")
+                        self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index)
+                        phase_index += 1
+                        next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
+                    if elapsed >= self.config.codex_timeout:
+                        process.kill()
+                        process.wait(timeout=5)
+                        if status_message_id is not None:
+                            self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {self.config.codex_timeout} сек.")
+                        if approval_policy == "never" and sandbox_mode == "workspace-write":
+                            return UPGRADE_TIMEOUT_TEXT
+                        return "Слишком долгий ответ. Повтори короче или уточни запрос."
+                    time.sleep(0.5)
+
+                stdout_handle.seek(0)
+                stderr_handle.seek(0)
+                stdout = normalize_whitespace(stdout_handle.read() or "")
+                stderr = normalize_whitespace(stderr_handle.read() or "")
+                result_code = process.returncode or 0
+        except OSError as error:
+            log(f"failed to restart codex with prompt argument during progress run: {error}")
+            if status_message_id is not None:
+                self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nНе удалось повторно запустить Codex.")
+            return JARVIS_OFFLINE_TEXT
+
+        answer = self._finalize_codex_result(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=result_code,
+            started_at=started_at,
+            sandbox_mode=sandbox_mode,
+            approval_policy=approval_policy,
+            postprocess=postprocess,
+        )
+        self._finish_progress_status(chat_id, status_message_id, initial_status, answer)
+        return answer
+
+    def _finalize_codex_result(
+        self,
+        *,
+        stdout: str,
+        stderr: str,
+        returncode: int,
+        started_at: float,
+        sandbox_mode: Optional[str] = None,
+        approval_policy: Optional[str] = None,
+        postprocess: bool = True,
+    ) -> str:
+        if returncode != 0:
+            log(f"codex error code={returncode} stderr={shorten_for_log(stderr)}")
+            details = stderr or stdout or "Codex завершился с ошибкой без вывода."
+            if is_codex_unavailable_output(details):
+                return JARVIS_OFFLINE_TEXT
+            if approval_policy == "never" and sandbox_mode == "workspace-write":
+                return f"{UPGRADE_FAILED_TEXT}\n{truncate_text(details, 1500)}"
+            return f"Ошибка Codex:\n{truncate_text(details, 1200)}"
+
+        if not stdout:
+            log("codex returned empty stdout")
+            return "Пустой ответ. Переформулируй запрос."
+
+        latency_ms = max(1, int((time.perf_counter() - started_at) * 1000))
+        return postprocess_answer(stdout, latency_ms=latency_ms) if postprocess else stdout
+
+    def _update_progress_status(
+        self,
+        chat_id: int,
+        status_message_id: Optional[int],
+        initial_status: str,
+        elapsed_seconds: int,
+        phase_index: int,
+    ) -> None:
+        if status_message_id is None:
+            return
+        phases = [
+            "Анализирую запрос и контекст...",
+            "Читаю проект и ищу нужные места...",
+            "Вношу изменения в среде...",
+            "Проверяю результат...",
+        ]
+        phase = phases[phase_index % len(phases)]
+        status_text = f"{initial_status}\n\n{phase}\n\nПрошло: {elapsed_seconds} сек."
+        self.edit_status_message(chat_id, status_message_id, status_text)
+
+    def _finish_progress_status(
+        self,
+        chat_id: int,
+        status_message_id: Optional[int],
+        initial_status: str,
+        answer: str,
+    ) -> None:
+        if status_message_id is None:
+            return
+        if answer == JARVIS_OFFLINE_TEXT:
+            status_text = f"{initial_status}\n\nCodex сейчас недоступен."
+        elif answer == UPGRADE_TIMEOUT_TEXT or answer.startswith("Слишком долгий ответ."):
+            status_text = f"{initial_status}\n\nЗадача не завершилась вовремя."
+        elif answer.startswith(UPGRADE_FAILED_TEXT) or answer.startswith("Ошибка Codex:"):
+            status_text = f"{initial_status}\n\nВыполнение завершилось с ошибкой."
+        else:
+            status_text = f"{initial_status}\n\nЗадача завершена."
+        self.edit_status_message(chat_id, status_message_id, status_text)
 
     def run_codex_short(self, prompt: str, timeout_seconds: int = 35) -> str:
         command = self.build_codex_command(sandbox_mode="read-only", approval_policy="never")
@@ -3924,6 +4190,33 @@ class TelegramBridge:
 
     def safe_send_status(self, chat_id: int, text: str) -> None:
         self.safe_send_text(chat_id, text)
+
+    def send_status_message(self, chat_id: int, text: str) -> Optional[int]:
+        try:
+            payload = self.telegram_api("sendMessage", data={"chat_id": chat_id, "text": truncate_text(text, TELEGRAM_TEXT_LIMIT)})
+            result = payload.get("result") or {}
+            message_id = result.get("message_id")
+            return int(message_id) if message_id is not None else None
+        except RequestException as error:
+            log(f"failed to send status message chat={chat_id}: {error}")
+            return None
+
+    def edit_status_message(self, chat_id: int, message_id: int, text: str) -> bool:
+        try:
+            self.telegram_api(
+                "editMessageText",
+                data={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": truncate_text(text, TELEGRAM_TEXT_LIMIT),
+                },
+            )
+            return True
+        except RequestException as error:
+            if "message is not modified" in str(error).lower():
+                return True
+            log(f"failed to edit status message chat={chat_id} message_id={message_id}: {error}")
+            return False
 
     def send_document(self, chat_id: int, file_path: Path, caption: str = "") -> None:
         with file_path.open("rb") as handle:
@@ -4346,6 +4639,10 @@ def can_use_upgrade_write(allowed_user_ids: Set[int], user_id: Optional[int]) ->
     if user_id == OWNER_USER_ID:
         return True
     return is_allowed_user(allowed_user_ids, user_id)
+
+
+def can_owner_use_workspace_mode(user_id: Optional[int], chat_type: str) -> bool:
+    return user_id == OWNER_USER_ID and chat_type == "private"
 
 
 def is_allowed_user(allowed_user_ids: Set[int], user_id: Optional[int]) -> bool:
