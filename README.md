@@ -93,6 +93,7 @@
 
 - [Инструкции по запуску](./PROJECT_RUN_INSTRUCTIONS.md)
 - [Portable-пакет и перенос на другое устройство](./PORTABLE_RUN_INSTRUCTIONS.md)
+- [Полный список команд](./COMMANDS.md)
 - [Runtime backups](./data/runtime_backups/README.md)
 
 ## Что важно понимать
