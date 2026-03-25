@@ -1911,17 +1911,21 @@ class TelegramBridge:
         if section == "owner_root" and user_id == OWNER_USER_ID:
             text = (
                 "JARVIS • OWNER PANEL\n\n"
-                "Единая админ-панель по всем командам проекта.\n"
-                "Безаргументные сценарии вынесены в живые экраны.\n"
-                "Команды с параметрами разложены по разделам с готовыми шаблонами.\n\n"
+                "Это центральная админ-панель проекта.\n"
+                "Здесь собраны все owner-команды, runtime-сводки, git/logs сценарии, работа с памятью чатов, файлами и live-data.\n\n"
+                "Как пользоваться:\n"
+                "• разделы ниже открывают экраны с пояснениями и быстрыми сводками\n"
+                "• команды без параметров можно запускать прямо как отдельные команды из чата\n"
+                "• команды с параметрами здесь описаны с примерами и usage-шаблонами\n"
+                "• если нужен полный справочник без сокращений, открывай раздел «Все команды»\n\n"
                 "Разделы:\n"
-                "• runtime и состояние\n"
-                "• git и логи\n"
-                "• память и чаты\n"
-                "• файлы и медиа\n"
-                "• live-data маршруты\n"
-                "• модерация и appeals\n"
-                "• полный список команд"
+                "• Runtime: здоровье процесса, ресурсы, рестарт, owner report\n"
+                "• Git и логи: branch, commits, ошибки, upgrade\n"
+                "• Память и чаты: history, digest, recall, portraits, export\n"
+                "• Файлы и медиа: sdcard-команды, файлы, документы, media-context\n"
+                "• Live-data: погода, курсы, новости, current-facts\n"
+                "• Модерация: sanctions, warns, welcome, appeals\n"
+                "• Все команды: полный текстовый реестр проекта"
             )
             markup = {
                 "inline_keyboard": [
@@ -1936,16 +1940,18 @@ class TelegramBridge:
         if section == "owner_runtime" and user_id == OWNER_USER_ID:
             text = (
                 "JARVIS • OWNER RUNTIME\n\n"
+                "Раздел для проверки живости бота и текущего runtime.\n"
+                "Сюда имеет смысл идти, если бот тупит, не отвечает, медленно работает или нужно понять общее состояние среды.\n\n"
                 f"{self.render_owner_report_text(user_id)}\n\n"
-                "Быстрые команды:\n"
-                "• /status\n"
-                "• /ownerreport\n"
-                "• /resources\n"
-                "• /topproc\n"
-                "• /disk\n"
-                "• /net\n"
-                "• /restart\n"
-                "• /ownerautofix on|off|status"
+                "Команды раздела:\n"
+                "• /status — общая служебная сводка по текущему чату и runtime\n"
+                "• /ownerreport — расширенный owner-отчёт\n"
+                "• /resources — память, CPU, swap\n"
+                "• /topproc — самые тяжёлые процессы\n"
+                "• /disk — заполнение дисков\n"
+                "• /net — сетевые интерфейсы и трафик\n"
+                "• /restart — перезапуск bridge через supervisor\n"
+                "• /ownerautofix on|off|status — автоисправление текста владельца"
             )
             markup = {
                 "inline_keyboard": [
@@ -1958,13 +1964,19 @@ class TelegramBridge:
         if section == "owner_git" and user_id == OWNER_USER_ID:
             text = (
                 "JARVIS • OWNER GIT / LOGS\n\n"
+                "Раздел для проектных изменений, истории коммитов и ошибок runtime.\n"
+                "Если нужно понять, что поменялось, в каком состоянии git и что сломалось в хвосте логов, смотреть сюда.\n\n"
                 f"{render_git_status_summary(self.script_path.parent)}\n\n"
                 f"{render_git_last_commits(self.script_path.parent, limit=5)}\n\n"
-                "Команды:\n"
-                "• /gitstatus\n"
-                "• /gitlast 5\n"
-                "• /errors 10\n"
-                "• /upgrade <что изменить>"
+                "Команды раздела:\n"
+                "• /gitstatus — worktree, branch, upstream\n"
+                "• /gitlast 5 — последние коммиты, число можно менять\n"
+                "• /errors 10 — последние ошибки/сбои из tg_codex_bridge.log\n"
+                "• /upgrade <что изменить> — постановка задачи на изменение кода\n\n"
+                "Примеры:\n"
+                "• /gitlast 12\n"
+                "• /errors 20\n"
+                "• /upgrade добавь новый route для ..."
             )
             markup = {
                 "inline_keyboard": [
@@ -1976,18 +1988,23 @@ class TelegramBridge:
         if section == "owner_memory" and user_id == OWNER_USER_ID:
             text = (
                 "JARVIS • OWNER MEMORY / CHAT\n\n"
-                "Команды памяти и анализа чатов:\n"
-                "• /remember <факт>\n"
-                "• /recall [запрос]\n"
-                "• /search <запрос>\n"
-                "• /who_said <запрос>\n"
-                "• /history @username\n"
-                "• /daily [YYYY-MM-DD]\n"
-                "• /digest [YYYY-MM-DD]\n"
-                "• /chatdigest <chat_id> [YYYY-MM-DD]\n"
-                "• /export chat|today|@username|user_id\n"
-                "• /portrait [@username]\n"
-                "• /reset"
+                "Раздел для памяти, поиска по событиям и анализа конкретных чатов/участников.\n"
+                "Подходит, когда нужно поднять историю, найти автора фразы, собрать digest или посмотреть профиль участника.\n\n"
+                "Команды раздела:\n"
+                "• /remember <факт> — записать факт в память чата\n"
+                "• /recall [запрос] — поднять релевантные факты и события\n"
+                "• /search <запрос> — поиск по chat_events\n"
+                "• /who_said <запрос> — кто чаще писал фразу/слово\n"
+                "• /history @username — timeline участника\n"
+                "• /daily [YYYY-MM-DD] — активность за день в текущем чате\n"
+                "• /digest [YYYY-MM-DD] — digest по текущему чату\n"
+                "• /chatdigest <chat_id> [YYYY-MM-DD] — digest по конкретной группе из owner-лички\n"
+                "• /export chat|today|@username|user_id — выгрузка событий\n"
+                "• /portrait [@username] — профиль участника\n"
+                "• /reset — очистка контекста текущего чата\n\n"
+                "Подсказки:\n"
+                "• /history и /portrait можно вызывать через reply на сообщение\n"
+                "• /chatdigest полезен для групп, куда ты не хочешь писать команды прямо в чат"
             )
             markup = {
                 "inline_keyboard": [
@@ -1999,15 +2016,20 @@ class TelegramBridge:
         if section == "owner_files" and user_id == OWNER_USER_ID:
             text = (
                 "JARVIS • OWNER FILES / MEDIA\n\n"
-                "Файлы и медиа:\n"
-                "• /sdls [/sdcard/путь]\n"
-                "• /sdsend /sdcard/путь/к/файлу\n"
-                "• /sdsave /sdcard/папка/или/файл\n\n"
-                "Что уже умеет бот:\n"
-                "• фото анализируются\n"
-                "• документы разбираются\n"
-                "• текстовые файлы дают excerpt в prompt\n"
-                "• reply на медиа попадает в context"
+                "Раздел для файловых сценариев и media-aware поведения.\n"
+                "Если нужно лазить по /sdcard, переслать файл, сохранить вложение или понять, как bot разбирает документы и фото, это здесь.\n\n"
+                "Команды раздела:\n"
+                "• /sdls [/sdcard/путь] — список файлов и папок\n"
+                "• /sdsend /sdcard/путь/к/файлу — отправить файл в Telegram\n"
+                "• /sdsave /sdcard/папка/или/файл — сохранить документ/медиа из reply\n\n"
+                "Что умеет бот автоматически:\n"
+                "• анализировать фото\n"
+                "• анализировать документы\n"
+                "• вытаскивать excerpt из текстовых файлов\n"
+                "• добавлять reply-context вокруг медиа\n\n"
+                "Как использовать /sdsave:\n"
+                "• reply на сообщение с документом или медиа\n"
+                "• затем отправить /sdsave /sdcard/Download/..."
             )
             markup = {
                 "inline_keyboard": [
@@ -2019,6 +2041,8 @@ class TelegramBridge:
         if section == "owner_live" and user_id == OWNER_USER_ID:
             text = (
                 "JARVIS • OWNER LIVE DATA\n\n"
+                "Раздел для всех live-data маршрутов.\n"
+                "Сюда относятся запросы, где важна свежесть данных: погода, курсы, рынок, новости, current facts.\n\n"
                 "Live-маршруты:\n"
                 "• погода\n"
                 "• курсы валют\n"
@@ -2026,6 +2050,10 @@ class TelegramBridge:
                 "• акции\n"
                 "• новости\n"
                 "• current-facts по должностям и ролям\n\n"
+                "Как это работает:\n"
+                "• такие запросы идут не в обычный prompt, а в отдельные live-источники\n"
+                "• если источник не ответил, бот должен писать это честно\n"
+                "• current-fact запросы пытаются собрать короткий вывод по найденным источникам\n\n"
                 "Примеры:\n"
                 "• Погода в Брянске\n"
                 "• курс доллара\n"
@@ -2044,8 +2072,11 @@ class TelegramBridge:
         if section == "owner_moderation" and user_id == OWNER_USER_ID:
             text = (
                 "JARVIS • OWNER MODERATION\n\n"
+                "Раздел для администрирования групп: санкции, warns, welcome и appeals.\n"
+                "Здесь собраны все команды, которые меняют поведение групп и участников.\n\n"
                 "Санкции:\n"
-                "• /ban /unban /mute /unmute /kick /tban /tmute\n\n"
+                "• /ban /unban /mute /unmute /kick /tban /tmute\n"
+                "• цель можно задавать reply, @username или user_id\n\n"
                 "Warn system:\n"
                 "• /warn /dwarn /swarn /warns /warnreasons /rmwarn /resetwarn\n"
                 "• /setwarnlimit\n"
@@ -2060,7 +2091,8 @@ class TelegramBridge:
                 "• /appeals\n"
                 "• /appeal_review <id>\n"
                 "• /appeal_approve <id> [решение]\n"
-                "• /appeal_reject <id> [решение]"
+                "• /appeal_reject <id> [решение]\n\n"
+                "Если нужен UI-режим по appeals и moderation, используй кнопки ниже."
             )
             markup = {
                 "inline_keyboard": [
@@ -2071,7 +2103,13 @@ class TelegramBridge:
             }
             return text, markup
         if section == "owner_commands" and user_id == OWNER_USER_ID:
-            text = "JARVIS • ВСЕ КОМАНДЫ ПРОЕКТА\n\n" + COMMANDS_LIST_TEXT
+            text = (
+                "JARVIS • ВСЕ КОМАНДЫ ПРОЕКТА\n\n"
+                "Это полный текстовый реестр команд без фильтрации.\n"
+                "Если не помнишь usage, смотри сюда.\n"
+                "Если нужна подробная инструкция по панели и навигации, она описана в GitHub-документации проекта.\n\n"
+                + COMMANDS_LIST_TEXT
+            )
             markup = {
                 "inline_keyboard": [
                     [{"text": "Owner panel", "callback_data": "ui:panel:owner_root"}],
