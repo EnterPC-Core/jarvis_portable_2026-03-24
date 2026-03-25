@@ -2,11 +2,11 @@
 
 ## Для чего этот файл
 
-Это актуальная инструкция для текущего проекта в локальной среде. Она описывает реальный рабочий режим: бот запускается здесь, в этой Linux/UserLAnd-среде, через `tg_codex_bridge.py` и supervisor.
+Это актуальная инструкция для текущего проекта `Enterprise Core` в локальной среде. Она описывает реальный рабочий режим: бот запускается здесь, в этой Linux/UserLAnd-среде, через `tg_codex_bridge.py` и supervisor.
 
 ## Основные файлы
 
-- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Codex bridge
+- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Enterprise Core bridge
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — supervisor для постоянного процесса
 - [`run_jarvis_stack.sh`](./run_jarvis_stack.sh) — единый запуск supervisor + mobile API
 - [`start_jarvis_on_userland.sh`](./start_jarvis_on_userland.sh) — фоновый запуск в UserLAnd
@@ -54,7 +54,7 @@
 - Linux shell, UserLAnd или Termux
 - `python3`
 - Python-пакет `requests`
-- установленный `Codex CLI` как команда `codex`
+- установленный runtime `Enterprise Core` через локальную команду `codex`
 - рабочий `node` для `codex`
 
 В этой сборке supervisor принудительно подхватывает:
