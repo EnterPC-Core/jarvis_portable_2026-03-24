@@ -216,6 +216,13 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/gitlast [N]` — последние коммиты
 - `/errors [N]` — свежие ошибки и сбои из `tg_codex_bridge.log`
 
+## Owner Panel
+
+- у владельца в главной inline-панели есть кнопка `Owner Panel`
+- внутри вынесены разделы: runtime, git/logs, memory/chat, files/media, live-data, moderation, all commands
+- команды без параметров доступны как живые экраны панели
+- команды с параметрами лежат в панели как готовые шаблоны и usage-подсказки
+
 ## Автоматические owner-отчёты
 
 - daily digest владельцу отправляется автоматически после часа `OWNER_DAILY_DIGEST_HOUR_UTC`

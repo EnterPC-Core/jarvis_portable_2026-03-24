@@ -117,4 +117,5 @@ Portable-сборка не делает за тебя:
 - `/digest` и `/ownerreport` доступны как служебные инструменты
 - owner-команды по проекту и логам тоже доступны: `/gitstatus`, `/gitlast`, `/errors`, `/chatdigest`
 - документы тоже разбираются, а текстовые файлы дают excerpt в анализ
+- у владельца все команды проекта вынесены в `Owner Panel` внутри inline UI
 - runtime-backups обновлены и лежат в [`data/runtime_backups`](./data/runtime_backups)

@@ -430,6 +430,14 @@ CONTROL_PANEL_SECTIONS = (
     "admin_appeal_detail",
     "admin_moderation",
     "admin_warns",
+    "owner_root",
+    "owner_runtime",
+    "owner_git",
+    "owner_memory",
+    "owner_files",
+    "owner_live",
+    "owner_moderation",
+    "owner_commands",
 )
 UI_PENDING_APPEAL = "await_appeal_text"
 UI_PENDING_APPROVE_COMMENT = "await_appeal_approve_comment"
@@ -1900,6 +1908,177 @@ class TelegramBridge:
                 ]
             }
             return "\n".join(lines), markup
+        if section == "owner_root" and user_id == OWNER_USER_ID:
+            text = (
+                "JARVIS • OWNER PANEL\n\n"
+                "Единая админ-панель по всем командам проекта.\n"
+                "Безаргументные сценарии вынесены в живые экраны.\n"
+                "Команды с параметрами разложены по разделам с готовыми шаблонами.\n\n"
+                "Разделы:\n"
+                "• runtime и состояние\n"
+                "• git и логи\n"
+                "• память и чаты\n"
+                "• файлы и медиа\n"
+                "• live-data маршруты\n"
+                "• модерация и appeals\n"
+                "• полный список команд"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Git и логи", "callback_data": "ui:panel:owner_git"}],
+                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}],
+                    [{"text": "Live-data", "callback_data": "ui:panel:owner_live"}, {"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
+                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_runtime" and user_id == OWNER_USER_ID:
+            text = (
+                "JARVIS • OWNER RUNTIME\n\n"
+                f"{self.render_owner_report_text(user_id)}\n\n"
+                "Быстрые команды:\n"
+                "• /status\n"
+                "• /ownerreport\n"
+                "• /resources\n"
+                "• /topproc\n"
+                "• /disk\n"
+                "• /net\n"
+                "• /restart\n"
+                "• /ownerautofix on|off|status"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Git и логи", "callback_data": "ui:panel:owner_git"}, {"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}],
+                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
+                    [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_git" and user_id == OWNER_USER_ID:
+            text = (
+                "JARVIS • OWNER GIT / LOGS\n\n"
+                f"{render_git_status_summary(self.script_path.parent)}\n\n"
+                f"{render_git_last_commits(self.script_path.parent, limit=5)}\n\n"
+                "Команды:\n"
+                "• /gitstatus\n"
+                "• /gitlast 5\n"
+                "• /errors 10\n"
+                "• /upgrade <что изменить>"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Ошибки / логи", "callback_data": "ui:panel:owner_commands"}],
+                    [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_memory" and user_id == OWNER_USER_ID:
+            text = (
+                "JARVIS • OWNER MEMORY / CHAT\n\n"
+                "Команды памяти и анализа чатов:\n"
+                "• /remember <факт>\n"
+                "• /recall [запрос]\n"
+                "• /search <запрос>\n"
+                "• /who_said <запрос>\n"
+                "• /history @username\n"
+                "• /daily [YYYY-MM-DD]\n"
+                "• /digest [YYYY-MM-DD]\n"
+                "• /chatdigest <chat_id> [YYYY-MM-DD]\n"
+                "• /export chat|today|@username|user_id\n"
+                "• /portrait [@username]\n"
+                "• /reset"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}, {"text": "Live-data", "callback_data": "ui:panel:owner_live"}],
+                    [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_files" and user_id == OWNER_USER_ID:
+            text = (
+                "JARVIS • OWNER FILES / MEDIA\n\n"
+                "Файлы и медиа:\n"
+                "• /sdls [/sdcard/путь]\n"
+                "• /sdsend /sdcard/путь/к/файлу\n"
+                "• /sdsave /sdcard/папка/или/файл\n\n"
+                "Что уже умеет бот:\n"
+                "• фото анализируются\n"
+                "• документы разбираются\n"
+                "• текстовые файлы дают excerpt в prompt\n"
+                "• reply на медиа попадает в context"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Live-data", "callback_data": "ui:panel:owner_live"}],
+                    [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_live" and user_id == OWNER_USER_ID:
+            text = (
+                "JARVIS • OWNER LIVE DATA\n\n"
+                "Live-маршруты:\n"
+                "• погода\n"
+                "• курсы валют\n"
+                "• крипта\n"
+                "• акции\n"
+                "• новости\n"
+                "• current-facts по должностям и ролям\n\n"
+                "Примеры:\n"
+                "• Погода в Брянске\n"
+                "• курс доллара\n"
+                "• цена btc\n"
+                "• последние новости по Apple\n"
+                "• кто сейчас президент Франции\n"
+                "• CEO OpenAI"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}, {"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
+                    [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_moderation" and user_id == OWNER_USER_ID:
+            text = (
+                "JARVIS • OWNER MODERATION\n\n"
+                "Санкции:\n"
+                "• /ban /unban /mute /unmute /kick /tban /tmute\n\n"
+                "Warn system:\n"
+                "• /warn /dwarn /swarn /warns /warnreasons /rmwarn /resetwarn\n"
+                "• /setwarnlimit\n"
+                "• /setwarnmode\n"
+                "• /warntime\n"
+                "• /modlog\n\n"
+                "Welcome:\n"
+                "• /welcome on|off|status\n"
+                "• /setwelcome <текст>\n"
+                "• /resetwelcome\n\n"
+                "Appeals:\n"
+                "• /appeals\n"
+                "• /appeal_review <id>\n"
+                "• /appeal_approve <id> [решение]\n"
+                "• /appeal_reject <id> [решение]"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Кабинет модерации", "callback_data": "ui:adm:moderation"}, {"text": "Очередь апелляций", "callback_data": "ui:adm:queue"}],
+                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
+                    [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_commands" and user_id == OWNER_USER_ID:
+            text = "JARVIS • ВСЕ КОМАНДЫ ПРОЕКТА\n\n" + COMMANDS_LIST_TEXT
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Owner panel", "callback_data": "ui:panel:owner_root"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
         if section == "profile":
             text = self.legacy.render_rating(user_id)
             keyboard = [[{"text": "Обновить", "callback_data": "ui:profile"}]]
@@ -2100,6 +2279,7 @@ class TelegramBridge:
         if user_id == OWNER_USER_ID:
             keyboard.insert(2, [{"text": "Модерация апелляций", "callback_data": "ui:adm:queue"}])
             keyboard.insert(3, [{"text": "Кабинет модерации", "callback_data": "ui:adm:moderation"}])
+            keyboard.insert(4, [{"text": "Owner Panel", "callback_data": "ui:panel:owner_root"}])
         return text, {"inline_keyboard": keyboard}
 
     def handle_ui_pending_input(self, chat_id: int, user_id: int, text: str) -> bool:
@@ -3441,6 +3621,11 @@ class TelegramBridge:
                 if data == "ui:home":
                     self.edit_control_panel(chat_id, user_id, int(message_id), "home")
                     return
+                if len(parts) == 3 and parts[1] == "panel":
+                    target_section = parts[2].strip()
+                    if target_section in CONTROL_PANEL_SECTIONS:
+                        self.edit_control_panel(chat_id, user_id, int(message_id), target_section)
+                        return
                 if data == "ui:profile":
                     self.edit_control_panel(chat_id, user_id, int(message_id), "profile")
                     return
