@@ -184,6 +184,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 
 - ответы только по trigger/reply/упоминанию
 - `Enterprise` тоже может работать, если маршрут явно вызван
+- reply на чужое сообщение теперь попадает в prompt как отдельный контекст вместе с коротким thread history
 
 ### Progress-статус
 
@@ -205,3 +206,8 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - current-fact запросы: “кто сейчас президент”, “кто CEO”, “кто руководит”
 
 Если live-источник не ответил, бот должен честно сообщать об этом, а не фантазировать.
+
+## Новые служебные команды
+
+- `/digest [YYYY-MM-DD]` — краткая сводка активности за день по чату
+- `/ownerreport` — приватный runtime-отчёт для владельца: ресурсы, backup, хвост ошибок

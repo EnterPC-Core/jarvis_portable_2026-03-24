@@ -192,6 +192,8 @@ DISK_USAGE_TEXT = "Используй: /disk"
 NET_USAGE_TEXT = "Используй: /net"
 WHO_SAID_USAGE_TEXT = "Используй: /who_said <запрос>"
 HISTORY_USAGE_TEXT = "Используй: /history @username, /history user_id или reply на сообщение участника"
+DIGEST_USAGE_TEXT = "Используй: /digest [YYYY-MM-DD]"
+OWNER_REPORT_USAGE_TEXT = "Используй: /ownerreport"
 EXPORT_USAGE_TEXT = "Используй: /export chat, /export today, /export @username или /export user_id"
 APPEAL_USAGE_TEXT = "Используй: /appeal <текст апелляции>"
 MODERATION_USAGE_TEXT = "Используй reply или: /ban @username [причина], /mute @username [причина], /tban 1d @username [причина], /tmute 1h @username [причина]"
@@ -283,6 +285,8 @@ COMMANDS_LIST_TEXT = (
     "/who_said <запрос>\n"
     "/history [@username|user_id]\n"
     "/daily [YYYY-MM-DD]\n"
+    "/digest [YYYY-MM-DD]\n"
+    "/ownerreport\n"
     "/export [chat|today|@username|user_id]\n"
     "/portrait [@username]\n"
     "/mode jarvis\n"
@@ -1145,6 +1149,21 @@ class BridgeState:
                 continue
             selected.append(row)
         return target_day, list(reversed(selected[-80:]))
+
+    def get_thread_context(self, chat_id: int, root_message_id: int, limit: int = 12) -> List[Tuple[int, Optional[int], str, str, str, str, str, str]]:
+        with self.db_lock:
+            rows = self.db.execute(
+                """
+                SELECT created_at, user_id, username, first_name, last_name, role, message_type, text
+                FROM chat_events
+                WHERE chat_id = ?
+                  AND (message_id = ? OR reply_to_message_id = ?)
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (chat_id, root_message_id, root_message_id, limit),
+            ).fetchall()
+        return list(reversed(rows))
 
     def export_events(self, chat_id: int, scope: str = "chat", limit: int = 80) -> List[Tuple[int, Optional[int], str, str, str, str, str, str]]:
         scope_clean = (scope or "chat").strip()
@@ -2472,7 +2491,7 @@ class TelegramBridge:
         self.send_chat_action(chat_id, "typing")
         worker = Thread(
             target=self.run_text_task,
-            args=(chat_id, text, user_id, chat_type, assistant_persona),
+            args=(chat_id, text, user_id, chat_type, assistant_persona, message),
             daemon=True,
         )
         worker.start()
@@ -2876,6 +2895,11 @@ class TelegramBridge:
         daily_value = parse_daily_command(text)
         if daily_value is not None:
             return self.handle_daily_command(chat_id, daily_value)
+        digest_value = parse_digest_command(text)
+        if digest_value is not None:
+            return self.handle_digest_command(chat_id, digest_value)
+        if parse_owner_report_command(text):
+            return self.handle_owner_report_command(chat_id, user_id)
         export_value = parse_export_command(text)
         if export_value is not None:
             return self.handle_export_command(chat_id, export_value)
@@ -2916,9 +2940,9 @@ class TelegramBridge:
         self.safe_send_text(chat_id, f"Mode: {parsed_mode}")
         return True
 
-    def run_text_task(self, chat_id: int, text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "") -> None:
+    def run_text_task(self, chat_id: int, text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "", message: Optional[dict] = None) -> None:
         try:
-            answer = self.ask_codex(chat_id, text, user_id=user_id, chat_type=chat_type, assistant_persona=assistant_persona)
+            answer = self.ask_codex(chat_id, text, user_id=user_id, chat_type=chat_type, assistant_persona=assistant_persona, message=message)
             self.state.append_history(chat_id, "user", text)
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
@@ -3890,6 +3914,81 @@ class TelegramBridge:
         self.safe_send_text(chat_id, f"Активность за {target_day}:\n{top}\n\n{body}")
         return True
 
+    def handle_digest_command(self, chat_id: int, day: str) -> bool:
+        target_day, rows = self.state.get_daily_summary_context(chat_id, day)
+        if not rows:
+            self.safe_send_text(chat_id, f"За {target_day} событий не найдено.")
+            return True
+        user_rows = [row for row in rows if row[5] == "user"]
+        assistant_rows = [row for row in rows if row[5] == "assistant"]
+        type_counts: Dict[str, int] = {}
+        user_counts: Dict[str, int] = {}
+        highlights: List[str] = []
+        for created_at, user_id, username, first_name, last_name, role, message_type, content in rows:
+            type_counts[message_type] = type_counts.get(message_type, 0) + 1
+            if role == "user":
+                actor = build_actor_name(user_id, username or "", first_name or "", last_name or "", role)
+                user_counts[actor] = user_counts.get(actor, 0) + 1
+                if len(highlights) < 6 and message_type in {"text", "caption", "edited_text", "photo", "voice", "document"}:
+                    stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
+                    highlights.append(f"[{stamp}] {actor}: {truncate_text(content, 120)}")
+        top_users = sorted(user_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        top_types = sorted(type_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
+        lines = [
+            f"Digest за {target_day}",
+            f"Всего событий: {len(rows)}",
+            f"Сообщений пользователей: {len(user_rows)}",
+            f"Ответов/сервисных действий бота: {len(assistant_rows)}",
+        ]
+        if top_users:
+            lines.append("")
+            lines.append("Топ активности:")
+            lines.extend(f"- {name}: {count}" for name, count in top_users)
+        if top_types:
+            lines.append("")
+            lines.append("Типы событий:")
+            lines.extend(f"- {name}: {count}" for name, count in top_types)
+        if highlights:
+            lines.append("")
+            lines.append("Ключевые куски дня:")
+            lines.extend(f"- {item}" for item in highlights)
+        self.safe_send_text(chat_id, "\n".join(lines))
+        return True
+
+    def handle_owner_report_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        status_snapshot = self.state.get_status_snapshot(chat_id)
+        last_backup_raw = self.state.get_meta("last_backup_ts", "0")
+        try:
+            last_backup_value = float(last_backup_raw or "0")
+        except ValueError:
+            last_backup_value = 0.0
+        backup_text = datetime.utcfromtimestamp(last_backup_value).strftime("%Y-%m-%d %H:%M:%S UTC") if last_backup_value > 0 else "ещё не было"
+        recent_errors = read_recent_log_highlights(self.log_path, limit=8)
+        lines = [
+            "OWNER REPORT",
+            f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
+            f"Режим чата: {self.state.get_mode(chat_id)}",
+            f"События в этом чате: {status_snapshot['events_count']}",
+            f"Факты в этом чате: {status_snapshot['facts_count']}",
+            f"История в этом чате: {status_snapshot['history_count']}",
+            f"Всего событий в БД: {status_snapshot['total_events']}",
+            f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
+            f"Heartbeat: {self.config.heartbeat_path}",
+            f"Последний backup: {backup_text}",
+            "",
+            "Ресурсы:",
+            render_resource_summary(),
+        ]
+        if recent_errors:
+            lines.extend(["", "Недавние ошибки/сбои:", *[f"- {item}" for item in recent_errors]])
+        else:
+            lines.extend(["", "Недавние ошибки/сбои:", "- Явных ошибок в хвосте лога не найдено."])
+        self.safe_send_text(chat_id, "\n".join(lines))
+        return True
+
     def handle_export_command(self, chat_id: int, scope: str) -> bool:
         scope_clean = (scope or "chat").strip() or "chat"
         valid_scope = scope_clean == "chat" or scope_clean == "today" or scope_clean.startswith("@")
@@ -4042,7 +4141,7 @@ class TelegramBridge:
             command.extend(["-i", str(image_path)])
         return command
 
-    def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "") -> str:
+    def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "", message: Optional[dict] = None) -> str:
         live_answer = self.try_handle_live_data_query(user_text)
         if live_answer:
             return postprocess_answer(live_answer)
@@ -4050,6 +4149,7 @@ class TelegramBridge:
         facts_text = self.state.render_facts(chat_id, query=user_text, limit=10)
         event_context = ""
         database_context = ""
+        reply_context = ""
         persona_note = ""
         identity_label = "Jarvis"
         include_identity_prompt = True
@@ -4067,6 +4167,7 @@ class TelegramBridge:
             event_context = self.state.get_event_context(chat_id, user_text)
         if should_include_database_context(user_text):
             database_context = self.state.get_database_context(chat_id, user_text)
+        reply_context = self.build_reply_context(chat_id, message)
         prompt = build_prompt(
             mode=self.state.get_mode(chat_id),
             history=list(self.state.get_history(chat_id)),
@@ -4075,6 +4176,7 @@ class TelegramBridge:
             facts_text=facts_text,
             event_context=event_context,
             database_context=database_context,
+            reply_context=reply_context,
             identity_label=identity_label,
             include_identity_prompt=include_identity_prompt,
             persona_note=persona_note,
@@ -4103,6 +4205,38 @@ class TelegramBridge:
             progress_style=progress_style,
             replace_status_with_answer=True,
         )
+
+    def build_reply_context(self, chat_id: int, message: Optional[dict]) -> str:
+        source = message or {}
+        reply_to = source.get("reply_to_message") or {}
+        if not reply_to:
+            return ""
+        lines: List[str] = []
+        reply_message_id = reply_to.get("message_id")
+        reply_user = reply_to.get("from") or {}
+        actor = build_service_actor_name(reply_user) if reply_user else "участник"
+        if reply_message_id is not None:
+            lines.append(f"Reply target message_id: {reply_message_id}")
+        lines.append(f"Reply target author: {actor}")
+        summary = summarize_message_for_pin(reply_to)
+        if summary:
+            lines.append(f"Reply target summary: {truncate_text(summary, 220)}")
+        if reply_to.get("text"):
+            lines.append(f"Reply target text: {truncate_text(reply_to.get('text') or '', 900)}")
+        elif reply_to.get("caption"):
+            lines.append(f"Reply target caption: {truncate_text(reply_to.get('caption') or '', 900)}")
+        media_kind = describe_message_media_kind(reply_to)
+        if media_kind:
+            lines.append(f"Reply target media: {media_kind}")
+        if reply_message_id is not None:
+            thread_rows = self.state.get_thread_context(chat_id, int(reply_message_id), limit=8)
+            if thread_rows:
+                lines.append("Reply thread context:")
+                for created_at, event_user_id, username, first_name, last_name, role, message_type, content in thread_rows:
+                    stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
+                    event_actor = build_actor_name(event_user_id, username or "", first_name or "", last_name or "", role)
+                    lines.append(f"- [{stamp}] {event_actor} ({message_type}): {truncate_text(content, 180)}")
+        return "\n".join(lines)
 
     def try_handle_live_data_query(self, user_text: str) -> Optional[str]:
         weather_location = detect_weather_location(user_text)
@@ -4350,15 +4484,41 @@ class TelegramBridge:
                 break
         if not items:
             return f"По запросу «{normalized_query}» не нашёл надёжных внешних результатов."
-        lines = [f"По актуальным найденным источникам для запроса «{normalized_query}»:"] 
+        synthesized = self.summarize_current_fact_results(normalized_query, items)
+        lines = []
+        if synthesized:
+            lines.append(synthesized)
+            lines.append("")
+        lines.append(f"Источники по запросу «{normalized_query}»:")
         for title, snippet, url in items:
             line = f"• {truncate_text(title, 180)}"
             if snippet:
                 line += f"\n  {truncate_text(snippet, 240)}"
             line += f"\n  {truncate_text(url, 280)}"
             lines.append(line)
-        lines.append("Если хочешь, могу после этого ещё собрать короткий вывод по найденным источникам.")
         return "\n".join(lines)
+
+    def summarize_current_fact_results(self, query: str, items: List[Tuple[str, str, str]]) -> str:
+        source_lines = []
+        for index, (title, snippet, url) in enumerate(items, start=1):
+            source_lines.append(
+                f"{index}. TITLE: {truncate_text(title, 180)}\n"
+                f"SNIPPET: {truncate_text(snippet or 'нет фрагмента', 320)}\n"
+                f"URL: {truncate_text(url, 260)}"
+            )
+        prompt = (
+            "Ниже поисковые сниппеты по запросу на актуальный факт.\n"
+            "Сделай короткий вывод на русском в 2-4 предложениях.\n"
+            "Требования:\n"
+            "- если факт не подтверждается уверенно, прямо скажи это\n"
+            "- если подтверждается, назови ответ и укажи, что это вывод по найденным источникам\n"
+            "- не выдумывай деталей вне сниппетов\n"
+            "- в конце добавь короткую строку вида 'Подтверждение: источник 1, источник 2'\n\n"
+            f"Запрос: {query}\n\n"
+            "Источники:\n"
+            + "\n\n".join(source_lines)
+        )
+        return self.run_codex_short(prompt, timeout_seconds=25)
 
     def build_web_search_context(self, query: str, limit: int = 5) -> str:
         normalized_query = normalize_whitespace(query)
@@ -5328,6 +5488,19 @@ def parse_daily_command(text: str) -> Optional[str]:
     return parts[1].strip()
 
 
+def parse_digest_command(text: str) -> Optional[str]:
+    if not text.startswith("/digest"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def parse_owner_report_command(text: str) -> bool:
+    return text.strip() == "/ownerreport"
+
+
 def parse_export_command(text: str) -> Optional[str]:
     if not text.startswith("/export"):
         return None
@@ -5530,7 +5703,20 @@ def detect_news_query(text: str) -> str:
     lowered = cleaned.lower()
     if not lowered:
         return ""
-    news_markers = ("новост", "latest", "today", "сегодня", "что нового", "что случилось", "последние", "свежие")
+    news_markers = (
+        "новост",
+        "latest",
+        "today",
+        "сегодня",
+        "что нового",
+        "что случилось",
+        "что происходит",
+        "что произошло",
+        "последние",
+        "свежие",
+        "breaking",
+        "headline",
+    )
     if not any(marker in lowered for marker in news_markers):
         return ""
     query = lowered
@@ -5545,6 +5731,8 @@ def detect_news_query(text: str) -> str:
         "today",
         "сегодня",
         "на сегодня",
+        "что происходит",
+        "что произошло",
         "проверь",
         "найди",
     )
@@ -5577,6 +5765,14 @@ def detect_current_fact_query(text: str) -> str:
         "current president",
         "кто сейчас глава",
         "кто сейчас руководит",
+        "кто сейчас владеет",
+        "кто сейчас министр",
+        "кто сейчас директор",
+        "кто сейчас председатель",
+        "кто сейчас канцлер",
+        "кто сейчас премьер-министр",
+        "кто сейчас правит",
+        "кто сейчас управляет",
     )
     if not any(marker in lowered for marker in markers):
         return ""
@@ -5798,6 +5994,7 @@ def build_help_panel_text(section: str) -> str:
             "• /history [@username|user_id]\n"
             "• /portrait [@username]\n"
             "• /daily [YYYY-MM-DD]\n"
+            "• /digest [YYYY-MM-DD]\n"
             "• /export [chat|today|@username|user_id]\n\n"
             "Активность:\n"
             "• /top\n"
@@ -5856,6 +6053,7 @@ def build_help_panel_text(section: str) -> str:
             "• /upgrade <что изменить>\n"
             "• /restart\n"
             "• /status\n"
+            "• /ownerreport\n"
             "• /appeals\n"
             "• /appeal_review <id>\n"
             "• /appeal_approve <id> [решение]\n"
@@ -6402,6 +6600,47 @@ def summarize_message_for_pin(message: dict) -> str:
     return "служебное сообщение"
 
 
+def describe_message_media_kind(message: dict) -> str:
+    if message.get("photo"):
+        return "photo"
+    if message.get("voice"):
+        return "voice"
+    if message.get("video"):
+        return "video"
+    if message.get("video_note"):
+        return "video_note"
+    if message.get("document"):
+        document = message.get("document") or {}
+        file_name = document.get("file_name") or "document"
+        mime_type = document.get("mime_type") or ""
+        return " ".join(part for part in [file_name, f"({mime_type})" if mime_type else ""] if part).strip()
+    if message.get("sticker"):
+        return "sticker"
+    if message.get("animation"):
+        return "gif"
+    if message.get("audio"):
+        return "audio"
+    return ""
+
+
+def read_recent_log_highlights(log_path: Path, limit: int = 8) -> List[str]:
+    if not log_path.exists():
+        return []
+    markers = ("error", "failed", "traceback", "unexpected", "timeout", "exception")
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return []
+    matched: List[str] = []
+    for line in reversed(lines[-300:]):
+        lowered = line.lower()
+        if any(marker in lowered for marker in markers):
+            matched.append(truncate_text(normalize_whitespace(line), 220))
+        if len(matched) >= limit:
+            break
+    return list(reversed(matched))
+
+
 def format_reaction_count_payload(reactions: List[dict]) -> str:
     parts: List[str] = []
     for reaction in reactions:
@@ -6453,6 +6692,7 @@ def build_prompt(
     facts_text: str = "",
     event_context: str = "",
     database_context: str = "",
+    reply_context: str = "",
     identity_label: str = "Jarvis",
     include_identity_prompt: bool = True,
     persona_note: str = "",
@@ -6467,6 +6707,7 @@ def build_prompt(
     facts_block = f"Relevant facts:\n{truncate_text(facts_text, 1800)}\n\n" if facts_text else ""
     events_block = f"Relevant archived events:\n{truncate_text(event_context, 2600)}\n\n" if event_context and event_context != "История событий пуста." else ""
     database_block = f"Relevant database context:\n{truncate_text(database_context, 3200)}\n\n" if database_context else ""
+    reply_block = f"Reply context:\n{truncate_text(reply_context, 2200)}\n\n" if reply_context else ""
     persona_block = f"Persona note:\n{persona_note}\n\n" if persona_note else ""
     web_block = f"Web context:\n{truncate_text(web_context, 3200)}\n\n" if web_context else ""
     identity_block = ""
@@ -6487,6 +6728,7 @@ def build_prompt(
         f"{facts_block}"
         f"{web_block}"
         f"{database_block}"
+        f"{reply_block}"
         f"Relevant chat context:\n{history_block}\n\n"
         f"{events_block}"
         f"User message:\n{user_text}\n\n"
