@@ -5423,28 +5423,35 @@ class TelegramBridge:
         normalized_location = normalize_location_query(location_query)
         if not normalized_location:
             return ""
+        query_variants = build_location_query_variants(normalized_location)
         try:
-            geo_response = self.session.get(
-                "https://geocoding-api.open-meteo.com/v1/search",
-                params={
-                    "name": normalized_location,
-                    "count": 1,
-                    "language": "ru",
-                    "format": "json",
-                },
-                timeout=20,
-            )
-            geo_response.raise_for_status()
-            geo_payload = geo_response.json()
-            results = geo_payload.get("results") or []
+            results: List[dict] = []
+            matched_location = normalized_location
+            for candidate_location in query_variants:
+                geo_response = self.session.get(
+                    "https://geocoding-api.open-meteo.com/v1/search",
+                    params={
+                        "name": candidate_location,
+                        "count": 1,
+                        "language": "ru",
+                        "format": "json",
+                    },
+                    timeout=20,
+                )
+                geo_response.raise_for_status()
+                geo_payload = geo_response.json()
+                results = geo_payload.get("results") or []
+                if results:
+                    matched_location = candidate_location
+                    break
             if not results:
                 return f"Не нашёл локацию: {normalized_location}."
             place = results[0]
             latitude = place.get("latitude")
             longitude = place.get("longitude")
             if latitude is None or longitude is None:
-                return f"Не удалось определить координаты для: {normalized_location}."
-            place_name = place.get("name") or normalized_location
+                return f"Не удалось определить координаты для: {matched_location}."
+            place_name = place.get("name") or matched_location
             admin_name = place.get("admin1") or place.get("country") or ""
             display_name = f"{place_name}, {admin_name}".strip(", ")
             weather_response = self.session.get(
@@ -7082,6 +7089,50 @@ def normalize_location_query(text: str) -> str:
     cleaned = normalize_whitespace(text)
     cleaned = re.sub(r"^[\s,:-]+|[\s?!.,:;-]+$", "", cleaned)
     return cleaned
+
+
+def build_location_query_variants(text: str) -> List[str]:
+    normalized = normalize_location_query(text)
+    if not normalized:
+        return []
+    variants: List[str] = [normalized]
+    lowered = normalized.lower()
+    irregular_forms = {
+        "брянске": "Брянск",
+        "москве": "Москва",
+        "петербурге": "Санкт-Петербург",
+        "питере": "Санкт-Петербург",
+        "екатеринбурге": "Екатеринбург",
+        "калининграде": "Калининград",
+        "новосибирске": "Новосибирск",
+        "челябинске": "Челябинск",
+        "иркутске": "Иркутск",
+        "красноярске": "Красноярск",
+        "смоленске": "Смоленск",
+        "курске": "Курск",
+        "омске": "Омск",
+        "томске": "Томск",
+        "воронеже": "Воронеж",
+        "краснодаре": "Краснодар",
+    }
+    if lowered in irregular_forms:
+        variants.append(irregular_forms[lowered])
+    if len(normalized.split()) == 1:
+        if lowered.endswith("ске") and len(normalized) > 4:
+            variants.append(normalized[:-1])
+        if lowered.endswith("граде") and len(normalized) > 6:
+            variants.append(normalized[:-1])
+        if lowered.endswith("бурге") and len(normalized) > 6:
+            variants.append(normalized[:-1])
+    deduped: List[str] = []
+    seen: Set[str] = set()
+    for candidate in variants:
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
 
 
 def detect_weather_location(text: str) -> str:
