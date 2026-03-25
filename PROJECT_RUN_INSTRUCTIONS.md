@@ -105,6 +105,18 @@ pkill -f 'run_jarvis_supervisor.sh'
 python3 -m py_compile tg_codex_bridge.py
 ```
 
+### Обновить runtime-backups для GitHub
+
+```bash
+python3 tools/export_runtime_backups.py
+```
+
+Или одним шагом:
+
+```bash
+sh tools/refresh_repo_state.sh
+```
+
 ### Жив ли процесс
 
 ```bash
@@ -143,6 +155,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - heartbeat-файл: `tg_codex_bridge.heartbeat`
 - если после `/restart` бот зацикливается, надо проверять `last_update_id` и `bot_meta`
 - если `codex` не стартует, первым делом проверяется версия `node`
+- перед коммитом желательно обновлять runtime-backups и документацию
 
 ## Текущее поведение бота
 

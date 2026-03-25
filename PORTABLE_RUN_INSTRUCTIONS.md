@@ -112,3 +112,4 @@ Portable-сборка не делает за тебя:
 - `Enterprise` отвечает в личке и в группах по триггеру
 - progress идёт в одном сообщении
 - live-запросы на погоду/курс/новости/цену/current-facts не выдумываются
+- runtime-backups обновлены и лежат в [`data/runtime_backups`](./data/runtime_backups)

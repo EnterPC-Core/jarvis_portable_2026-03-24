@@ -1,0 +1,16 @@
+{
+  "generated_at_utc": "2026-03-25T02:57:03+00:00",
+  "project_root": "/home/userland/projects/bots/jarvis_portable_2026-03-24",
+  "artifacts": [
+    "README.md",
+    "jarvis_memory.schema.sql",
+    "jarvis_memory.summary.json",
+    "legacy_jarvis.schema.sql",
+    "legacy_jarvis.summary.json",
+    "manifest.json"
+  ],
+  "notes": [
+    "Это GitHub-safe snapshots: схемы, счётчики и ограниченные безопасные таблицы.",
+    "Сырые переписки, события и приватные данные в репозиторий не экспортируются."
+  ]
+}

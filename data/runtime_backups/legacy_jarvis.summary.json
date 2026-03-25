@@ -1,0 +1,184 @@
+{
+  "database": "/home/userland/projects/bots/jarvis_legacy_data/jarvis.db",
+  "generated_at_utc": "2026-03-25T02:57:03+00:00",
+  "tables": [
+    "achievement_catalog",
+    "achievements",
+    "actions_log",
+    "admin_action_state",
+    "appeals",
+    "audit_log",
+    "automation_tasks",
+    "backup_history",
+    "behavior_rating",
+    "bot_meta",
+    "bot_settings",
+    "chat_context",
+    "chat_events",
+    "chat_events_fts",
+    "chat_events_fts_config",
+    "chat_events_fts_data",
+    "chat_events_fts_docsize",
+    "chat_events_fts_idx",
+    "chat_history",
+    "chat_metrics",
+    "chat_modes",
+    "chat_summaries",
+    "custom_moderation_rules",
+    "greetings",
+    "memory_facts",
+    "message_log",
+    "messages",
+    "moderation_actions",
+    "moderation_config",
+    "moderation_log",
+    "owner_settings",
+    "permissions",
+    "private_messages",
+    "role_permissions",
+    "roles",
+    "sent_notifications",
+    "tracked_chats",
+    "user_achievement_progress",
+    "user_adequacy",
+    "user_game_stats",
+    "user_message_rate",
+    "user_role_assignment",
+    "user_roles",
+    "user_season_stats",
+    "user_stats_daily",
+    "user_stats_hourly",
+    "user_stats_monthly",
+    "user_stats_weekly",
+    "user_stats_yearly",
+    "users",
+    "violations",
+    "warn_settings",
+    "warnings",
+    "welcome_settings"
+  ],
+  "row_counts": {
+    "achievement_catalog": 27,
+    "achievements": 259,
+    "actions_log": 0,
+    "admin_action_state": 0,
+    "appeals": 53,
+    "audit_log": 0,
+    "automation_tasks": 0,
+    "backup_history": 0,
+    "behavior_rating": 53,
+    "bot_meta": 4,
+    "bot_settings": 1,
+    "chat_context": 5843,
+    "chat_events": 293,
+    "chat_events_fts": 293,
+    "chat_events_fts_config": 1,
+    "chat_events_fts_data": 13,
+    "chat_events_fts_docsize": 11,
+    "chat_events_fts_idx": 11,
+    "chat_history": 85,
+    "chat_metrics": 0,
+    "chat_modes": 1,
+    "chat_summaries": 2,
+    "custom_moderation_rules": 1,
+    "greetings": 0,
+    "memory_facts": 1,
+    "message_log": 7502,
+    "messages": 7488,
+    "moderation_actions": 0,
+    "moderation_config": 1,
+    "moderation_log": 0,
+    "owner_settings": 1,
+    "permissions": 10,
+    "private_messages": 33,
+    "role_permissions": 17,
+    "roles": 4,
+    "sent_notifications": 0,
+    "tracked_chats": 10,
+    "user_achievement_progress": 0,
+    "user_adequacy": 0,
+    "user_game_stats": 0,
+    "user_message_rate": 4,
+    "user_role_assignment": 0,
+    "user_roles": 1,
+    "user_season_stats": 0,
+    "user_stats_daily": 0,
+    "user_stats_hourly": 0,
+    "user_stats_monthly": 0,
+    "user_stats_weekly": 0,
+    "user_stats_yearly": 0,
+    "users": 994,
+    "violations": 183,
+    "warn_settings": 0,
+    "warnings": 0,
+    "welcome_settings": 1
+  },
+  "safe_table_rows": {
+    "bot_meta": [
+      {
+        "key": "last_backup_ts",
+        "value": "1774289527.703171"
+      },
+      {
+        "key": "owner_autofix_enabled",
+        "value": "0"
+      },
+      {
+        "key": "portable_legacy_import_path",
+        "value": "/home/userland/projects/bots/jarvis_portable_2026-03-24/jarvis_memory.db"
+      },
+      {
+        "key": "portable_legacy_import_at",
+        "value": "1774354861"
+      }
+    ],
+    "chat_modes": [
+      {
+        "chat_id": 6102780373,
+        "mode": "code"
+      }
+    ],
+    "warn_settings": [],
+    "welcome_settings": [
+      {
+        "chat_id": -1003879607896,
+        "enabled": 1,
+        "template": "Приветствую {fullname}: {id} в чате {chatname}! \n\n✨ Группа по обсуждению обществознания и технологий ориентирована на глубокое изучение социальных и технических аспектов, обеспечивая всестороннее развитие. 🌐"
+      }
+    ]
+  },
+  "sensitive_tables": {
+    "appeals": {
+      "rows": 53,
+      "content_exported": false
+    },
+    "chat_events": {
+      "rows": 293,
+      "content_exported": false
+    },
+    "chat_history": {
+      "rows": 85,
+      "content_exported": false
+    },
+    "memory_facts": {
+      "rows": 1,
+      "content_exported": false
+    },
+    "message_log": {
+      "rows": 7502,
+      "content_exported": false
+    },
+    "messages": {
+      "rows": 7488,
+      "content_exported": false
+    },
+    "private_messages": {
+      "rows": 33,
+      "content_exported": false
+    },
+    "users": {
+      "rows": 994,
+      "content_exported": false
+    }
+  }
+}
