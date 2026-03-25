@@ -51,6 +51,7 @@
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Codex bridge
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — supervisor, который держит один живой процесс бота
+- [`run_jarvis_stack.sh`](./run_jarvis_stack.sh) — единый запуск supervisor + mobile API
 - [`start_jarvis_on_userland.sh`](./start_jarvis_on_userland.sh) — фоновый запуск под UserLAnd
 - [`start_jarvis_on_termux.sh`](./start_jarvis_on_termux.sh) — фоновый запуск под Termux
 
@@ -111,8 +112,9 @@ sh tools/refresh_repo_state.sh
 
 ## Ближайший roadmap
 
-- усилить live-routing для свежих данных
-- добавить более строгий роутер по типам запросов
-- улучшить обработку reply/file/image context
-- расширить диагностику отказов инструментов
-- довести документацию и служебные скрипты до полностью согласованного состояния
+- усилить live-routing для свежих данных и current-fact запросов
+- добавить строгий router для `today` / `latest` / `current` / `who is now`
+- улучшить обработку `reply` / `file` / `image` context
+- сделать owner-отчёты и digest по состоянию бота
+- расширить диагностику отказов инструментов и live-источников
+- довести все служебные скрипты и runtime-сценарии до полного соответствия GitHub-репозиторию
