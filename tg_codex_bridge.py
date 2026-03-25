@@ -1656,8 +1656,10 @@ class TelegramBridge:
             self.state.set_meta("pending_restart_chat_id", "")
             return
         pending_text = self.state.get_meta("pending_restart_text", RESTARTED_TEXT) or RESTARTED_TEXT
+        started_at_text = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        outgoing_text = f"{pending_text}\nВремя запуска: {started_at_text}"
         try:
-            self.safe_send_text(chat_id, pending_text)
+            self.safe_send_text(chat_id, outgoing_text)
             log(f"restart confirmation sent chat={chat_id}")
         finally:
             self.state.set_meta("pending_restart_chat_id", "")
