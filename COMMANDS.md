@@ -53,7 +53,7 @@
 - `/topproc`
 - `/disk`
 - `/net`
-- `/restart`
+- `/restart` — после подъёма bot присылает отдельное подтверждение, что сервер перезапущен
 - `/ownerautofix on|off|status`
 
 ## Owner / Git И Логи

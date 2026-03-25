@@ -216,6 +216,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/gitlast [N]` — последние коммиты
 - `/errors [N]` — только реальные ошибки и поломки из `tg_codex_bridge.log`
 - `/events [restart|access|system|all] [N]` — служебные события с фильтром по категории
+- `/restart` — после рестарта бот присылает отдельное подтверждение в чат, где команда была вызвана
 
 ## Owner Panel
 
