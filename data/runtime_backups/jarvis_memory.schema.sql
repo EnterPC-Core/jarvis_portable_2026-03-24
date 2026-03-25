@@ -10,6 +10,8 @@ CREATE INDEX idx_chat_events_chat_id_id ON chat_events(chat_id, id);
 
 CREATE INDEX idx_chat_history_chat_id_id ON chat_history(chat_id, id);
 
+CREATE INDEX idx_chat_participants_chat_id_last_seen ON chat_participants(chat_id, last_seen_at DESC);
+
 CREATE INDEX idx_memory_facts_chat_id_id ON memory_facts(chat_id, id);
 
 CREATE INDEX idx_moderation_actions_active_expires ON moderation_actions(active, expires_at);
@@ -93,6 +95,30 @@ CREATE TABLE 'chat_events_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) 
 CREATE TABLE chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')));
 
 CREATE TABLE chat_modes (chat_id INTEGER PRIMARY KEY, mode TEXT NOT NULL);
+
+CREATE TABLE chat_participants (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    first_name TEXT NOT NULL DEFAULT '',
+                    last_name TEXT NOT NULL DEFAULT '',
+                    is_bot INTEGER NOT NULL DEFAULT 0,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    last_status TEXT NOT NULL DEFAULT '',
+                    first_seen_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    last_seen_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    last_join_at INTEGER,
+                    last_leave_at INTEGER,
+                    PRIMARY KEY(chat_id, user_id)
+                );
+
+CREATE TABLE chat_runtime_cache (
+                    chat_id INTEGER PRIMARY KEY,
+                    member_count INTEGER NOT NULL DEFAULT 0,
+                    admins_synced_at INTEGER NOT NULL DEFAULT 0,
+                    member_count_synced_at INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
 
 CREATE TABLE chat_summaries (chat_id INTEGER PRIMARY KEY, summary TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')));
 
