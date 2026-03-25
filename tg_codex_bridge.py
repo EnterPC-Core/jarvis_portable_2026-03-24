@@ -192,9 +192,13 @@ RESOURCES_USAGE_TEXT = "Используй: /resources"
 TOPPROC_USAGE_TEXT = "Используй: /topproc"
 DISK_USAGE_TEXT = "Используй: /disk"
 NET_USAGE_TEXT = "Используй: /net"
+GIT_STATUS_USAGE_TEXT = "Используй: /gitstatus"
+GIT_LAST_USAGE_TEXT = "Используй: /gitlast [количество]"
+ERRORS_USAGE_TEXT = "Используй: /errors [количество]"
 WHO_SAID_USAGE_TEXT = "Используй: /who_said <запрос>"
 HISTORY_USAGE_TEXT = "Используй: /history @username, /history user_id или reply на сообщение участника"
 DIGEST_USAGE_TEXT = "Используй: /digest [YYYY-MM-DD]"
+CHAT_DIGEST_USAGE_TEXT = "Используй: /chatdigest <chat_id> [YYYY-MM-DD]"
 OWNER_REPORT_USAGE_TEXT = "Используй: /ownerreport"
 EXPORT_USAGE_TEXT = "Используй: /export chat, /export today, /export @username или /export user_id"
 APPEAL_USAGE_TEXT = "Используй: /appeal <текст апелляции>"
@@ -281,6 +285,9 @@ COMMANDS_LIST_TEXT = (
     "/topproc\n"
     "/disk\n"
     "/net\n"
+    "/gitstatus\n"
+    "/gitlast [количество]\n"
+    "/errors [количество]\n"
     "/sdls [/sdcard/путь]\n"
     "/sdsend /sdcard/путь/к/файлу\n"
     "/sdsave /sdcard/папка/или/файл\n"
@@ -288,6 +295,7 @@ COMMANDS_LIST_TEXT = (
     "/history [@username|user_id]\n"
     "/daily [YYYY-MM-DD]\n"
     "/digest [YYYY-MM-DD]\n"
+    "/chatdigest <chat_id> [YYYY-MM-DD]\n"
     "/ownerreport\n"
     "/export [chat|today|@username|user_id]\n"
     "/portrait [@username]\n"
@@ -2894,6 +2902,14 @@ class TelegramBridge:
         search_value = parse_search_command(text)
         if search_value is not None:
             return self.handle_search_command(chat_id, search_value)
+        if parse_git_status_command(text):
+            return self.handle_git_status_command(chat_id, user_id)
+        git_last_value = parse_git_last_command(text)
+        if git_last_value is not None:
+            return self.handle_git_last_command(chat_id, user_id, git_last_value)
+        errors_value = parse_errors_command(text)
+        if errors_value is not None:
+            return self.handle_errors_command(chat_id, user_id, errors_value)
         if text == "/resources":
             return self.handle_resources_command(chat_id, user_id)
         if text == "/topproc":
@@ -2923,6 +2939,9 @@ class TelegramBridge:
         digest_value = parse_digest_command(text)
         if digest_value is not None:
             return self.handle_digest_command(chat_id, digest_value)
+        chat_digest_value = parse_chat_digest_command(text)
+        if chat_digest_value is not None:
+            return self.handle_chat_digest_command(chat_id, user_id, chat_digest_value)
         if parse_owner_report_command(text):
             return self.handle_owner_report_command(chat_id, user_id)
         export_value = parse_export_command(text)
@@ -3790,6 +3809,45 @@ class TelegramBridge:
         self.safe_send_text(chat_id, render_resource_summary())
         return True
 
+    def handle_git_status_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        self.safe_send_text(chat_id, render_git_status_summary(self.script_path.parent))
+        return True
+
+    def handle_git_last_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        limit = 5
+        if payload:
+            try:
+                limit = max(1, min(15, int(payload)))
+            except ValueError:
+                self.safe_send_text(chat_id, GIT_LAST_USAGE_TEXT)
+                return True
+        self.safe_send_text(chat_id, render_git_last_commits(self.script_path.parent, limit=limit))
+        return True
+
+    def handle_errors_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        limit = 12
+        if payload:
+            try:
+                limit = max(1, min(30, int(payload)))
+            except ValueError:
+                self.safe_send_text(chat_id, ERRORS_USAGE_TEXT)
+                return True
+        lines = read_recent_log_highlights(self.log_path, limit=limit)
+        if not lines:
+            self.safe_send_text(chat_id, "В последних логах явных ошибок не найдено.")
+            return True
+        self.safe_send_text(chat_id, "Ошибки и сбои из хвоста лога:\n" + "\n".join(f"- {line}" for line in lines))
+        return True
+
     def handle_topproc_command(self, chat_id: int, user_id: Optional[int]) -> bool:
         if not is_owner_private_chat(user_id, chat_id):
             self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
@@ -3960,10 +4018,31 @@ class TelegramBridge:
         return True
 
     def handle_digest_command(self, chat_id: int, day: str) -> bool:
-        target_day, rows = self.state.get_daily_summary_context(chat_id, day)
-        if not rows:
-            self.safe_send_text(chat_id, f"За {target_day} событий не найдено.")
+        self.safe_send_text(chat_id, self.render_chat_digest_text(chat_id, day))
+        return True
+
+    def handle_chat_digest_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        if not is_owner_private_chat(user_id, chat_id):
+            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
             return True
+        cleaned = (payload or "").strip()
+        if not cleaned:
+            self.safe_send_text(chat_id, CHAT_DIGEST_USAGE_TEXT)
+            return True
+        parts = cleaned.split(maxsplit=1)
+        try:
+            target_chat_id = int(parts[0])
+        except ValueError:
+            self.safe_send_text(chat_id, CHAT_DIGEST_USAGE_TEXT)
+            return True
+        day = parts[1].strip() if len(parts) > 1 else ""
+        self.safe_send_text(chat_id, self.render_chat_digest_text(target_chat_id, day))
+        return True
+
+    def render_chat_digest_text(self, target_chat_id: int, day: str) -> str:
+        target_day, rows = self.state.get_daily_summary_context(target_chat_id, day)
+        if not rows:
+            return f"За {target_day} событий не найдено."
         user_rows = [row for row in rows if row[5] == "user"]
         assistant_rows = [row for row in rows if row[5] == "assistant"]
         type_counts: Dict[str, int] = {}
@@ -3981,6 +4060,7 @@ class TelegramBridge:
         top_types = sorted(type_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
         lines = [
             f"Digest за {target_day}",
+            f"Чат: {target_chat_id}",
             f"Всего событий: {len(rows)}",
             f"Сообщений пользователей: {len(user_rows)}",
             f"Ответов/сервисных действий бота: {len(assistant_rows)}",
@@ -3997,8 +4077,7 @@ class TelegramBridge:
             lines.append("")
             lines.append("Ключевые куски дня:")
             lines.extend(f"- {item}" for item in highlights)
-        self.safe_send_text(chat_id, "\n".join(lines))
-        return True
+        return "\n".join(lines)
 
     def handle_owner_report_command(self, chat_id: int, user_id: Optional[int]) -> bool:
         if not is_owner_private_chat(user_id, chat_id):
@@ -5702,6 +5781,37 @@ def parse_owner_report_command(text: str) -> bool:
     return text.strip() == "/ownerreport"
 
 
+def parse_chat_digest_command(text: str) -> Optional[str]:
+    if not text.startswith("/chatdigest"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def parse_git_status_command(text: str) -> bool:
+    return text.strip() == "/gitstatus"
+
+
+def parse_git_last_command(text: str) -> Optional[str]:
+    if not text.startswith("/gitlast"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def parse_errors_command(text: str) -> Optional[str]:
+    if not text.startswith("/errors"):
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
 def parse_export_command(text: str) -> Optional[str]:
     if not text.startswith("/export"):
         return None
@@ -6221,6 +6331,7 @@ def build_help_panel_text(section: str) -> str:
             "• /portrait [@username]\n"
             "• /daily [YYYY-MM-DD]\n"
             "• /digest [YYYY-MM-DD]\n"
+            "• /chatdigest <chat_id> [YYYY-MM-DD]\n"
             "• /export [chat|today|@username|user_id]\n\n"
             "Активность:\n"
             "• /top\n"
@@ -6280,6 +6391,9 @@ def build_help_panel_text(section: str) -> str:
             "• /restart\n"
             "• /status\n"
             "• /ownerreport\n"
+            "• /gitstatus\n"
+            "• /gitlast [количество]\n"
+            "• /errors [количество]\n"
             "• /appeals\n"
             "• /appeal_review <id>\n"
             "• /appeal_approve <id> [решение]\n"
@@ -6865,6 +6979,45 @@ def read_recent_log_highlights(log_path: Path, limit: int = 8) -> List[str]:
         if len(matched) >= limit:
             break
     return list(reversed(matched))
+
+
+def run_git_command(repo_path: Path, args: List[str], timeout_seconds: int = 20) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path)] + args,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=build_subprocess_env(),
+        )
+    except (subprocess.TimeoutExpired, OSError) as error:
+        return f"git command failed: {error}"
+    output = normalize_whitespace((result.stdout or "").strip() or (result.stderr or "").strip())
+    if result.returncode != 0:
+        return output or f"git exited with code {result.returncode}"
+    return output or "Нет вывода."
+
+
+def render_git_status_summary(repo_path: Path) -> str:
+    branch = run_git_command(repo_path, ["branch", "--show-current"])
+    status = run_git_command(repo_path, ["status", "--short"])
+    remote = run_git_command(repo_path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    lines = ["Git status", f"Repo: {repo_path}", f"Branch: {branch}"]
+    if remote and "fatal:" not in remote and "git command failed" not in remote:
+        lines.append(f"Upstream: {remote}")
+    if not status or status == "Нет вывода.":
+        lines.append("Worktree: clean")
+    else:
+        lines.append("Изменения:")
+        lines.extend(f"- {line}" for line in status.splitlines()[:20])
+    return "\n".join(lines)
+
+
+def render_git_last_commits(repo_path: Path, limit: int = 5) -> str:
+    output = run_git_command(repo_path, ["log", f"-{limit}", "--pretty=format:%h %ad %s", "--date=short"])
+    if not output or output.startswith("fatal:") or output.startswith("git command failed:"):
+        return f"Последние коммиты получить не удалось.\n{output}"
+    return "Последние коммиты:\n" + "\n".join(f"- {line}" for line in output.splitlines())
 
 
 def read_document_excerpt(file_path: Path, mime_type: str, max_chars: int = 3500) -> str:

@@ -115,5 +115,6 @@ Portable-сборка не делает за тебя:
 - live-запросы на погоду/курс/новости/цену/current-facts не выдумываются
 - reply-aware контекст работает для обычных текстовых запросов
 - `/digest` и `/ownerreport` доступны как служебные инструменты
+- owner-команды по проекту и логам тоже доступны: `/gitstatus`, `/gitlast`, `/errors`, `/chatdigest`
 - документы тоже разбираются, а текстовые файлы дают excerpt в анализ
 - runtime-backups обновлены и лежат в [`data/runtime_backups`](./data/runtime_backups)

@@ -210,7 +210,11 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 ## Новые служебные команды
 
 - `/digest [YYYY-MM-DD]` — краткая сводка активности за день по чату
+- `/chatdigest <chat_id> [YYYY-MM-DD]` — сводка по конкретной группе из owner-лички
 - `/ownerreport` — приватный runtime-отчёт для владельца: ресурсы, backup, хвост ошибок
+- `/gitstatus` — текущее состояние git-ветки и worktree
+- `/gitlast [N]` — последние коммиты
+- `/errors [N]` — свежие ошибки и сбои из `tg_codex_bridge.log`
 
 ## Автоматические owner-отчёты
 
