@@ -180,8 +180,8 @@ JARVIS_AGENT_RUNNING_TEXT = "Jarvis на связи. Думаю..."
 UPGRADE_ALREADY_RUNNING_TEXT = "Upgrade уже выполняется. Дождись завершения текущей задачи."
 UPGRADE_PRIVATE_ONLY_TEXT = "Upgrade выполняется только в личном чате с создателем."
 UPGRADE_APPLIED_TEXT = "Изменения сохранены. Если нужно применить новый код, используй /restart."
-RESTARTING_TEXT = "Перезапускаюсь..."
-RESTARTED_TEXT = "Сервер перезапущен. Бот снова в сети."
+RESTARTING_TEXT = "Enterprise Core перезапускается..."
+RESTARTED_TEXT = "Enterprise Core перезапущен. Бот снова в сети."
 REMEMBER_USAGE_TEXT = "Используй: /remember <что нужно запомнить>"
 RECALL_USAGE_TEXT = "Используй: /recall [запрос]"
 PORTRAIT_USAGE_TEXT = "Используй: /portrait @username или reply на сообщение участника"
@@ -1651,19 +1651,29 @@ class TelegramBridge:
         raw_chat_id = self.state.get_meta("pending_restart_chat_id", "")
         if not raw_chat_id:
             return
+        raw_message_id = self.state.get_meta("pending_restart_message_id", "")
         try:
             chat_id = int(raw_chat_id)
         except ValueError:
             self.state.set_meta("pending_restart_chat_id", "")
+            self.state.set_meta("pending_restart_message_id", "")
             return
         pending_text = self.state.get_meta("pending_restart_text", RESTARTED_TEXT) or RESTARTED_TEXT
         started_at_text = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%Y-%m-%d %H:%M:%S MSK")
         outgoing_text = f"{pending_text}\nВремя запуска: {started_at_text}"
         try:
-            self.safe_send_text(chat_id, outgoing_text)
+            edited = False
+            if raw_message_id:
+                try:
+                    edited = self.edit_status_message(chat_id, int(raw_message_id), outgoing_text)
+                except ValueError:
+                    edited = False
+            if not edited:
+                self.safe_send_text(chat_id, outgoing_text)
             log(f"restart confirmation sent chat={chat_id}")
         finally:
             self.state.set_meta("pending_restart_chat_id", "")
+            self.state.set_meta("pending_restart_message_id", "")
             self.state.set_meta("pending_restart_text", "")
 
     def get_updates(self, offset: Optional[int]) -> dict:
@@ -4471,7 +4481,8 @@ class TelegramBridge:
             return True
         self.state.set_meta("pending_restart_chat_id", str(chat_id))
         self.state.set_meta("pending_restart_text", RESTARTED_TEXT)
-        self.safe_send_text(chat_id, RESTARTING_TEXT)
+        restart_message_id = self.send_status_message(chat_id, RESTARTING_TEXT)
+        self.state.set_meta("pending_restart_message_id", str(restart_message_id or ""))
         self.restart_process()
         return True
 
