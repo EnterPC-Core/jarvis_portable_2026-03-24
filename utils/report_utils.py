@@ -5,7 +5,8 @@ import subprocess
 import time
 import warnings
 from datetime import datetime
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
 def render_event_rows(
@@ -222,6 +223,7 @@ def render_enterprise_runtime_report(
     format_swap_line_func: Callable[[], str],
     truncate_text_func: Callable[[str, int], str],
     build_subprocess_env_func: Callable[[], dict],
+    render_bridge_runtime_watch_func: Callable[[], str],
 ) -> str:
     lines = ["Enterprise runtime probe"]
     lines.append(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
@@ -244,6 +246,7 @@ def render_enterprise_runtime_report(
         extract_meminfo_value_func=extract_meminfo_value,
     ).splitlines()
     lines.extend(["", *resource_lines])
+    lines.extend(["", render_bridge_runtime_watch_func()])
 
     command_sections = [
         ("uptime", ["uptime"], 4),
@@ -266,6 +269,126 @@ def render_enterprise_runtime_report(
             ),
             1800,
         ))
+
+    return "\n".join(lines)
+
+
+def read_log_tail(log_path: Path, limit: int = 8) -> List[str]:
+    if not log_path.exists():
+        return []
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return []
+    return lines[-max(1, limit):]
+
+
+def _find_matching_processes(psutil_module: Any, patterns: Sequence[str], limit: int = 4) -> List[Dict[str, Any]]:
+    if psutil_module is None:
+        return []
+    lowered_patterns = tuple(pattern.lower() for pattern in patterns if pattern)
+    matches: List[Dict[str, Any]] = []
+    for process in psutil_module.process_iter(["pid", "name", "cmdline", "memory_info", "create_time"]):
+        try:
+            cmdline_parts = process.info.get("cmdline") or []
+            haystack = " ".join(cmdline_parts).lower()
+            if not haystack:
+                haystack = (process.info.get("name") or "").lower()
+            if not any(pattern in haystack for pattern in lowered_patterns):
+                continue
+            memory_info = process.info.get("memory_info")
+            matches.append(
+                {
+                    "pid": process.info["pid"],
+                    "name": process.info.get("name") or "unknown",
+                    "cmdline": " ".join(cmdline_parts).strip(),
+                    "rss": getattr(memory_info, "rss", 0) if memory_info else 0,
+                    "uptime_seconds": max(0, int(time.time() - float(process.info.get("create_time") or time.time()))),
+                }
+            )
+        except (psutil_module.NoSuchProcess, psutil_module.AccessDenied):
+            continue
+    matches.sort(key=lambda item: item["pid"])
+    return matches[:limit]
+
+
+def render_bridge_runtime_watch(
+    *,
+    psutil_module: Any,
+    format_bytes_func: Callable[[int], str],
+    truncate_text_func: Callable[[str, int], str],
+    heartbeat_path: Path,
+    bridge_log_path: Path,
+    supervisor_log_path: Path,
+    runtime_log_snapshot: Dict[str, object],
+) -> str:
+    lines = ["Bridge runtime watch"]
+    heartbeat_age_text = "missing"
+    if heartbeat_path.exists():
+        try:
+            heartbeat_age = max(0, int(time.time() - heartbeat_path.stat().st_mtime))
+            heartbeat_age_text = f"{heartbeat_age}s"
+        except OSError:
+            heartbeat_age_text = "unavailable"
+    lines.append(f"Heartbeat file: {heartbeat_path} (age={heartbeat_age_text})")
+
+    bridge_processes = _find_matching_processes(psutil_module, ("tg_codex_bridge.py",), limit=3)
+    supervisor_processes = _find_matching_processes(psutil_module, ("run_jarvis_supervisor.sh",), limit=3)
+    lines.append(f"Bridge process: {'running' if bridge_processes else 'not found'}")
+    for process in bridge_processes:
+        uptime_text = f"{process['uptime_seconds']}s" if 0 <= int(process["uptime_seconds"]) <= 86400 * 30 else "n/a"
+        lines.append(
+            f"- pid={process['pid']} uptime={uptime_text} ram={format_bytes_func(int(process['rss']))} cmd={truncate_text_func(process['cmdline'] or process['name'], 140)}"
+        )
+    lines.append(f"Supervisor process: {'running' if supervisor_processes else 'not found'}")
+    for process in supervisor_processes:
+        uptime_text = f"{process['uptime_seconds']}s" if 0 <= int(process["uptime_seconds"]) <= 86400 * 30 else "n/a"
+        lines.append(
+            f"- pid={process['pid']} uptime={uptime_text} ram={format_bytes_func(int(process['rss']))} cmd={truncate_text_func(process['cmdline'] or process['name'], 140)}"
+        )
+
+    lines.extend(
+        [
+            f"Restarts 24h: {int(runtime_log_snapshot.get('restart_count', 0))}",
+            f"Heartbeat kills 24h: {int(runtime_log_snapshot.get('heartbeat_kill_count', 0))}",
+            f"Termination signals 24h: {int(runtime_log_snapshot.get('termination_signal_count', 0))}",
+            f"Severe errors 24h: {int(runtime_log_snapshot.get('severe_error_count', 0))}",
+            f"Recoverable warnings 24h: {int(runtime_log_snapshot.get('warning_count', 0))}",
+            f"Codex errors 24h: {int(runtime_log_snapshot.get('codex_error_count', 0))}",
+            f"Network loop errors 24h: {int(runtime_log_snapshot.get('network_error_count', 0))}",
+        ]
+    )
+    last_restart_line = str(runtime_log_snapshot.get("last_restart_line") or "").strip()
+    if last_restart_line:
+        lines.append(f"Last restart: {truncate_text_func(last_restart_line, 220)}")
+
+    recent_errors = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_error_lines", [])]
+    if recent_errors:
+        lines.append("")
+        lines.append("Recent severe log lines:")
+        lines.extend(f"- {item}" for item in recent_errors[-5:])
+
+    recent_warnings = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_warning_lines", [])]
+    if recent_warnings:
+        lines.append("")
+        lines.append("Recent recoverable warnings:")
+        lines.extend(f"- {item}" for item in recent_warnings[-5:])
+
+    bridge_tail = read_log_tail(bridge_log_path, limit=6)
+    lines.append("")
+    lines.append(f"tg_codex_bridge.log tail ({bridge_log_path}):")
+    if bridge_tail:
+        lines.extend(f"- {truncate_text_func(line, 220)}" for line in bridge_tail)
+    else:
+        lines.append("- log is empty")
+
+    supervisor_tail = read_log_tail(supervisor_log_path, limit=6)
+    lines.append("")
+    lines.append(f"supervisor_boot.log tail ({supervisor_log_path}):")
+    if supervisor_tail:
+        lines.extend(f"- {truncate_text_func(line, 220)}" for line in supervisor_tail)
+    else:
+        lines.append("- log is empty")
 
     return "\n".join(lines)
 

@@ -4,6 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SUPERVISOR="$SCRIPT_DIR/run_jarvis_supervisor.sh"
 OUT="$SCRIPT_DIR/tg_supervisor.out"
+BOOT_LOG="$SCRIPT_DIR/supervisor_boot.log"
 PATTERN="run_jarvis_supervisor.sh"
 
 if pgrep -f "$PATTERN" >/dev/null 2>&1; then
@@ -11,4 +12,5 @@ if pgrep -f "$PATTERN" >/dev/null 2>&1; then
 fi
 
 cd "$SCRIPT_DIR"
+printf '[%s] start_jarvis_on_userland.sh launching supervisor=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$SUPERVISOR" >> "$BOOT_LOG"
 nohup sh "$SUPERVISOR" >> "$OUT" 2>&1 &

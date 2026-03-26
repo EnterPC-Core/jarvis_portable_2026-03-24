@@ -70,9 +70,11 @@ def build_prompt(
     event_context: str = "",
     database_context: str = "",
     reply_context: str = "",
+    discussion_context: str = "",
     identity_label: str = "Jarvis",
     include_identity_prompt: bool = True,
     persona_note: str = "",
+    owner_note: str = "",
     web_context: str = "",
     route_summary: str = "",
     guardrail_note: str = "",
@@ -96,7 +98,9 @@ def build_prompt(
     events_block = f"Relevant archived events:\n{truncate_text_func(event_context, 2600)}\n\n" if event_context and event_context != "История событий пуста." else ""
     database_block = f"Relevant database context:\n{truncate_text_func(database_context, 3200)}\n\n" if database_context else ""
     reply_block = f"Reply context:\n{truncate_text_func(reply_context, 2200)}\n\n" if reply_context else ""
+    discussion_block = f"Current discussion context:\n{truncate_text_func(discussion_context, 9000)}\n\n" if discussion_context else ""
     persona_block = f"Persona note:\n{persona_note}\n\n" if persona_note else ""
+    owner_block = f"Owner priority note:\n{owner_note}\n\n" if owner_note else ""
     web_block = f"Web context:\n{truncate_text_func(web_context, 3200)}\n\n" if web_context else ""
     route_block = f"Route summary:\n{truncate_text_func(route_summary, 1200)}\n\n" if route_summary else ""
     guardrail_block = f"Self-check and guardrails:\n{truncate_text_func(guardrail_note, 1600)}\n\n" if guardrail_note else ""
@@ -119,6 +123,7 @@ def build_prompt(
         f"System:\n{base_system_prompt}\n\n"
         f"{identity_block}"
         f"{persona_block}"
+        f"{owner_block}"
         f"{route_block}"
         f"{guardrail_block}"
         f"{self_model_block}"
@@ -139,6 +144,7 @@ def build_prompt(
         f"{web_block}"
         f"{database_block}"
         f"{reply_block}"
+        f"{discussion_block}"
         f"Relevant chat context:\n{history_block}\n\n"
         f"{events_block}"
         f"User message:\n{user_text}\n\n"

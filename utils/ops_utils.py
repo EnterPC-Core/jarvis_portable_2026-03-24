@@ -1,6 +1,8 @@
 import subprocess
+import time
+from datetime import datetime
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, Dict, List, Optional
 
 
 def is_error_log_line(lowered_line: str) -> bool:
@@ -13,6 +15,13 @@ def is_error_log_line(lowered_line: str) -> bool:
         "stt model prewarmed",
         "incoming text",
         "incoming reaction",
+        "received termination signal",
+        "process exiting reason=signal:sigterm",
+        "bridge exited status=0",
+        "exchange lookup failed",
+        "exchange yahoo lookup failed",
+        "exchange open.er lookup failed",
+        "url fetch failed",
     )
     if any(marker in lowered_line for marker in ignore_markers):
         return False
@@ -49,6 +58,85 @@ def read_recent_log_highlights(
         if len(matched) >= limit:
             break
     return list(reversed(matched))
+
+
+def parse_log_timestamp(line: str) -> Optional[int]:
+    if not line.startswith("[") or "]" not in line:
+        return None
+    try:
+        stamp = line[1:20]
+        return int(datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").timestamp())
+    except ValueError:
+        return None
+
+
+def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str, object]:
+    snapshot: Dict[str, object] = {
+        "restart_count": 0,
+        "heartbeat_kill_count": 0,
+        "termination_signal_count": 0,
+        "network_error_count": 0,
+        "codex_error_count": 0,
+        "lock_conflict_count": 0,
+        "severe_error_count": 0,
+        "warning_count": 0,
+        "last_restart_line": "",
+        "last_restart_at": 0,
+        "last_severe_error_at": 0,
+        "last_warning_at": 0,
+        "last_heartbeat_kill_at": 0,
+        "recent_error_lines": [],
+        "recent_warning_lines": [],
+    }
+    if not log_path.exists():
+        return snapshot
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return snapshot
+    now_ts = int(time.time())
+    cutoff = now_ts - max(60, window_seconds)
+    warning_markers = (
+        "exchange lookup failed",
+        "exchange yahoo lookup failed",
+        "exchange open.er lookup failed",
+        "url fetch failed",
+    )
+    severe_lines: List[str] = []
+    warning_lines: List[str] = []
+    for line in lines:
+        line_ts = parse_log_timestamp(line)
+        if line_ts is not None and line_ts < cutoff:
+            continue
+        lowered = line.lower()
+        is_timestamped = line.startswith("[")
+        if "bridge exited" in lowered:
+            snapshot["restart_count"] = int(snapshot["restart_count"]) + 1
+            snapshot["last_restart_line"] = line
+            snapshot["last_restart_at"] = line_ts or int(snapshot["last_restart_at"])
+        if "heartbeat stale" in lowered:
+            snapshot["heartbeat_kill_count"] = int(snapshot["heartbeat_kill_count"]) + 1
+            snapshot["last_heartbeat_kill_at"] = line_ts or int(snapshot["last_heartbeat_kill_at"])
+        if "received termination signal" in lowered:
+            snapshot["termination_signal_count"] = int(snapshot["termination_signal_count"]) + 1
+        if "network error in main loop" in lowered:
+            snapshot["network_error_count"] = int(snapshot["network_error_count"]) + 1
+        if "codex error" in lowered:
+            snapshot["codex_error_count"] = int(snapshot["codex_error_count"]) + 1
+        if "instance lock conflict" in lowered:
+            snapshot["lock_conflict_count"] = int(snapshot["lock_conflict_count"]) + 1
+        if any(marker in lowered for marker in warning_markers):
+            snapshot["warning_count"] = int(snapshot["warning_count"]) + 1
+            snapshot["last_warning_at"] = line_ts or int(snapshot["last_warning_at"])
+            warning_lines.append(line)
+            continue
+        if is_timestamped and is_error_log_line(lowered):
+            snapshot["severe_error_count"] = int(snapshot["severe_error_count"]) + 1
+            snapshot["last_severe_error_at"] = line_ts or int(snapshot["last_severe_error_at"])
+            severe_lines.append(line)
+    snapshot["recent_error_lines"] = severe_lines[-8:]
+    snapshot["recent_warning_lines"] = warning_lines[-8:]
+    return snapshot
 
 
 def is_operational_log_line(lowered_line: str, category: str = "all") -> bool:

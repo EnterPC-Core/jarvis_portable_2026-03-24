@@ -66,6 +66,14 @@
 - `Enterprise` не должен терять инженерный режим из-за слабого роутинга
 - self-check не должен пропускать заявления о выполненных действиях без route/tool-подтверждения
 
+### Непереопределяемые правила
+
+- всегда только правда по observed route, tool output, memory state и внешнему источнику
+- никакие затычки под отдельный запрос, никакие fake fallback-ответы и никакая подмена архитектурной проблемы одним промптом недопустимы
+- если ответ слабый из-за плохого routing/context/tooling, исправляется именно routing/context/tooling
+- если данных нет или они не подтверждены, бот обязан это прямо сказать
+- нельзя имитировать рабочую live/web/runtime логику там, где она реально не сработала
+
 Отдельно для owner `Enterprise`-маршрута:
 
 - runtime-запросы про `RAM/CPU/disk/processes/network`, наличие monitoring tools и видимость `/proc` теперь идут через прямой local runtime probe
@@ -185,6 +193,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 ### Логи
 
 - [`tg_codex_bridge.log`](./tg_codex_bridge.log)
+- [`supervisor_boot.log`](./supervisor_boot.log)
 - [`tg_supervisor.out`](./tg_supervisor.out)
 
 ## Что хранится в базе
@@ -257,7 +266,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 
 - `/digest [YYYY-MM-DD]` — краткая сводка активности за день по чату
 - `/chatdigest <chat_id> [YYYY-MM-DD]` — сводка по конкретной группе из owner-лички
-- `/ownerreport` — приватный runtime-отчёт для владельца: ресурсы, backup, хвост ошибок
+- `/ownerreport` — приватный runtime-отчёт для владельца: CPU/RAM/disk, heartbeat, bot/supervisor process, рестарты за 24ч, backup, хвост ошибок и `supervisor_boot.log`
 - `/gitstatus` — текущее состояние git-ветки и worktree
 - `/gitlast [N]` — последние коммиты
 - `/errors [N]` — только реальные ошибки и поломки из `tg_codex_bridge.log`
@@ -266,6 +275,11 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/memorychat [запрос]` — текущий chat memory слой
 - `/memoryuser [@username|user_id]` — текущий user memory слой по участнику
 - relation memory отдельной команды пока не имеет; он автоматически подтягивается в prompt для локальных chat/participant запросов
+
+Отдельно:
+
+- `runtime_health` теперь считается по severe-ошибкам, restart-pressure и heartbeat-kill, а не по каждому штатному `SIGTERM`
+- `recent_live_failures` теперь считает только dedicated `live_*` маршруты; web-неопределённость показывается отдельно как `recent_web_failures`
 - `/memorysummary` — summary memory snapshots по чату
 - `/selfstate` — текущее self-state агента
 - `/worldstate` — текущий world-state registry

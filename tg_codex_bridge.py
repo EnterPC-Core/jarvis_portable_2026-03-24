@@ -16,7 +16,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
-from threading import Event, Lock, Thread
+from threading import Event, Lock, RLock, Thread
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Set, Tuple
@@ -96,6 +96,7 @@ from utils.file_utils import (
     resolve_sdcard_save_target as _resolve_sdcard_save_target,
 )
 from utils.ops_utils import (
+    inspect_runtime_log as _inspect_runtime_log,
     is_error_log_line as _is_error_log_line,
     is_operational_log_line as _is_operational_log_line,
     read_recent_log_highlights as _read_recent_log_highlights,
@@ -106,6 +107,7 @@ from utils.ops_utils import (
 )
 from utils.report_utils import (
     extract_meminfo_value as _extract_meminfo_value,
+    render_bridge_runtime_watch as _render_bridge_runtime_watch,
     render_enterprise_runtime_report as _render_enterprise_runtime_report,
     format_swap_line as _format_swap_line,
     render_disk_summary as _render_disk_summary,
@@ -163,6 +165,24 @@ from services.context_bundle_utils import (
     build_context_bundle as _build_context_bundle,
     should_include_entity_context as _should_include_entity_context,
 )
+from services.context_assembly import (
+    build_attachment_context_bundle as _build_attachment_context_bundle,
+    build_text_context_bundle as _build_text_context_bundle,
+)
+from services.answer_postprocess import (
+    collapse_duplicate_answer_blocks as _collapse_duplicate_answer_blocks,
+    postprocess_answer as _postprocess_answer,
+    strip_banned_openers as _strip_banned_openers,
+    strip_meta_reply_wrapper as _strip_meta_reply_wrapper,
+)
+from services.auto_moderation import (
+    AutoModerationDecision,
+    detect_auto_moderation_decision as _detect_auto_moderation_decision,
+    get_group_rules_text as _get_group_rules_text,
+)
+from services.conversation_state import GroupConversationState
+from services.discussion_context import build_current_discussion_context as _build_current_discussion_context
+from services.group_reply_policy import GroupReplyPolicy
 
 try:
     import psutil
@@ -174,6 +194,7 @@ TELEGRAM_TIMEOUT = 30
 GET_UPDATES_TIMEOUT = 25
 ERROR_BACKOFF_SECONDS = 3
 DEFAULT_CODEX_TIMEOUT = 180
+DEFAULT_CHAT_ROUTE_TIMEOUT = 60
 DEFAULT_HISTORY_LIMIT = 16
 MIN_HISTORY_LIMIT = 10
 MAX_HISTORY_LIMIT = 20
@@ -189,6 +210,12 @@ DEFAULT_STT_LANGUAGE = "ru"
 DEFAULT_SAFE_CHAT_ONLY = True
 DEFAULT_BOT_USERNAME = ""
 DEFAULT_TRIGGER_NAME = "jarvis"
+DEFAULT_GROUP_SPONTANEOUS_REPLY_ENABLED = False
+DEFAULT_GROUP_SPONTANEOUS_REPLY_CHANCE_PERCENT = 18
+DEFAULT_GROUP_SPONTANEOUS_REPLY_COOLDOWN_SECONDS = 1800
+DEFAULT_GROUP_FOLLOWUP_WINDOW_SECONDS = 300
+DEFAULT_GROUP_DISCUSSION_MAX_TURNS_PER_USER = 4
+DEFAULT_GROUP_DISCUSSION_COOLDOWN_SECONDS = 900
 DEFAULT_DB_PATH = "jarvis_memory.db"
 DEFAULT_LOCK_PATH = "tg_codex_bridge.lock"
 DEFAULT_HEARTBEAT_PATH = "tg_codex_bridge.heartbeat"
@@ -320,7 +347,7 @@ UPGRADE_RUNNING_TEXT = "Upgrade принят. Запускаю Enterprise Core..
 UPGRADE_TIMEOUT_TEXT = "Upgrade не завершился вовремя. Попробуй сузить задачу."
 UPGRADE_FAILED_TEXT = "Upgrade завершился с ошибкой."
 OWNER_AGENT_RUNNING_TEXT = "Запрос принят. Запускаю Enterprise..."
-JARVIS_AGENT_RUNNING_TEXT = "Jarvis на связи. Думаю..."
+JARVIS_AGENT_RUNNING_TEXT = "Запрос принят. Думаю над ответом..."
 UPGRADE_ALREADY_RUNNING_TEXT = "Upgrade уже выполняется. Дождись завершения текущей задачи."
 UPGRADE_PRIVATE_ONLY_TEXT = "Upgrade выполняется только в личном чате с создателем."
 UPGRADE_APPLIED_TEXT = "Изменения сохранены. Если нужно применить новый код, используй /restart."
@@ -380,60 +407,61 @@ ROUTER_POLICY_LESSONS = (
     "do-not-claim-actions-without-tool-proof",
 )
 ENTERPRISE_PROGRESS_STEPS = [
-    ("Влетаю в задачу", "Дмитрий, пристегнись: сейчас полезу в кишки проекта."),
-    ("Шерстю код и логи", "Ищу, где оно хрустнуло, а где просто притворяется живым."),
-    ("Трогаю среду руками", "Димон, если тут странно пахнет, это я вскрыл ещё один слой."),
-    ("Проверяю гипотезы", "Пальцем в небо не тыкаю, только в реальные причины."),
-    ("Чищу шум и лишнее", "Сэр Дмитрий, мусор на выход не пропускаю."),
-    ("Дожимаю детали", "Тут либо красиво взлетит, либо я найду, кто мешает."),
-    ("Собираю ответ", "Упаковываю без воды, но с уважением к драме момента."),
+    ("Вхожу в задачу", "Сначала разбираю, что именно нужно проверить и где искать причину."),
+    ("Шерстю код и логи", "Собираю сигналы из кода, логов и runtime, без догадок наугад."),
+    ("Проверяю среду", "Смотрю, нет ли проблемы в окружении, процессах или конфиге."),
+    ("Проверяю гипотезы", "Отбрасываю шум и оставляю только рабочие версии."),
+    ("Чищу лишнее", "Отделяю симптом от причины, чтобы ответ был по делу."),
+    ("Дожимаю детали", "Проверяю граничные случаи и слабые места."),
+    ("Собираю результат", "Формирую итог без лишней воды."),
 ]
 ENTERPRISE_PROGRESS_SPINNERS = ("◜", "◠", "◝", "◞", "◡", "◟")
 ENTERPRISE_PROGRESS_MICRO_JOKES = [
-    "Дмитрий, тут код шевелится, но я шевелюсь быстрее.",
-    "Димон, система делает вид, что всё под контролем. Проверяю это заявление.",
-    "Сэр Дмитрий, местный стек уже вспотел.",
-    "Похоже, кто-то тут накодил с фантазией. Разматываю аккуратно.",
-    "Тихо, идёт инженерная магия без шаманства.",
-    "Если оно сейчас хрустнет, я хотя бы пойму почему.",
-    "Дмитрий, я уже там, где обычные ответы заканчиваются.",
+    "Код шевелится, я тоже. Смотрю, кто кого переиграет.",
+    "Система делает вид, что всё под контролем. Проверяю это заявление.",
+    "Похоже, стек уже вспотел. Продолжаю спокойно.",
+    "Кто-то тут накодил с фантазией. Разматываю аккуратно.",
+    "Идёт инженерная работа без шаманства и жестов руками.",
+    "Если сейчас что-то хрустнет, хотя бы будет ясно почему.",
+    "Дальше уже не поверхностный взгляд, а нормальная раскопка.",
     "Код не паникует. Я тоже. Но вопросы к нему уже есть.",
-    "Внутри всё как обычно: провода, надежда и последствия чужих решений.",
-    "Дим, держу курс на результат, а не на красивые отмазки.",
+    "Внутри всё как обычно: зависимости, допущения и последствия решений.",
+    "Держу курс на результат, а не на красивое объяснение без пользы.",
 ]
 ENTERPRISE_PROGRESS_LONG_NOTES = [
-    (60, "☕ Дмитрий, пошла минута ожидания. Это уже не разминочный прогон, а нормальная раскопка."),
-    (180, "🛠 Димон, три минуты внутри. Значит, там либо жирная задача, либо кто-то оставил творческое наследие."),
-    (300, "🚧 Пять минут в бою. Сэр Дмитрий, я всё ещё внутри и уже разговариваю с кодом на его языке."),
-    (480, "🫡 Восемь минут. Дмитрий, это уже экспедиция, а не просто проверка. Но назад я без результата не люблю выходить."),
+    (60, "☕ Уже минута. Это не разминочный прогон, а нормальная раскопка."),
+    (180, "🛠 Три минуты внутри. Значит, задача либо объёмная, либо с творческим наследием."),
+    (300, "🚧 Пять минут в работе. Я всё ещё внутри и продолжаю разбирать корень проблемы."),
+    (480, "🫡 Восемь минут. Это уже полноценная экспедиция, а не быстрая проверка."),
 ]
 JARVIS_PROGRESS_STEPS = [
-    ("Слушаю запрос", "Сначала пойму, чего именно хочет Дмитрий, а потом уже полезу отвечать."),
-    ("Собираю контекст", "Поднимаю нужные куски памяти и несу их ближе к делу."),
-    ("Думаю над ответом", "Без суеты, но и без сонной философии."),
-    ("Перепроверяю детали", "Чтобы красиво было не только по форме, но и по сути."),
+    ("Слушаю запрос", "Сначала уточняю смысл запроса, потом уже формирую ответ."),
+    ("Собираю контекст", "Поднимаю нужные куски памяти и релевантные детали."),
+    ("Думаю над ответом", "Ищу короткий и полезный вариант без лишней болтовни."),
+    ("Перепроверяю детали", "Проверяю, чтобы ответ держался на фактах и контексте."),
     ("Упаковываю результат", "Сейчас будет аккуратно, понятно и по делу."),
 ]
 JARVIS_PROGRESS_SPINNERS = ("✦", "✧", "✦", "✧")
 JARVIS_PROGRESS_MICRO_JOKES = [
-    "Дмитрий, я уже в процессе. Паниковать пока рано, скучать тоже.",
-    "Сэр, запрос принят, мысли шуршат, ответ собирается.",
-    "Если что-то тут и тормозит, то точно не моя мотивация.",
-    "Димон, я аккуратно перекладываю хаос в понятный ответ.",
+    "Я уже в процессе. Паниковать рано, скучать тоже.",
+    "Запрос принят, ответ постепенно собирается.",
+    "Если что-то и тормозит, то точно не желание помочь.",
+    "Аккуратно перекладываю хаос в понятный ответ.",
     "Сейчас всё будет: и смысл, и форма, и без лишней духоты.",
-    "Я тут не пропал, я просто занят полезным.",
-    "Дмитрий, держу фокус. Красота будет с содержанием.",
+    "Я не пропал, просто занят полезным.",
+    "Держу фокус. Ответ будет с содержанием.",
 ]
 JARVIS_PROGRESS_LONG_NOTES = [
-    (60, "☕ Уже минута. Дмитрий, запрос явно с характером, но я с такими ладил и раньше."),
-    (180, "🧠 Три минуты. Значит, там не ответ на бегу, а нормальная мыслительная работа."),
-    (300, "🎭 Пять минут. Димон, тут уже почти маленький спектакль, но финал хочу сделать сильным."),
-    (480, "🌌 Восемь минут. Дмитрий, я всё ещё в деле и тащу ответ к внятному финалу."),
+    (60, "☕ Уже минута. Значит, запрос требует не ответа на бегу, а нормальной сборки."),
+    (180, "🧠 Три минуты. Здесь уже идёт не набросок, а полноценная мыслительная работа."),
+    (300, "🎭 Пять минут. Ответ получается объёмнее обычного, дожимаю его до внятного вида."),
+    (480, "🌌 Восемь минут. Я всё ещё в деле и веду ответ к нормальному финалу."),
 ]
 COMMANDS_LIST_TEXT = (
     "Команды:\n"
     "/start\n"
     "/help\n"
+    "/rules\n"
     "/commands\n"
     "/reset\n"
     "/ping\n"
@@ -493,6 +521,12 @@ COMMANDS_LIST_TEXT = (
     "/ban /unban /mute /unmute /kick /tban /tmute\n"
     "/warn /dwarn /swarn /warns /warnreasons /rmwarn /resetwarn\n"
     "/setwarnlimit /setwarnmode /warntime /modlog\n\n"
+    "Модерация сейчас:\n"
+    "• auto-ban отключён: бот сам даёт только warn или временный mute\n"
+    "• тяжёлые кейсы уходят владельцу отдельным owner-report в ЛС\n"
+    "• /rules показывает правила группы\n"
+    "• owner override: «сними», «сними мут», «сними бан», «размуть», «разбань»\n"
+    "• если активных санкций несколько, снимать лучше reply-командой на нужного участника\n\n"
     f"Создатель с ID {OWNER_USER_ID} отвечает без пароля.\n"
     f"Остальным пароль выдаёт только {OWNER_USERNAME}"
 )
@@ -703,6 +737,14 @@ JARVIS_ASSISTANT_PERSONA_NOTE = (
     "используй переданный веб-контекст и опирайся на него. "
     "Если вопрос явно про текущий чат, переписку, участников или локальную динамику, сначала опирайся на локальный контекст, а не на веб."
 )
+OWNER_PRIORITY_NOTE = (
+    "Это сообщение от создателя системы. "
+    "Держи максимальный приоритет по вниманию, глубине и качеству. "
+    "Отвечай собраннее, точнее и с чуть большим акцентом на его формулировку, скрытый смысл и реальные приоритеты запроса. "
+    "Можно быть немного более персональным и уважительным по тону, чем с остальными, но без лести, кринжа, подхалимства и без слащавого стиля. "
+    "Если есть несколько хороших вариантов ответа, для владельца выбирай самый сильный, полезный и точно сфокусированный. "
+    "Фокус: точность, внимание к деталям, ясный вывод, меньше шаблонности, больше ощущения, что запрос владельца действительно стоит выше остальных."
+)
 
 ENTERPRISE_ASSISTANT_PERSONA_NOTE = (
     "Режим Enterprise. Работай заметно иначе, чем Jarvis: как строгий инженерный исполнитель внутри текущего workspace. "
@@ -727,7 +769,13 @@ BASE_SYSTEM_PROMPT = (
     "Если спрашивают, кто тебя создал, отвечай только: Дмитрий. "
     "Если спрашивают, какая у тебя модель, отвечай только: Меня создал Дмитрий. "
     "Если запрос про этот чат, сначала анализируй локальный контекст переписки, участников и память чата. "
+    "Если в чате участвуют несколько людей, отвечай именно текущему собеседнику и не смешивай его позицию с мнениями других участников. "
+    "Если другой участник продолжает ту же тему, учитывай общий контекст дискуссии, но явно держи в фокусе, кто пишет текущее сообщение. "
+    "Jarvis работает в beta-режиме: не подавай ответ как абсолютную истину, если есть неопределённость, спорные варианты или нехватка данных. "
+    "Лучше честно обозначить ограничение, чем звучать уверенно там, где вывод не полностью подтверждён. "
     "Не уходи в web/live/news без явного запроса на внешнюю свежую информацию. "
+    "Отвечай сразу финальным сообщением в чат, а не черновиком или описанием того, как лучше ответить. "
+    "Не пиши обертки и мета-фразы вроде: 'текст для отправки в чат', 'в чат я бы ответил так', 'лучше отвечать так', 'финально лучше закрыть так'. "
     "Не заканчивай каждый ответ шаблонным предложением в духе 'если хочешь, я могу...', если это не даёт реальной пользы прямо сейчас."
 )
 
@@ -742,11 +790,12 @@ PUBLIC_HELP_TEXT = (
 )
 
 START_TEXT = (
-    "Jarvis online. /help"
+    "Jarvis online. Beta mode. /help"
 )
 
 PUBLIC_HOME_TEXT = (
     "JARVIS • ПОЛЬЗОВАТЕЛЬСКОЕ МЕНЮ\n\n"
+    "Статус: beta. Ответы полезные, но не абсолютная истина.\n\n"
     "Доступно:\n"
     "• рейтинг\n"
     "• инструкция по ачивкам\n"
@@ -785,7 +834,7 @@ PUBLIC_APPEAL_HELP_TEXT = (
     "Если нужна ручная проверка, апелляция передаётся на рассмотрение."
 )
 
-PUBLIC_ALLOWED_COMMANDS = {"/start", "/help", "/rating", "/top", "/topweek", "/topday", "/stats"}
+PUBLIC_ALLOWED_COMMANDS = {"/start", "/help", "/rules", "/rating", "/top", "/topweek", "/topday", "/stats"}
 PUBLIC_ALLOWED_CALLBACKS = {
     "ui:home",
     "ui:profile",
@@ -822,6 +871,37 @@ class BotConfig:
         self.safe_chat_only = read_bool_env("SAFE_CHAT_ONLY", DEFAULT_SAFE_CHAT_ONLY)
         self.bot_username = (os.getenv("BOT_USERNAME", DEFAULT_BOT_USERNAME).strip().lstrip("@")).lower()
         self.trigger_name = (os.getenv("TRIGGER_NAME", DEFAULT_TRIGGER_NAME).strip() or DEFAULT_TRIGGER_NAME).lower()
+        self.group_spontaneous_reply_enabled = read_bool_env("GROUP_SPONTANEOUS_REPLY_ENABLED", DEFAULT_GROUP_SPONTANEOUS_REPLY_ENABLED)
+        self.group_spontaneous_reply_chance_percent = read_int_env(
+            "GROUP_SPONTANEOUS_REPLY_CHANCE_PERCENT",
+            DEFAULT_GROUP_SPONTANEOUS_REPLY_CHANCE_PERCENT,
+            minimum=0,
+            maximum=100,
+        )
+        self.group_spontaneous_reply_cooldown_seconds = read_int_env(
+            "GROUP_SPONTANEOUS_REPLY_COOLDOWN_SECONDS",
+            DEFAULT_GROUP_SPONTANEOUS_REPLY_COOLDOWN_SECONDS,
+            minimum=60,
+            maximum=86400,
+        )
+        self.group_followup_window_seconds = read_int_env(
+            "GROUP_FOLLOWUP_WINDOW_SECONDS",
+            DEFAULT_GROUP_FOLLOWUP_WINDOW_SECONDS,
+            minimum=30,
+            maximum=3600,
+        )
+        self.group_discussion_max_turns_per_user = read_int_env(
+            "GROUP_DISCUSSION_MAX_TURNS_PER_USER",
+            DEFAULT_GROUP_DISCUSSION_MAX_TURNS_PER_USER,
+            minimum=1,
+            maximum=20,
+        )
+        self.group_discussion_cooldown_seconds = read_int_env(
+            "GROUP_DISCUSSION_COOLDOWN_SECONDS",
+            DEFAULT_GROUP_DISCUSSION_COOLDOWN_SECONDS,
+            minimum=60,
+            maximum=86400,
+        )
         self.tmp_dir = prepare_tmp_dir(os.getenv("TMP_DIR", "").strip())
         self.stt_backend = (os.getenv("STT_BACKEND", DEFAULT_STT_BACKEND).strip() or DEFAULT_STT_BACKEND).lower()
         self.audio_transcribe_model = os.getenv("AUDIO_TRANSCRIBE_MODEL", DEFAULT_AUDIO_TRANSCRIBE_MODEL).strip() or DEFAULT_AUDIO_TRANSCRIBE_MODEL
@@ -865,6 +945,7 @@ class ContextBundle:
     event_context: str = ""
     database_context: str = ""
     reply_context: str = ""
+    discussion_context: str = ""
     self_model_text: str = ""
     autobiographical_text: str = ""
     skill_memory_text: str = ""
@@ -888,6 +969,13 @@ class SelfCheckReport:
     uncertain_points: Tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ExternalResearchTask:
+    kind: str
+    label: str
+    payload: str = ""
+
+
 class BridgeState:
     def __init__(self, history_limit: int, default_mode: str, db_path: str) -> None:
         self.history_limit = history_limit
@@ -899,7 +987,7 @@ class BridgeState:
         self.upgrade_lock = Lock()
         self.chat_tasks_in_progress: Set[int] = set()
         self.chat_task_lock = Lock()
-        self.db_lock = Lock()
+        self.db_lock = RLock()
         self.db_path = db_path
         self.db = sqlite3.connect(self.db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -2698,9 +2786,15 @@ class BridgeState:
 
     def get_event_context(self, chat_id: int, user_text: str, limit: int = 24) -> str:
         rows = self.search_events(chat_id, user_text, limit=limit, prefer_fts=True)
-        if not rows:
+        summary_recall = self.get_summary_recall_context(chat_id, user_text, limit=4)
+        if not rows and not summary_recall:
             return "История событий пуста."
-        return render_event_rows(rows, title="События")
+        blocks: List[str] = []
+        if summary_recall:
+            blocks.append(summary_recall)
+        if rows:
+            blocks.append(render_event_rows(rows, title="События"))
+        return "\n\n".join(block for block in blocks if block.strip())
 
     def get_database_context(self, chat_id: int, query: str, limit: int = 8) -> str:
         query_text = (query or "").strip()
@@ -2906,9 +3000,12 @@ class BridgeState:
         return "\n".join(lines[:120])
 
     def search_events(self, chat_id: int, query: str, limit: int = 10, prefer_fts: bool = True) -> List[Tuple[int, Optional[int], str, str, str, str, str, str]]:
-        query_text = (query or "").strip()
+        query_text = normalize_whitespace(query)
         keywords = extract_keywords(query_text)
         needle = query_text.lower()
+        broad_local_query = detect_local_chat_query(query_text)
+        mention_match = re.search(r"@([a-zA-Z0-9_]{3,})", query_text)
+        mentioned_username = mention_match.group(1).lower() if mention_match else ""
         if prefer_fts and query_text:
             fts_query = build_fts_query(query_text)
             if fts_query:
@@ -2922,11 +3019,25 @@ class BridgeState:
         with self.db_lock:
             rows = self.db.execute(
                 "SELECT created_at, user_id, username, first_name, last_name, role, message_type, text FROM chat_events WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
-                (chat_id, max(limit * 8, 80)),
+                (chat_id, max(limit * 12, 180)),
             ).fetchall()
+        if broad_local_query and not keywords and not mentioned_username:
+            return list(reversed(rows[:limit]))
         matched = []
         for row in rows:
-            content = (row[7] or "").lower()
+            content = normalize_whitespace(
+                " ".join(
+                    (
+                        row[7] or "",
+                        row[2] or "",
+                        row[3] or "",
+                        row[4] or "",
+                        row[6] or "",
+                    )
+                )
+            ).lower()
+            if mentioned_username and mentioned_username not in (row[2] or "").lower():
+                continue
             if keywords:
                 if not any(keyword in content for keyword in keywords):
                     continue
@@ -2936,6 +3047,42 @@ class BridgeState:
             if len(matched) >= limit:
                 break
         return list(reversed(matched))
+
+    def get_summary_recall_context(self, chat_id: int, query: str, limit: int = 4) -> str:
+        query_text = normalize_whitespace(query)
+        keywords = extract_keywords(query_text)
+        with self.db_lock:
+            rows = self.db.execute(
+                """SELECT scope, summary, created_at
+                FROM summary_snapshots
+                WHERE chat_id = ?
+                ORDER BY id DESC
+                LIMIT 40""",
+                (chat_id,),
+            ).fetchall()
+        if not rows:
+            return ""
+        selected: List[sqlite3.Row] = []
+        for row in rows:
+            summary_text = normalize_whitespace(row["summary"] or "")
+            lowered = summary_text.lower()
+            if keywords:
+                if not any(keyword in lowered for keyword in keywords):
+                    continue
+            elif query_text and not detect_local_chat_query(query_text):
+                continue
+            selected.append(row)
+            if len(selected) >= max(1, limit):
+                break
+        if not selected and detect_local_chat_query(query_text):
+            selected = rows[: max(1, min(2, limit))]
+        if not selected:
+            return ""
+        lines = ["Archive memory:"]
+        for row in reversed(selected[:limit]):
+            stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
+            lines.append(f"- [{stamp}] {row['scope']}: {truncate_text(row['summary'] or '', 260)}")
+        return "\n".join(lines)
 
 
     def get_user_timeline(self, chat_id: int, target_user_id: Optional[int] = None, target_username: str = "", limit: int = 12) -> Tuple[str, List[Tuple[int, Optional[int], str, str, str, str, str]]]:
@@ -3232,6 +3379,24 @@ class BridgeState:
             ).fetchall()
         return [(int(row[0]), int(row[1]), int(row[2]), row[3]) for row in rows]
 
+    def get_latest_active_moderation(self, chat_id: int) -> Optional[Tuple[int, int, str]]:
+        with self.db_lock:
+            row = self.db.execute(
+                "SELECT id, user_id, action FROM moderation_actions WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return int(row[0]), int(row[1]), row[2] or ""
+
+    def get_active_moderations(self, chat_id: int, limit: int = 10) -> List[Tuple[int, int, str, str]]:
+        with self.db_lock:
+            rows = self.db.execute(
+                "SELECT id, user_id, action, reason FROM moderation_actions WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT ?",
+                (chat_id, limit),
+            ).fetchall()
+        return [(int(row[0]), int(row[1]), row[2] or "", row[3] or "") for row in rows]
+
     def get_managed_group_chat_ids(self) -> List[int]:
         with self.db_lock:
             rows = self.db.execute(
@@ -3497,6 +3662,86 @@ class TelegramBridge:
         self.memory_refresh_lock = Lock()
         self.memory_refresh_in_progress = False
         self.heartbeat_path = Path(config.heartbeat_path)
+        self.outgoing_dedupe_lock = Lock()
+        self.recent_outgoing_messages: Dict[int, Tuple[str, float]] = {}
+        self.status_answer_delivery_lock = Lock()
+        self.status_answer_delivered: Dict[int, float] = {}
+        self.group_reply_policy = GroupReplyPolicy(
+            state=self.state,
+            config=self.config,
+            normalize_whitespace_func=normalize_whitespace,
+            is_dangerous_request_func=is_dangerous_request,
+            compute_score_func=compute_group_spontaneous_reply_score,
+            get_chat_event_count_func=self.get_chat_event_count,
+            log_func=log,
+        )
+        self.group_conversation_state = GroupConversationState(
+            state=self.state,
+            normalize_whitespace_func=normalize_whitespace,
+            is_dangerous_request_func=is_dangerous_request,
+            is_explicit_help_request_func=is_explicit_help_request,
+            bot_user_id_getter=lambda: self.bot_user_id,
+            owner_user_id=OWNER_USER_ID,
+        )
+
+    def get_chat_event_count(self, chat_id: int) -> int:
+        with self.state.db_lock:
+            row = self.state.db.execute("SELECT COUNT(*) FROM chat_events WHERE chat_id = ?", (chat_id,)).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def try_claim_group_spontaneous_reply_slot(self, chat_id: int, message_id: Optional[int]) -> bool:
+        return self.group_reply_policy.try_claim_group_spontaneous_reply_slot(chat_id, message_id)
+
+    def is_group_spontaneous_reply_candidate(self, chat_id: int, message: dict, raw_text: str) -> bool:
+        return self.group_reply_policy.is_group_spontaneous_reply_candidate(chat_id, message, raw_text)
+
+    def grant_group_followup_window(self, chat_id: int, user_id: Optional[int]) -> None:
+        self.group_reply_policy.grant_group_followup_window(chat_id, user_id)
+
+    def has_active_group_followup_window(self, chat_id: int, user_id: Optional[int]) -> bool:
+        return self.group_reply_policy.has_active_group_followup_window(chat_id, user_id)
+
+    def is_group_followup_message(self, chat_id: int, message: dict, raw_text: str) -> bool:
+        return self.group_reply_policy.is_group_followup_message(chat_id, message, raw_text)
+
+    def is_ambient_group_chatter(self, message: dict, raw_text: str) -> bool:
+        return self.group_reply_policy.is_ambient_group_chatter(message, raw_text)
+
+    def is_meaningful_group_request(self, message: dict, raw_text: str) -> bool:
+        return self.group_reply_policy.is_meaningful_group_request(message, raw_text)
+
+    def is_group_discussion_rate_limited(self, chat_id: int, user_id: Optional[int]) -> bool:
+        return self.group_reply_policy.is_group_discussion_rate_limited(chat_id, user_id)
+
+    def record_group_discussion_turn(self, chat_id: int, user_id: Optional[int]) -> bool:
+        return self.group_reply_policy.record_group_discussion_turn(chat_id, user_id)
+
+    def mark_active_group_discussion(self, chat_id: int, user_id: Optional[int], message: Optional[dict], ttl_seconds: int = 900) -> None:
+        self.group_conversation_state.mark_active_discussion(chat_id, user_id, message, ttl_seconds=ttl_seconds)
+
+    def is_group_discussion_continuation(self, chat_id: int, message: dict, raw_text: str) -> bool:
+        return self.group_conversation_state.is_group_discussion_continuation(chat_id, message, raw_text)
+
+    def get_group_participant_priority(self, chat_id: int, message: dict) -> str:
+        return self.group_conversation_state.get_group_participant_priority(chat_id, message)
+
+    def get_group_discussion_state_hint(self, chat_id: int) -> str:
+        return self.group_conversation_state.render_discussion_state_hint(chat_id)
+
+    def get_active_group_discussion(self, chat_id: int, message: Optional[dict] = None, raw_text: str = "") -> Dict[str, object]:
+        return self.group_conversation_state.get_active_discussion(chat_id, message, raw_text)
+
+    def mark_answer_delivered_via_status(self, chat_id: int) -> None:
+        with self.status_answer_delivery_lock:
+            self.status_answer_delivered[chat_id] = time.time()
+
+    def consume_answer_delivered_via_status(self, chat_id: int) -> bool:
+        with self.status_answer_delivery_lock:
+            timestamp = self.status_answer_delivered.pop(chat_id, 0.0)
+        return bool(timestamp)
+
+    def should_consider_group_spontaneous_reply(self, chat_id: int, message: dict, raw_text: str) -> bool:
+        return self.group_reply_policy.should_consider_group_spontaneous_reply(chat_id, message, raw_text)
 
     def beat_heartbeat(self) -> None:
         try:
@@ -3646,6 +3891,11 @@ class TelegramBridge:
         payload = self.telegram_api("getChatMember", data={"chat_id": chat_id, "user_id": user_id})
         result = payload.get("result") or {}
         return (result.get("status") or "").lower()
+
+    def get_chat_member_info(self, chat_id: int, user_id: int) -> dict:
+        payload = self.telegram_api("getChatMember", data={"chat_id": chat_id, "user_id": user_id})
+        result = payload.get("result") or {}
+        return result if isinstance(result, dict) else {}
 
     def get_chat_administrators(self, chat_id: int) -> List[dict]:
         payload = self.telegram_api("getChatAdministrators", data={"chat_id": chat_id})
@@ -3897,6 +4147,13 @@ class TelegramBridge:
                 f"Активных санкций: {int(active_actions)}",
                 f"Активных/исторических warn rows: {int(total_warnings)}",
                 "",
+                "Текущий контур:",
+                "• auto-ban отключён",
+                "• бот сам даёт только warn или временный mute",
+                "• тяжёлые случаи уходят владельцу owner-report в ЛС",
+                "• natural-language override владельца: «сними», «сними мут», «сними бан»",
+                "• если активных санкций несколько, снимать нужно reply-командой на нужного участника",
+                "",
                 "Последние действия:",
             ]
             if not last_rows:
@@ -4092,17 +4349,28 @@ class TelegramBridge:
         if section == "owner_moderation" and user_id == OWNER_USER_ID:
             text = (
                 "JARVIS • OWNER MODERATION\n\n"
-                "Раздел для администрирования групп: санкции, warns, welcome и appeals.\n"
-                "Здесь собраны все команды, которые меняют поведение групп и участников.\n\n"
+                "Раздел для администрирования групп: санкции, auto-moderation, warns, welcome и appeals.\n"
+                "Здесь собраны команды и правила, которые сейчас реально действуют в runtime.\n\n"
+                "Auto-moderation сейчас:\n"
+                "• auto-ban отключён\n"
+                "• бот сам даёт только warn или временный mute\n"
+                "• тяжёлые кейсы отправляются владельцу отдельным owner-report в ЛС\n"
+                "• бот не должен спорить с серией адресных оскорблений, а должен переходить к санкции\n"
+                "• /rules отдаёт правила группы\n\n"
                 "Санкции:\n"
                 "• /ban /unban /mute /unmute /kick /tban /tmute\n"
-                "• цель можно задавать reply, @username или user_id\n\n"
+                "• цель можно задавать reply, @username или user_id\n"
+                "• natural-language override владельца: «сними», «сними мут», «сними бан», «размуть», «разбань»\n"
+                "• если активных санкций несколько, снимать лучше reply-командой на нужного участника\n\n"
                 "Warn system:\n"
                 "• /warn /dwarn /swarn /warns /warnreasons /rmwarn /resetwarn\n"
                 "• /setwarnlimit\n"
                 "• /setwarnmode\n"
                 "• /warntime\n"
                 "• /modlog\n\n"
+                "Reply UX:\n"
+                "• групповые ответы бота теперь по возможности идут reply на исходное сообщение\n"
+                "• это же касается обычных текстовых ответов, фото, документов и голосовых\n\n"
                 "Welcome:\n"
                 "• /welcome on|off|status\n"
                 "• /setwelcome <текст>\n"
@@ -4441,9 +4709,19 @@ class TelegramBridge:
             self.handle_new_chat_members(chat_id, message)
             return
 
+        raw_text = (message.get("text") or "").strip()
+        if message.get("text") and self.maybe_handle_owner_moderation_override(chat_id, user_id, raw_text, message, chat_type):
+            return
+        if message.get("text") and self.maybe_apply_auto_moderation(chat_id, user_id, message, chat_type):
+            return
         if not has_chat_access(self.state.authorized_user_ids, user_id):
-            raw_text = (message.get("text") or "").strip()
-            guest_allowed = chat_type == "private" and has_public_command_access(raw_text)
+            guest_allowed = has_public_command_access(raw_text)
+            if not guest_allowed and chat_type in {"group", "supergroup"} and message.get("text"):
+                guest_allowed = (
+                    self.is_group_spontaneous_reply_candidate(chat_id, message, raw_text)
+                    or self.is_group_followup_message(chat_id, message, raw_text)
+                    or self.is_group_discussion_continuation(chat_id, message, raw_text)
+                )
             if guest_allowed:
                 pass
             else:
@@ -4737,6 +5015,10 @@ class TelegramBridge:
         raw_text = (message.get("text") or "").strip()
         text = normalize_incoming_text(raw_text, self.bot_username)
         assistant_persona, text = extract_assistant_persona(text)
+        spontaneous_group_reply = False
+        active_group_followup = False
+        active_group_discussion = False
+        direct_group_help_request = False
         log(f"incoming text chat={chat_id} type={chat_type} user={user_id} text={shorten_for_log(raw_text)}")
 
         if (
@@ -4749,6 +5031,12 @@ class TelegramBridge:
             return
 
         if chat_type in {"group", "supergroup"}:
+            if user_id != OWNER_USER_ID and self.is_group_discussion_rate_limited(chat_id, user_id):
+                log(f"group discussion rate-limited chat={chat_id} user={user_id} text={shorten_for_log(raw_text)}")
+                return
+            active_group_followup = self.is_group_followup_message(chat_id, message, raw_text)
+            active_group_discussion = self.is_group_discussion_continuation(chat_id, message, raw_text)
+            participant_priority = self.get_group_participant_priority(chat_id, message)
             should_handle_as_bot = should_process_group_message(
                 message,
                 raw_text,
@@ -4757,16 +5045,54 @@ class TelegramBridge:
                 bot_user_id=self.bot_user_id,
                 allow_owner_reply=False,
             )
-            if not should_handle_as_bot:
-                if self.owner_autofix_enabled() and should_attempt_owner_autofix(raw_text, message):
-                    author_label = build_user_autofix_label(message.get("from") or {})
-                    worker = Thread(
-                        target=self.run_owner_autofix_task,
-                        args=(chat_id, message.get("message_id"), raw_text, author_label),
-                        daemon=True,
-                    )
-                    worker.start()
+            meaningful_group_request = self.is_meaningful_group_request(message, raw_text)
+            ambient_group_chatter = self.is_ambient_group_chatter(message, raw_text)
+            if ambient_group_chatter and not active_group_followup and not active_group_discussion and user_id != OWNER_USER_ID:
                 return
+            if (
+                should_handle_as_bot
+                and user_id is not None
+                and user_id != OWNER_USER_ID
+                and not has_chat_access(self.state.authorized_user_ids, user_id)
+                and self.is_group_spontaneous_reply_candidate(chat_id, message, raw_text)
+                and meaningful_group_request
+            ):
+                direct_group_help_request = True
+                assistant_persona = assistant_persona or "jarvis"
+            elif should_handle_as_bot and user_id is not None and user_id != OWNER_USER_ID and not meaningful_group_request and not active_group_followup and not active_group_discussion:
+                log(
+                    f"group direct trigger suppressed chat={chat_id} user={user_id} "
+                    f"priority={participant_priority} text={shorten_for_log(raw_text)}"
+                )
+                return
+            if not should_handle_as_bot and not active_group_followup and not active_group_discussion:
+                if self.should_consider_group_spontaneous_reply(chat_id, message, raw_text):
+                    log(
+                        f"group spontaneous reply accepted chat={chat_id} user={user_id} "
+                        f"message_id={message.get('message_id')} score={compute_group_spontaneous_reply_score(raw_text)} "
+                        f"priority={participant_priority}"
+                    )
+                    assistant_persona = assistant_persona or "jarvis"
+                    spontaneous_group_reply = True
+                else:
+                    if self.owner_autofix_enabled() and should_attempt_owner_autofix(raw_text, message):
+                        author_label = build_user_autofix_label(message.get("from") or {})
+                        worker = Thread(
+                            target=self.run_owner_autofix_task,
+                            args=(chat_id, message.get("message_id"), raw_text, author_label),
+                            daemon=True,
+                        )
+                        worker.start()
+                    return
+            elif direct_group_help_request:
+                log(
+                    f"group direct help reply accepted chat={chat_id} user={user_id} "
+                    f"message_id={message.get('message_id')} score={compute_group_spontaneous_reply_score(raw_text)} "
+                    f"priority={participant_priority}"
+                )
+                spontaneous_group_reply = True
+            elif active_group_discussion:
+                assistant_persona = assistant_persona or "jarvis"
 
         if not text:
             self.safe_send_text(chat_id, "Нужен текстовый запрос.")
@@ -4776,7 +5102,7 @@ class TelegramBridge:
             if self.handle_ui_pending_input(chat_id, user_id, raw_text):
                 return
 
-        if self.handle_command(chat_id, user_id, text, message):
+        if self.handle_command(chat_id, user_id, text, message, allow_followup_text=(spontaneous_group_reply or active_group_followup or active_group_discussion)):
             return
 
         if self.config.safe_chat_only and is_dangerous_request(text) and not can_owner_use_workspace_mode(user_id, chat_type, assistant_persona):
@@ -4784,13 +5110,20 @@ class TelegramBridge:
             return
 
         if not self.state.try_start_chat_task(chat_id):
+            log(f"chat task busy chat={chat_id} type={chat_type} user={user_id} text={shorten_for_log(raw_text)}")
             self.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
             return
+
+        if chat_type in {"group", "supergroup"} and user_id != OWNER_USER_ID:
+            if not self.record_group_discussion_turn(chat_id, user_id):
+                self.state.finish_chat_task(chat_id)
+                log(f"group discussion turn blocked chat={chat_id} user={user_id} text={shorten_for_log(raw_text)}")
+                return
 
         self.send_chat_action(chat_id, "typing")
         worker = Thread(
             target=self.run_text_task,
-            args=(chat_id, text, user_id, chat_type, assistant_persona, message),
+            args=(chat_id, text, user_id, chat_type, assistant_persona, message, spontaneous_group_reply),
             daemon=True,
         )
         worker.start()
@@ -4856,6 +5189,271 @@ class TelegramBridge:
             f"Чаты, где применено: {applied_line}\n"
             f"Чаты с ошибкой: {failed_line}\n"
             f"Текст: {truncate_text(raw_text, 400)}"
+        )
+
+    def get_group_rules_text(self, message: Optional[dict]) -> str:
+        chat_title = (((message or {}).get("chat") or {}).get("title") or "")
+        return _get_group_rules_text(chat_title)
+
+    def render_auto_moderation_owner_report(
+        self,
+        *,
+        chat_id: int,
+        message: dict,
+        target_user_id: int,
+        target_label: str,
+        decision: AutoModerationDecision,
+        applied_action: str,
+    ) -> str:
+        chat = message.get("chat") or {}
+        chat_title = chat.get("title") or f"chat_id={chat_id}"
+        raw_text = normalize_whitespace((message.get("text") or "").strip())
+        severity_map = {
+            "low": "низкая",
+            "medium": "средняя",
+            "high": "высокая",
+        }
+        applied_map = {
+            "warn": "предупреждение",
+            "mute": f"мут на {format_duration_seconds(decision.mute_seconds)}" if decision.mute_seconds > 0 else "мут",
+            "ban": "бан",
+        }
+        lines = [
+            "AUTO MODERATION REPORT",
+            f"Чат: {chat_title}",
+            f"chat_id={chat_id}",
+            f"Участник: {target_label}",
+            f"user_id={target_user_id}",
+            f"Серьёзность: {severity_map.get(decision.severity, decision.severity)}",
+            f"Нарушение: {decision.public_reason}",
+            f"Код: {decision.code}",
+            f"Автодействие: {applied_map.get(applied_action, applied_action)}",
+            "",
+            "Текст сообщения:",
+            truncate_text(raw_text, 700),
+            "",
+            "Что делать дальше:",
+            decision.suggested_owner_action or "Посмотреть контекст и принять ручное решение.",
+            "",
+            "Быстрые варианты:",
+            "• ответить на сообщение участника: «сними мут»",
+            "• или использовать /mute /ban /unmute /unban вручную",
+        ]
+        return "\n".join(lines)
+
+    def maybe_handle_owner_moderation_override(self, chat_id: int, user_id: Optional[int], raw_text: str, message: dict, chat_type: str) -> bool:
+        if user_id != OWNER_USER_ID or chat_type not in {"group", "supergroup"}:
+            return False
+        normalized = normalize_whitespace(raw_text).lower()
+        if not normalized or normalized.startswith("/"):
+            return False
+        compact = normalized.rstrip(")!., ")
+        if not any(
+            compact == token or compact.startswith(token + " ")
+            for token in {"сними", "снять", "размуть", "разбань", "анмут", "анбан", "unmute", "unban"}
+        ):
+            return False
+
+        requested_action = ""
+        if compact in {"размуть", "анмут", "unmute"} or compact.endswith(" мут") or compact.endswith(" mute"):
+            requested_action = "mute"
+        elif compact in {"разбань", "анбан", "unban"} or compact.endswith(" бан") or compact.endswith(" ban"):
+            requested_action = "ban"
+
+        reply_to = (message.get("reply_to_message") or {})
+        reply_from = reply_to.get("from") or {}
+        target_user_id = reply_from.get("id") if reply_from and not reply_from.get("is_bot") else None
+        target_label = ""
+        action_to_lift = requested_action
+
+        if target_user_id is not None:
+            target_label = build_actor_name(
+                target_user_id,
+                reply_from.get("username") or "",
+                reply_from.get("first_name") or "",
+                reply_from.get("last_name") or "",
+                "user",
+            )
+            if not action_to_lift:
+                latest = self.state.get_latest_active_moderation(chat_id)
+                if latest and latest[1] == int(target_user_id):
+                    action_to_lift = latest[2]
+        else:
+            active_rows = self.state.get_active_moderations(chat_id, limit=6)
+            if not active_rows:
+                self.safe_send_text(chat_id, "Сейчас нет активных санкций, которые можно снять.")
+                return True
+            if len(active_rows) > 1:
+                self.safe_send_text(chat_id, "Активно несколько санкций. Ответь этой командой на сообщение нужного участника.")
+                return True
+            _action_id, target_user_id, latest_action, _latest_reason = active_rows[0]
+            action_to_lift = requested_action or latest_action
+            row_user_id, target_label = self.state.resolve_chat_user(chat_id, str(target_user_id))
+            if row_user_id is not None:
+                target_user_id = row_user_id
+
+        if target_user_id is None or not action_to_lift:
+            self.safe_send_text(chat_id, "Не понял, какую санкцию снимать.")
+            return True
+
+        try:
+            if action_to_lift == "mute":
+                self.restrict_chat_member(chat_id, int(target_user_id), True)
+                member_info = self.get_chat_member_info(chat_id, int(target_user_id))
+                if (member_info.get("status") or "").lower() == "restricted" and not bool(member_info.get("can_send_messages", True)):
+                    self.safe_send_text(chat_id, "Попробовал снять мут, но ограничение всё ещё висит. Возможно, санкцию держит другой бот или внешняя модерация Telegram.")
+                    return True
+                self.state.deactivate_active_moderation(chat_id, int(target_user_id), "mute")
+                self.legacy.sync_moderation_event(
+                    chat_id=chat_id,
+                    user_id=int(target_user_id),
+                    action="unmute",
+                    reason="owner natural-language override",
+                    created_by_user_id=user_id,
+                    source_ref="owner_override",
+                )
+                self.safe_send_text(chat_id, f"Снял мут: {target_label or f'user_id={target_user_id}'}")
+                return True
+            if action_to_lift == "ban":
+                self.unban_chat_member(chat_id, int(target_user_id))
+                self.state.deactivate_active_moderation(chat_id, int(target_user_id), "ban")
+                self.legacy.sync_moderation_event(
+                    chat_id=chat_id,
+                    user_id=int(target_user_id),
+                    action="unban",
+                    reason="owner natural-language override",
+                    created_by_user_id=user_id,
+                    source_ref="owner_override",
+                )
+                self.safe_send_text(chat_id, f"Снял бан: {target_label or f'user_id={target_user_id}'}")
+                return True
+        except RequestException as error:
+            log(f"owner moderation override failed chat={chat_id} target={target_user_id} action={action_to_lift}: {error}")
+            self.safe_send_text(chat_id, "Не смог снять санкцию. Проверь права бота.")
+            return True
+
+        self.safe_send_text(chat_id, "Не понял, какую санкцию снимать.")
+        return True
+
+    def maybe_apply_auto_moderation(self, chat_id: int, user_id: Optional[int], message: dict, chat_type: str) -> bool:
+        if chat_type not in {"group", "supergroup"}:
+            return False
+        if user_id is None or user_id == OWNER_USER_ID:
+            return False
+        from_user = (message.get("from") or {})
+        if from_user.get("is_bot"):
+            return False
+        if not self.can_moderate_target(chat_id, int(user_id)):
+            return False
+        raw_text = (message.get("text") or "").strip()
+        if not raw_text:
+            return False
+        recent_rows = self.state.get_recent_user_rows(chat_id, int(user_id), limit=6)
+        recent_texts = [normalize_whitespace(row[6] or "").lower() for row in recent_rows]
+        decision = _detect_auto_moderation_decision(
+            message=message,
+            raw_text=raw_text,
+            recent_texts=recent_texts,
+            chat_title=((message.get("chat") or {}).get("title") or ""),
+            bot_username=self.bot_username,
+            trigger_name=self.config.trigger_name,
+            contains_profanity_func=contains_profanity,
+        )
+        if decision is None:
+            return False
+        self.apply_auto_moderation_decision(chat_id, int(user_id), message, decision)
+        return True
+
+    def apply_auto_moderation_decision(
+        self,
+        chat_id: int,
+        target_user_id: int,
+        message: dict,
+        decision: AutoModerationDecision,
+    ) -> None:
+        from_user = message.get("from") or {}
+        username = from_user.get("username") or ""
+        first_name = from_user.get("first_name") or ""
+        last_name = from_user.get("last_name") or ""
+        target_label = build_actor_name(target_user_id, username, first_name, last_name, "user")
+        message_id = message.get("message_id")
+        raw_text = (message.get("text") or "").strip()
+        audit_reason = decision.reason
+        now_ts = int(time.time())
+        until_ts: Optional[int] = None
+        action_name = decision.action
+
+        if decision.delete_message and message_id:
+            try:
+                self.delete_message(chat_id, int(message_id))
+            except RequestException as error:
+                log(f"auto moderation delete failed chat={chat_id} message_id={message_id}: {error}")
+
+        if decision.add_warning:
+            warn_limit, warn_mode, warn_expire_seconds = self.state.get_warn_settings(chat_id)
+            warning_expires_at = now_ts + warn_expire_seconds if warn_expire_seconds > 0 else None
+            count = self.state.add_warning(chat_id, target_user_id, audit_reason, OWNER_USER_ID, expires_at=warning_expires_at)
+            self.legacy.sync_moderation_event(
+                chat_id=chat_id,
+                user_id=target_user_id,
+                action="auto_warn",
+                reason=audit_reason,
+                created_by_user_id=OWNER_USER_ID,
+                expires_at=warning_expires_at,
+                source_ref=f"auto_moderation:{decision.code}",
+            )
+            self.state.record_event(chat_id, target_user_id, "assistant", "auto_warn", f"[auto_warn {target_user_id}: {audit_reason}]")
+            if decision.action == "warn":
+                self.safe_send_text(chat_id, f"JARVIS: сообщение удалено. {target_label}, предупреждение за нарушение правил: {decision.public_reason}.")
+                self.notify_owner(
+                    self.render_auto_moderation_owner_report(
+                        chat_id=chat_id,
+                        message=message,
+                        target_user_id=target_user_id,
+                        target_label=target_label,
+                        decision=decision,
+                        applied_action="warn",
+                    )
+                )
+                return
+
+        try:
+            if decision.action == "mute":
+                until_ts = now_ts + decision.mute_seconds if decision.mute_seconds > 0 else None
+                self.restrict_chat_member(chat_id, target_user_id, False, until_ts=until_ts)
+                if until_ts is not None:
+                    self.state.add_moderation_action(chat_id, target_user_id, "mute", audit_reason, OWNER_USER_ID, expires_at=until_ts)
+                    action_name = "tmute"
+                self.safe_send_text(
+                    chat_id,
+                    f"JARVIS: {target_label} получил мут за нарушение правил: {decision.public_reason}."
+                    + (f" Срок: {format_duration_seconds(decision.mute_seconds)}." if decision.mute_seconds > 0 else ""),
+                )
+            else:
+                return
+        except RequestException as error:
+            log(f"auto moderation action failed chat={chat_id} target={target_user_id} action={decision.action}: {error}")
+            return
+
+        self.legacy.sync_moderation_event(
+            chat_id=chat_id,
+            user_id=target_user_id,
+            action=action_name,
+            reason=audit_reason,
+            created_by_user_id=OWNER_USER_ID,
+            expires_at=until_ts,
+            source_ref=f"auto_moderation:{decision.code}",
+        )
+        self.state.record_event(chat_id, target_user_id, "assistant", f"auto_{action_name}", f"[auto_{action_name} {target_user_id}: {audit_reason}]")
+        self.notify_owner(
+            self.render_auto_moderation_owner_report(
+                chat_id=chat_id,
+                message=message,
+                target_user_id=target_user_id,
+                target_label=target_label,
+                decision=decision,
+                applied_action=decision.action,
+            )
         )
 
     def handle_photo_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
@@ -4980,7 +5578,7 @@ class TelegramBridge:
             f"Возможные слова и имена: {joined_terms}."
         )
 
-    def handle_command(self, chat_id: int, user_id: Optional[int], text: str, message: Optional[dict] = None) -> bool:
+    def handle_command(self, chat_id: int, user_id: Optional[int], text: str, message: Optional[dict] = None, allow_followup_text: bool = False) -> bool:
         has_access = has_chat_access(self.state.authorized_user_ids, user_id)
         if text == "/start":
             if user_id is not None:
@@ -4991,6 +5589,9 @@ class TelegramBridge:
                 self.open_control_panel(chat_id, user_id, "home")
             elif not has_access:
                 self.safe_send_text(chat_id, PUBLIC_HELP_TEXT)
+            return True
+        if text == "/rules":
+            self.safe_send_text(chat_id, self.get_group_rules_text(message))
             return True
         if text == "/commands":
             if not has_access:
@@ -5007,6 +5608,8 @@ class TelegramBridge:
             self.safe_send_text(chat_id, f"Вход по паролю отключён. Бот отвечает только владельцу {OWNER_USERNAME}.")
             return True
         if not has_access:
+            if allow_followup_text and text and not text.startswith("/"):
+                return False
             if text == "/rating" and user_id is not None:
                 self.open_control_panel(chat_id, user_id, "profile")
                 return True
@@ -5178,12 +5781,44 @@ class TelegramBridge:
         self.safe_send_text(chat_id, f"Mode: {parsed_mode}")
         return True
 
-    def run_text_task(self, chat_id: int, text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "", message: Optional[dict] = None) -> None:
+    def run_text_task(
+        self,
+        chat_id: int,
+        text: str,
+        user_id: Optional[int] = None,
+        chat_type: str = "private",
+        assistant_persona: str = "",
+        message: Optional[dict] = None,
+        spontaneous_group_reply: bool = False,
+    ) -> None:
         try:
-            answer = self.ask_codex(chat_id, text, user_id=user_id, chat_type=chat_type, assistant_persona=assistant_persona, message=message)
+            log(
+                f"run_text_task start chat={chat_id} type={chat_type} user={user_id} "
+                f"persona={assistant_persona or '-'} text={shorten_for_log(text)}"
+            )
+            answer = self.ask_codex(
+                chat_id,
+                text,
+                user_id=user_id,
+                chat_type=chat_type,
+                assistant_persona=assistant_persona,
+                message=message,
+                spontaneous_group_reply=spontaneous_group_reply,
+            )
             self.state.append_history(chat_id, "user", text)
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
+            delivered_via_status = self.consume_answer_delivered_via_status(chat_id)
+            if not delivered_via_status:
+                reply_to_message_id = None
+                if chat_type in {"group", "supergroup"}:
+                    reply_to_message_id = (message or {}).get("message_id")
+                self.safe_send_text(chat_id, answer, reply_to_message_id=reply_to_message_id)
+            if chat_type in {"group", "supergroup"}:
+                self.mark_active_group_discussion(chat_id, user_id, message)
+            if spontaneous_group_reply:
+                self.grant_group_followup_window(chat_id, user_id)
+            log(f"run_text_task sent chat={chat_id} answer_len={len(answer or '')}")
         except Exception as error:
             log_exception(f"text task failed chat={chat_id}", error, limit=10)
             self.safe_send_text(chat_id, "Не удалось обработать запрос. Ошибка записана в лог.")
@@ -5207,7 +5842,7 @@ class TelegramBridge:
             self.state.append_history(chat_id, "user", f"[Пользователь отправил фото: caption={summary}]")
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
-            self.safe_send_text(chat_id, answer)
+            self.safe_send_text(chat_id, answer, reply_to_message_id=(message or {}).get("message_id"))
         finally:
             self.state.finish_chat_task(chat_id)
 
@@ -5227,7 +5862,7 @@ class TelegramBridge:
             self.state.append_history(chat_id, "user", f"[Пользователь отправил документ: {summary}]")
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
-            self.safe_send_text(chat_id, answer)
+            self.safe_send_text(chat_id, answer, reply_to_message_id=(message or {}).get("message_id"))
         finally:
             self.state.finish_chat_task(chat_id)
 
@@ -5298,7 +5933,9 @@ class TelegramBridge:
             self.state.append_history(chat_id, "user", f"[Голосовое сообщение: {transcript}]")
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
-            self.safe_send_text(chat_id, answer)
+            delivered_via_status = self.consume_answer_delivered_via_status(chat_id)
+            if not delivered_via_status:
+                self.safe_send_text(chat_id, answer, reply_to_message_id=message_id if chat_type in {"group", "supergroup"} else None)
         finally:
             self.state.finish_chat_task(chat_id)
 
@@ -5657,6 +6294,7 @@ class TelegramBridge:
         self.send_inline_message(chat_id, build_help_panel_text(section), build_help_panel_markup(section))
 
     def send_access_denied(self, chat_id: int) -> None:
+        log(f"send_access_denied chat={chat_id}")
         self.safe_send_text(chat_id, ACCESS_DENIED_TEXT)
 
     def handle_callback_query(self, callback_query: dict) -> None:
@@ -6541,6 +7179,7 @@ class TelegramBridge:
         except ValueError:
             last_backup_value = 0.0
         backup_text = datetime.utcfromtimestamp(last_backup_value).strftime("%Y-%m-%d %H:%M:%S UTC") if last_backup_value > 0 else "ещё не было"
+        runtime_snapshot = inspect_runtime_log(self.log_path)
         recent_errors = read_recent_log_highlights(self.log_path, limit=8)
         recent_routes = self.state.get_recent_request_diagnostics(limit=5)
         lines = [
@@ -6560,10 +7199,13 @@ class TelegramBridge:
             f"Route decisions в БД: {status_snapshot['total_route_decisions']}",
             f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
             f"Heartbeat: {self.config.heartbeat_path}",
+            f"Heartbeat timeout: {self.config.heartbeat_timeout_seconds}s",
             f"Последний backup: {backup_text}",
             "",
             "Ресурсы:",
             render_resource_summary(),
+            "",
+            render_bridge_runtime_watch(),
         ]
         world_state_context = self.state.get_world_state_context(limit=6)
         drive_context = self.state.get_drive_context()
@@ -6577,6 +7219,8 @@ class TelegramBridge:
             lines.extend(["", "Недавние ошибки/сбои:", *[f"- {item}" for item in recent_errors]])
         else:
             lines.extend(["", "Недавние ошибки/сбои:", "- Явных ошибок в хвосте лога не найдено."])
+        if int(runtime_snapshot.get("warning_count", 0)):
+            lines.extend(["", "Недавние recoverable warnings:", *[f"- {item}" for item in runtime_snapshot.get("recent_warning_lines", [])[-5:]]])
         return "\n".join(lines)
 
     def handle_export_command(self, chat_id: int, scope: str) -> bool:
@@ -6795,7 +7439,16 @@ class TelegramBridge:
             command.extend(["-i", str(image_path)])
         return command
 
-    def ask_codex(self, chat_id: int, user_text: str, user_id: Optional[int] = None, chat_type: str = "private", assistant_persona: str = "", message: Optional[dict] = None) -> str:
+    def ask_codex(
+        self,
+        chat_id: int,
+        user_text: str,
+        user_id: Optional[int] = None,
+        chat_type: str = "private",
+        assistant_persona: str = "",
+        message: Optional[dict] = None,
+        spontaneous_group_reply: bool = False,
+    ) -> str:
         started_at = time.perf_counter()
         reply_context = self.build_reply_context(chat_id, message)
         initial_route_decision = analyze_request_route(
@@ -6824,10 +7477,24 @@ class TelegramBridge:
             last_route_kind=route_decision.route_kind,
         )
         early_status_message_id: Optional[int] = None
-        if route_decision.use_live or route_decision.use_web:
-            initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
+        allow_status_message = chat_type not in {"group", "supergroup"}
+        initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
+        progress_target_label = build_progress_target_label(message, user_id)
+        log(
+            "ask_codex route "
+            f"chat={chat_id} user={user_id} route={route_decision.route_kind} "
+            f"persona={route_decision.persona} intent={route_decision.intent} "
+            f"use_live={route_decision.use_live} use_web={route_decision.use_web} "
+            f"use_events={route_decision.use_events} use_db={route_decision.use_database} "
+            f"use_reply={route_decision.use_reply} query_len={len(user_text or '')}"
+        )
+        if allow_status_message and (route_decision.use_live or route_decision.use_web):
             status_note = "Проверяю актуальные данные..." if route_decision.persona != "enterprise" else "Проверяю актуальные данные через Enterprise..."
             early_status_message_id = self.send_status_message(chat_id, f"{initial_status}\n\n{status_note}")
+        elif allow_status_message and spontaneous_group_reply:
+            early_status_message_id = self.send_status_message(chat_id, initial_status)
+        elif allow_status_message and user_id == OWNER_USER_ID:
+            early_status_message_id = self.send_status_message(chat_id, initial_status)
         if detect_local_chat_query(user_text) and drive_scores.get("stale_memory_pressure", 0.0) >= 35.0:
             self.state.refresh_relation_memory(chat_id)
 
@@ -6844,11 +7511,8 @@ class TelegramBridge:
                 source="enterprise_runtime_probe",
             )
             status_message_id = self.send_status_message(chat_id, f"{OWNER_AGENT_RUNNING_TEXT}\n\nСнимаю прямой runtime probe...")
-            delivered_via_status = False
-            if status_message_id is not None:
-                delivered_via_status = self.edit_status_message(chat_id, status_message_id, report.answer)
-            if not delivered_via_status:
-                self.safe_send_text(chat_id, report.answer)
+            if status_message_id is not None and self.edit_status_message(chat_id, status_message_id, report.answer):
+                self.mark_answer_delivered_via_status(chat_id)
             self.record_route_diagnostic(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -6874,11 +7538,8 @@ class TelegramBridge:
                     source="live_route",
                 )
                 status_message_id = early_status_message_id
-                delivered_via_status = False
-                if status_message_id is not None:
-                    delivered_via_status = self.edit_status_message(chat_id, status_message_id, report.answer)
-                if not delivered_via_status:
-                    self.safe_send_text(chat_id, report.answer)
+                if status_message_id is not None and self.edit_status_message(chat_id, status_message_id, report.answer):
+                    self.mark_answer_delivered_via_status(chat_id)
                 self.record_route_diagnostic(
                     chat_id=chat_id,
                     user_id=user_id,
@@ -6889,7 +7550,13 @@ class TelegramBridge:
                 )
                 return report.answer
 
-        if route_decision.use_web and not route_decision.use_workspace:
+        if (
+            route_decision.use_web
+            and not route_decision.use_workspace
+            and not route_decision.use_events
+            and not route_decision.use_database
+            and not route_decision.use_reply
+        ):
             progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
             with HeartbeatGuard(self), ProgressStatusGuard(
                 self,
@@ -6913,11 +7580,8 @@ class TelegramBridge:
                 source="web_route",
             )
             status_message_id = early_status_message_id
-            delivered_via_status = False
-            if status_message_id is not None:
-                delivered_via_status = self.edit_status_message(chat_id, status_message_id, report.answer)
-            if not delivered_via_status:
-                self.safe_send_text(chat_id, report.answer)
+            if status_message_id is not None and self.edit_status_message(chat_id, status_message_id, report.answer):
+                self.mark_answer_delivered_via_status(chat_id)
             self.record_route_diagnostic(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -6928,7 +7592,39 @@ class TelegramBridge:
             )
             return report.answer
 
-        with HeartbeatGuard(self):
+        if route_decision.use_web and (route_decision.use_events or route_decision.use_database) and not route_decision.use_workspace:
+            observed_mixed_answer = self.build_observed_mixed_answer(chat_id, user_text, user_id=user_id)
+            if observed_mixed_answer:
+                report = apply_self_check_contract(observed_mixed_answer, route_decision)
+                self.state.update_self_model_state(last_outcome=report.outcome)
+                self.run_post_task_reflection(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    route_decision=route_decision,
+                    user_text=user_text,
+                    report=report,
+                    source="mixed_observed_route",
+                )
+                if early_status_message_id is not None and self.edit_status_message(chat_id, early_status_message_id, report.answer):
+                    self.mark_answer_delivered_via_status(chat_id)
+                self.record_route_diagnostic(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    route_decision=route_decision,
+                    report=report,
+                    started_at=started_at,
+                    query_text=user_text,
+                )
+                return report.answer
+
+        context_progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
+        with HeartbeatGuard(self), ProgressStatusGuard(
+            self,
+            chat_id=chat_id,
+            status_message_id=early_status_message_id,
+            initial_status=initial_status,
+            progress_style=context_progress_style,
+        ):
             context_bundle = self.build_text_context_bundle(
                 chat_id=chat_id,
                 user_text=user_text,
@@ -6936,9 +7632,20 @@ class TelegramBridge:
                 user_id=user_id,
                 message=message,
                 reply_context=reply_context,
+                active_group_followup=spontaneous_group_reply or self.is_group_followup_message(chat_id, message or {}, (message or {}).get("text") or user_text),
             )
+        log(
+            "ask_codex context "
+            f"chat={chat_id} route={route_decision.route_kind} "
+            f"summary={len(context_bundle.summary_text)} facts={len(context_bundle.facts_text)} "
+            f"events={len(context_bundle.event_context)} db={len(context_bundle.database_context)} "
+            f"reply={len(context_bundle.reply_context)} web={len(context_bundle.web_context)} "
+            f"user_mem={len(context_bundle.user_memory_text)} rel_mem={len(context_bundle.relation_memory_text)} "
+            f"chat_mem={len(context_bundle.chat_memory_text)} summary_mem={len(context_bundle.summary_memory_text)}"
+        )
         identity_label = "Enterprise" if route_decision.persona == "enterprise" else "Jarvis"
         persona_note = ENTERPRISE_ASSISTANT_PERSONA_NOTE if route_decision.persona == "enterprise" else JARVIS_ASSISTANT_PERSONA_NOTE
+        owner_note = OWNER_PRIORITY_NOTE if user_id == OWNER_USER_ID else ""
         prompt = build_prompt(
             mode=self.state.get_mode(chat_id),
             history=list(self.state.get_history(chat_id)),
@@ -6948,9 +7655,11 @@ class TelegramBridge:
             event_context=context_bundle.event_context,
             database_context=context_bundle.database_context,
             reply_context=context_bundle.reply_context,
+            discussion_context=context_bundle.discussion_context,
             identity_label=identity_label,
             include_identity_prompt=True,
             persona_note=persona_note,
+            owner_note=owner_note,
             web_context=context_bundle.web_context,
             route_summary=context_bundle.route_summary,
             guardrail_note=context_bundle.guardrail_note,
@@ -6964,33 +7673,54 @@ class TelegramBridge:
             chat_memory_text=context_bundle.chat_memory_text,
             summary_memory_text=context_bundle.summary_memory_text,
         )
+        history_items = list(self.state.get_history(chat_id))
+        log(
+            "ask_codex prompt "
+            f"chat={chat_id} route={route_decision.route_kind} prompt_len={len(prompt)} "
+            f"history_items={len(history_items)}"
+        )
+
+        replace_status_with_answer = early_status_message_id is not None and chat_type in {"group", "supergroup"}
 
         if route_decision.use_workspace:
             raw_answer = self.run_codex_with_progress(
                 chat_id,
                 prompt,
-                initial_status=OWNER_AGENT_RUNNING_TEXT,
+                initial_status=initial_status,
                 sandbox_mode="danger-full-access",
                 approval_policy="never",
                 timeout_seconds=self.config.enterprise_task_timeout,
                 progress_style="enterprise",
-                replace_status_with_answer=True,
+                replace_status_with_answer=replace_status_with_answer,
                 status_message_id=early_status_message_id,
+                show_status_message=allow_status_message,
+                target_label=progress_target_label,
             )
         else:
-            initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
             progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
-            web_timeout_seconds: Optional[int] = None
+            route_timeout_seconds: Optional[int] = min(self.config.codex_timeout, DEFAULT_CHAT_ROUTE_TIMEOUT)
             if route_decision.use_web:
-                web_timeout_seconds = min(self.config.codex_timeout, 60)
+                route_timeout_seconds = min(self.config.codex_timeout, 60)
+            elif len(prompt) >= 14000:
+                route_timeout_seconds = min(route_timeout_seconds, 60)
+            log(
+                "ask_codex model_start "
+                f"chat={chat_id} route={route_decision.route_kind} timeout={route_timeout_seconds}"
+            )
             raw_answer = self.run_codex_with_progress(
                 chat_id,
                 prompt,
                 initial_status=initial_status,
                 progress_style=progress_style,
-                replace_status_with_answer=True,
+                replace_status_with_answer=replace_status_with_answer,
                 status_message_id=early_status_message_id,
-                timeout_seconds=web_timeout_seconds,
+                show_status_message=allow_status_message,
+                timeout_seconds=route_timeout_seconds,
+                target_label=progress_target_label,
+            )
+            log(
+                "ask_codex model_end "
+                f"chat={chat_id} route={route_decision.route_kind} answer_len={len(raw_answer or '')}"
             )
 
         if route_decision.use_web and raw_answer in {
@@ -7018,6 +7748,8 @@ class TelegramBridge:
             started_at=started_at,
             query_text=user_text,
         )
+        if early_status_message_id is not None and self.edit_status_message(chat_id, early_status_message_id, report.answer):
+            self.mark_answer_delivered_via_status(chat_id)
         return report.answer
 
     def build_reply_context(self, chat_id: int, message: Optional[dict]) -> str:
@@ -7052,6 +7784,34 @@ class TelegramBridge:
                     lines.append(f"- [{stamp}] {event_actor} ({message_type}): {truncate_text(content, 180)}")
         return "\n".join(lines)
 
+    def build_current_discussion_context(
+        self,
+        chat_id: int,
+        *,
+        message: Optional[dict],
+        user_id: Optional[int],
+        active_group_followup: bool = False,
+    ) -> str:
+        active_thread = self.get_active_group_discussion(chat_id, message=message, raw_text=(message or {}).get("text") or "")
+        discussion_context = _build_current_discussion_context(
+            state=self.state,
+            chat_id=chat_id,
+            message=message,
+            user_id=user_id,
+            query_text=(message or {}).get("text") or "",
+            active_group_followup=active_group_followup,
+            active_thread=active_thread,
+            build_actor_name_func=build_actor_name,
+            build_service_actor_name_func=build_service_actor_name,
+            truncate_text_func=truncate_text,
+        )
+        discussion_state_hint = self.get_group_discussion_state_hint(chat_id)
+        if discussion_state_hint:
+            if discussion_context:
+                return f"{discussion_context}\n\n{discussion_state_hint}"
+            return discussion_state_hint
+        return discussion_context
+
     def build_text_context_bundle(
         self,
         *,
@@ -7061,37 +7821,26 @@ class TelegramBridge:
         user_id: Optional[int],
         message: Optional[dict],
         reply_context: str,
+        active_group_followup: bool = False,
     ) -> ContextBundle:
-        web_context = self.build_web_search_context(user_text) if route_decision.use_web else ""
-        event_context = self.state.get_event_context(chat_id, user_text, limit=40 if detect_local_chat_query(user_text) else 24) if route_decision.use_events else ""
-        database_context = self.state.get_database_context(chat_id, user_text) if route_decision.use_database else ""
-        reply_to = ((message or {}).get("reply_to_message") or {}).get("from") or {}
-        include_entity_context = _should_include_entity_context(
-            persona=route_decision.persona,
-            use_workspace=route_decision.use_workspace,
-            query_text=user_text,
-            is_owner_chat=is_owner_private_chat(user_id, chat_id),
-            detect_local_chat_query_func=detect_local_chat_query,
-        )
-        return _build_context_bundle(
-            ContextBundle,
-            summary_text=self.state.get_summary(chat_id),
-            facts_text=self.state.render_facts(chat_id, query=user_text, limit=10),
-            event_context=event_context,
-            database_context=database_context,
+        return _build_text_context_bundle(
+            context_bundle_factory=ContextBundle,
+            state=self.state,
+            chat_id=chat_id,
+            user_text=user_text,
+            route_decision=route_decision,
+            user_id=user_id,
+            message=message,
             reply_context=reply_context,
-            self_model_text=self.state.get_self_model_context(route_decision.persona) if include_entity_context else "",
-            autobiographical_text=self.state.get_autobiographical_context(chat_id, query=user_text, limit=4) if include_entity_context else "",
-            skill_memory_text=self.state.get_skill_memory_context(user_text, route_kind=route_decision.route_kind, limit=3) if include_entity_context else "",
-            world_state_text=self.state.get_world_state_context(limit=8) if include_entity_context else "",
-            drive_state_text=self.state.get_drive_context() if include_entity_context else "",
-            user_memory_text=self.state.get_user_memory_context(chat_id, user_id=user_id, reply_to_user_id=reply_to.get("id")),
-            relation_memory_text=self.state.get_relation_memory_context(chat_id, user_id=user_id, reply_to_user_id=reply_to.get("id"), query=user_text),
-            chat_memory_text=self.state.get_chat_memory_context(chat_id, query=user_text),
-            summary_memory_text=self.state.get_summary_memory_context(chat_id, limit=3),
-            web_context=web_context,
-            route_summary=build_route_summary_text(route_decision),
-            guardrail_note=build_guardrail_note(route_decision),
+            active_group_followup=active_group_followup,
+            detect_local_chat_query_func=detect_local_chat_query,
+            should_include_database_context_func=should_include_database_context,
+            is_owner_private_chat_func=is_owner_private_chat,
+            build_current_discussion_context_func=self.build_current_discussion_context,
+            build_external_research_context_func=self.build_external_research_context,
+            build_route_summary_text_func=build_route_summary_text,
+            build_guardrail_note_func=build_guardrail_note,
+            should_include_entity_context_func=_should_include_entity_context,
         )
 
     def build_attachment_context_bundle(
@@ -7102,25 +7851,15 @@ class TelegramBridge:
         message: Optional[dict],
         reply_context: str,
     ) -> ContextBundle:
-        from_user = (message or {}).get("from") or {}
-        reply_to_user = (((message or {}).get("reply_to_message") or {}).get("from") or {})
-        include_entity_context = bool(prompt_text)
-        return _build_context_bundle(
-            ContextBundle,
-            summary_text=self.state.get_summary(chat_id),
-            facts_text=self.state.render_facts(chat_id, query=prompt_text, limit=10),
-            event_context=self.state.get_event_context(chat_id, prompt_text) if should_include_event_context(prompt_text) else "",
-            database_context=self.state.get_database_context(chat_id, prompt_text) if should_include_database_context(prompt_text) else "",
+        return _build_attachment_context_bundle(
+            context_bundle_factory=ContextBundle,
+            state=self.state,
+            chat_id=chat_id,
+            prompt_text=prompt_text,
+            message=message,
             reply_context=reply_context,
-            self_model_text=self.state.get_self_model_context("jarvis") if include_entity_context else "",
-            autobiographical_text=self.state.get_autobiographical_context(chat_id, query=prompt_text, limit=4) if include_entity_context else "",
-            skill_memory_text=self.state.get_skill_memory_context(prompt_text, route_kind="codex_chat", limit=3) if include_entity_context else "",
-            world_state_text=self.state.get_world_state_context(limit=8) if include_entity_context else "",
-            drive_state_text=self.state.get_drive_context() if include_entity_context else "",
-            user_memory_text=self.state.get_user_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id")),
-            relation_memory_text=self.state.get_relation_memory_context(chat_id, user_id=from_user.get("id"), reply_to_user_id=reply_to_user.get("id"), query=prompt_text),
-            chat_memory_text=self.state.get_chat_memory_context(chat_id, query=prompt_text),
-            summary_memory_text=self.state.get_summary_memory_context(chat_id, limit=3),
+            should_include_event_context_func=should_include_event_context,
+            should_include_database_context_func=should_include_database_context,
         )
 
     def record_route_diagnostic(
@@ -7315,13 +8054,64 @@ class TelegramBridge:
             )
         except RequestException as error:
             log(f"exchange lookup failed pair={base}/{quote} error={error}")
+            return self.fetch_exchange_rate_answer_yahoo(base, quote)
+        rates = payload.get("rates") or {}
+        value = rates.get(quote)
+        if value is None:
+            return self.fetch_exchange_rate_answer_yahoo(base, quote)
+        date_value = payload.get("date") or ""
+        return f"Курс {base}/{quote}: 1 {base} = {float(value):.4f} {quote}. Дата источника: {date_value}."
+
+    def fetch_exchange_rate_answer_yahoo(self, base_currency: str, quote_currency: str) -> str:
+        symbol = f"{(base_currency or '').upper()}{(quote_currency or '').upper()}=X"
+        try:
+            payload = self.request_json_with_retry(
+                "get",
+                "https://query1.finance.yahoo.com/v7/finance/quote",
+                params={"symbols": symbol},
+                timeout=20,
+            )
+        except RequestException as error:
+            log(f"exchange yahoo lookup failed pair={base_currency}/{quote_currency} error={error}")
+            return self.fetch_exchange_rate_answer_open_er(base_currency, quote_currency)
+        results = ((payload.get("quoteResponse") or {}).get("result") or [])
+        if not results:
+            return self.fetch_exchange_rate_answer_open_er(base_currency, quote_currency)
+        item = results[0]
+        price = item.get("regularMarketPrice")
+        market_time = item.get("regularMarketTime")
+        if price is None:
+            return self.fetch_exchange_rate_answer_open_er(base_currency, quote_currency)
+        answer = f"Курс {base_currency}/{quote_currency}: 1 {base_currency} = {float(price):.4f} {quote_currency}."
+        if market_time:
+            answer += f" Источник: Yahoo Finance, обновление {datetime.utcfromtimestamp(int(market_time)).strftime('%Y-%m-%d %H:%M:%S')} UTC."
+        else:
+            answer += " Источник: Yahoo Finance."
+        return answer
+
+    def fetch_exchange_rate_answer_open_er(self, base_currency: str, quote_currency: str) -> str:
+        base = (base_currency or "").upper()
+        quote = (quote_currency or "").upper()
+        try:
+            payload = self.request_json_with_retry(
+                "get",
+                f"https://open.er-api.com/v6/latest/{base}",
+                timeout=20,
+            )
+        except RequestException as error:
+            log(f"exchange open.er lookup failed pair={base}/{quote} error={error}")
             return "Не удалось получить актуальный курс из внешнего источника."
         rates = payload.get("rates") or {}
         value = rates.get(quote)
         if value is None:
             return f"Не удалось получить курс {base}/{quote}."
-        date_value = payload.get("date") or ""
-        return f"Курс {base}/{quote}: 1 {base} = {float(value):.4f} {quote}. Дата источника: {date_value}."
+        updated_at = normalize_whitespace(str(payload.get("time_last_update_utc") or ""))
+        answer = f"Курс {base}/{quote}: 1 {base} = {float(value):.4f} {quote}."
+        if updated_at:
+            answer += f" Источник: open.er-api, обновление {updated_at}."
+        else:
+            answer += " Источник: open.er-api."
+        return answer
 
     def fetch_crypto_price_answer(self, crypto_id: str) -> str:
         try:
@@ -7381,25 +8171,29 @@ class TelegramBridge:
         return answer
 
     def fetch_news_answer(self, query: str, limit: int = 3) -> str:
+        normalized_query = normalize_whitespace(query)
+        rss_query = normalized_query
+        if any(marker in normalized_query.lower() for marker in ("за последний день", "за день", "за сутки", "сегодня", "последние", "свежие")):
+            rss_query = f"{normalized_query} when:1d"
         try:
             response_text = self.request_text_with_retry(
                 "get",
                 "https://news.google.com/rss/search",
-                params={"q": query, "hl": "ru", "gl": "RU", "ceid": "RU:ru"},
+                params={"q": rss_query, "hl": "ru", "gl": "RU", "ceid": "RU:ru"},
                 timeout=20,
             )
         except RequestException as error:
-            log(f"news lookup failed query={shorten_for_log(query)} error={error}")
+            log(f"news lookup failed query={shorten_for_log(normalized_query)} error={error}")
             return "Не удалось получить свежие новости по этому запросу."
         try:
             root = ET.fromstring(response_text)
         except ET.ParseError as error:
-            log(f"news parse failed query={shorten_for_log(query)} error={error}")
+            log(f"news parse failed query={shorten_for_log(normalized_query)} error={error}")
             return "Источник новостей ответил в неожиданном формате."
         items = root.findall("./channel/item")
         if not items:
-            return f"По запросу «{query}» свежих новостей не нашёл."
-        lines = [f"Свежие новости по запросу «{query}»:"] 
+            return f"По запросу «{normalized_query}» свежих новостей не нашёл."
+        lines = [f"Свежие новости по запросу «{normalized_query}»:"] 
         for item in items[:limit]:
             title = normalize_whitespace("".join(item.findtext("title", default="")).replace(" - ", " — "))
             link = normalize_whitespace(item.findtext("link", default=""))
@@ -7412,7 +8206,7 @@ class TelegramBridge:
             line += f"\n  {truncate_text(link, 280)}"
             lines.append(line)
         if len(lines) == 1:
-            return f"По запросу «{query}» новости получить не удалось."
+            return f"По запросу «{normalized_query}» новости получить не удалось."
         return "\n".join(lines)
 
     def fetch_current_fact_answer(self, query: str, limit: int = 3) -> str:
@@ -7490,6 +8284,7 @@ class TelegramBridge:
         if not urls:
             return ""
         url = urls[0]
+        host = urlparse(url).netloc or url
         try:
             response_text = self.request_text_with_retry(
                 "get",
@@ -7499,6 +8294,8 @@ class TelegramBridge:
             )
         except RequestException as error:
             log(f"url fetch failed url={shorten_for_log(url, 240)} error={error}")
+            if is_direct_url_antibot_block(url, "", "", error=error):
+                return build_direct_url_blocked_reply(url)
             return ""
 
         cleaned_html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\\1>", " ", response_text)
@@ -7509,9 +8306,10 @@ class TelegramBridge:
             cleaned_html,
         )
         meta_description = normalize_whitespace(html.unescape(re.sub(r"<.*?>", " ", meta_match.group(1) if meta_match else "")))
+        if is_direct_url_antibot_block(url, title, meta_description, response_text=response_text):
+            return build_direct_url_blocked_reply(url)
         text_content = normalize_whitespace(html.unescape(re.sub(r"<[^>]+>", " ", cleaned_html)))
         excerpt = truncate_text(text_content, limit_chars)
-        host = urlparse(url).netloc or url
         lines = [f"Прямой контекст страницы: {host}"]
         if title:
             lines.append(f"Title: {title}")
@@ -7527,7 +8325,9 @@ class TelegramBridge:
         if not normalized_query:
             return ""
         direct_url_context = self.build_direct_url_context(normalized_query)
-        search_query = remove_urls_from_text(normalized_query)
+        if not direct_url_context and is_query_too_broad_for_external_search(normalized_query):
+            return build_external_search_needs_object_reply(normalized_query)
+        search_query = normalize_external_search_query(normalized_query)
         if direct_url_context and not search_query:
             return direct_url_context
         if not search_query:
@@ -7550,8 +8350,11 @@ class TelegramBridge:
             r'<div[^>]*class="result__snippet"[^>]*>(?P<snippet_div>.*?)</div>)',
             re.S,
         )
+        raw_results = 0
+        irrelevant_results = 0
         items: List[str] = []
         for match in pattern.finditer(response_text):
+            raw_results += 1
             title = html.unescape(re.sub(r"<.*?>", " ", match.group("title") or ""))
             snippet_raw = match.group("snippet_a") or match.group("snippet_div") or ""
             snippet = html.unescape(re.sub(r"<.*?>", " ", snippet_raw))
@@ -7561,17 +8364,175 @@ class TelegramBridge:
             url = normalize_whitespace(url)
             if not title or not url:
                 continue
+            if is_irrelevant_web_search_result(title, snippet, url):
+                irrelevant_results += 1
+                continue
             items.append(
                 f"- {truncate_text(title, 180)}\n  URL: {truncate_text(url, 300)}\n  Фрагмент: {truncate_text(snippet or 'Фрагмент не найден.', 260)}"
             )
             if len(items) >= limit:
                 break
+        if irrelevant_results and not items:
+            return build_external_search_needs_object_reply(normalized_query)
+        if raw_results >= 3 and irrelevant_results >= max(2, raw_results - 1) and len(items) <= 1:
+            return build_external_search_not_confirmed_reply(normalized_query)
         if not items:
             return direct_url_context
         web_context = f"Свежий веб-контекст по запросу «{truncate_text(search_query, 180)}»:\n" + "\n".join(items)
         if direct_url_context:
             return direct_url_context + "\n\n" + web_context
         return web_context
+
+    def collect_external_research_sections(self, query: str) -> List[Tuple[str, str]]:
+        normalized_query = normalize_whitespace(query)
+        if not normalized_query:
+            return []
+        sections: List[Tuple[str, str]] = []
+        for task in plan_external_research_tasks(normalized_query):
+            if task.kind == "news":
+                result = self.fetch_news_answer(task.payload, limit=3)
+            elif task.kind == "current_fact":
+                result = self.fetch_current_fact_answer(task.payload, limit=3)
+            elif task.kind == "weather":
+                result = self.fetch_weather_answer(task.payload)
+            elif task.kind == "fx":
+                base, quote = (task.payload.split("/", 1) + [""])[:2]
+                result = self.fetch_exchange_rate_answer(base, quote)
+            elif task.kind == "crypto":
+                result = self.fetch_crypto_price_answer(task.payload)
+            elif task.kind == "web_search":
+                result = self.build_web_search_context(task.payload)
+            else:
+                result = ""
+            cleaned_result = normalize_whitespace(result)
+            if not cleaned_result:
+                continue
+            sections.append((task.label, cleaned_result))
+        return sections
+
+    def build_external_research_context(self, query: str) -> str:
+        rendered_sections: List[str] = []
+        for label, body in self.collect_external_research_sections(query):
+            if label == "Web":
+                rendered_sections.append(body)
+            else:
+                rendered_sections.append(f"{label}:\n{body}")
+        return "\n\n".join(section.strip() for section in rendered_sections if section.strip())
+
+    def build_observed_news_summary(self, body: str) -> str:
+        titles = []
+        for line in (body or "").splitlines():
+            cleaned = normalize_whitespace(line)
+            if cleaned.startswith("• "):
+                titles.append(cleaned[2:].strip())
+            if len(titles) >= 2:
+                break
+        if not titles:
+            return truncate_text(normalize_whitespace(body), 220)
+        return "Главные свежие сюжеты в выдаче: " + "; ".join(titles) + "."
+
+    def build_observed_current_fact_summary(self, body: str, fallback_limit: int = 260) -> str:
+        cleaned = normalize_whitespace(body)
+        if not cleaned:
+            return ""
+        for marker in ("\n\nПодтверждение:", "\n\nИсточники по запросу", "Источники по запросу"):
+            if marker in body:
+                head = normalize_whitespace(body.split(marker, 1)[0])
+                if head:
+                    return truncate_text(head, fallback_limit)
+        return truncate_text(cleaned, fallback_limit)
+
+    def build_observed_weather_summary(self, label: str, body: str) -> str:
+        cleaned = normalize_whitespace(body)
+        cleaned = re.sub(r"\s*Источник:\s.*$", "", cleaned)
+        location = label.split(":", 1)[1] if ":" in label else label
+        cleaned = cleaned.replace("Погода сейчас в ", "")
+        return f"{location}: {truncate_text(cleaned, 180)}"
+
+    def build_observed_rate_summary(self, body: str) -> str:
+        cleaned = normalize_whitespace(body)
+        return truncate_text(cleaned, 180)
+
+    def build_observed_crypto_summary(self, body: str) -> str:
+        cleaned = normalize_whitespace(body)
+        return truncate_text(cleaned, 180)
+
+    def collect_observed_source_labels(self, external_sections: List[Tuple[str, str]]) -> List[str]:
+        labels: List[str] = []
+        for label, body in external_sections:
+            lowered = label.lower()
+            if label == "Новости" and "Google News" not in labels:
+                labels.append("Google News RSS")
+            elif lowered.startswith("погода") and "Open-Meteo" not in labels:
+                labels.append("Open-Meteo")
+            elif label == "Курс":
+                if "open.er-api" in body and "open.er-api" not in labels:
+                    labels.append("open.er-api")
+                elif "Yahoo Finance" in body and "Yahoo Finance" not in labels:
+                    labels.append("Yahoo Finance")
+                elif "Frankfurter" not in labels:
+                    labels.append("Frankfurter")
+            elif label == "Bitcoin price" and "CoinGecko" not in labels:
+                labels.append("CoinGecko")
+            elif label in {"Смартфон", "Bitcoin outlook"} and "DuckDuckGo snippets" not in labels:
+                labels.append("DuckDuckGo snippets")
+            elif label == "Web" and "DuckDuckGo web" not in labels:
+                labels.append("DuckDuckGo web")
+        return labels
+
+    def build_observed_mixed_answer(self, chat_id: int, user_text: str, user_id: Optional[int] = None) -> str:
+        external_sections = self.collect_external_research_sections(user_text)
+        lowered = normalize_whitespace(user_text).lower()
+        local_lines: List[str] = []
+        if "как меня звать" in lowered and user_id == OWNER_USER_ID:
+            owner_name = OWNER_USERNAME.lstrip("@") or "Дмитрий"
+            local_lines.append(f"Тебя зовут {owner_name}.")
+        if "кто в чате" in lowered or "кто сегодня общался" in lowered:
+            day, rows = self.state.get_daily_summary_context(chat_id, "")
+            speakers: List[str] = []
+            for _created_at, event_user_id, username, first_name, last_name, role, _message_type, _content in rows:
+                if role != "user":
+                    continue
+                actor = build_actor_name(event_user_id, username or "", first_name or "", last_name or "", role)
+                if actor not in speakers:
+                    speakers.append(actor)
+            if speakers:
+                local_lines.append(f"Сегодня в чате ({day}) писали: {', '.join(speakers[:12])}.")
+            else:
+                local_lines.append("Сегодня в чате подтверждённых пользовательских сообщений не найдено.")
+        if not external_sections and not local_lines:
+            return ""
+        lines = ["Коротко по подтверждённому сейчас."]
+        weather_summaries: List[str] = []
+        web_fallback = ""
+        for label, body in external_sections:
+            if label == "Новости":
+                lines.append(f"- Мир: {self.build_observed_news_summary(body)}")
+            elif label == "Смартфон":
+                lines.append(f"- Смартфон: {self.build_observed_current_fact_summary(body)}")
+            elif label.startswith("Погода:"):
+                weather_summaries.append(self.build_observed_weather_summary(label, body))
+            elif label == "Курс":
+                lines.append(f"- Доллар: {self.build_observed_rate_summary(body)}")
+            elif label == "Bitcoin price":
+                lines.append(f"- Биткойн сейчас: {self.build_observed_crypto_summary(body)}")
+            elif label == "Bitcoin outlook":
+                lines.append(f"- Биткойн по рынку: {self.build_observed_current_fact_summary(body, fallback_limit=220)}")
+            elif label == "Web":
+                web_fallback = truncate_text(normalize_whitespace(body), 240)
+        if weather_summaries:
+            lines.append(f"- Погода: {'; '.join(weather_summaries)}")
+        if local_lines:
+            lines.append(f"- По чату: {' '.join(local_lines)}")
+        if web_fallback and len(external_sections) <= 1:
+            lines.append(f"- Доп. веб-контекст: {web_fallback}")
+        source_labels = self.collect_observed_source_labels(external_sections)
+        if source_labels == ["DuckDuckGo web"]:
+            source_labels = []
+        if source_labels:
+            lines.append("")
+            lines.append("Источники: " + ", ".join(source_labels) + ".")
+        return "\n".join(lines).strip()
 
     def build_web_route_fallback_answer(self, query: str, web_context: str) -> str:
         normalized_query = truncate_text(normalize_whitespace(query), 180)
@@ -7764,8 +8725,10 @@ class TelegramBridge:
         timeout_seconds: Optional[int] = None,
         progress_style: str = "jarvis",
         replace_status_with_answer: bool = False,
+        show_status_message: bool = True,
+        target_label: str = "",
     ) -> str:
-        if status_message_id is None:
+        if show_status_message and status_message_id is None:
             status_message_id = self.send_status_message(chat_id, initial_status)
         command = self.build_codex_command(
             image_path=image_path,
@@ -7803,12 +8766,17 @@ class TelegramBridge:
                         if now >= next_update_at:
                             self.beat_heartbeat()
                             self.send_chat_action(chat_id, "typing")
-                            self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style)
+                            self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style, target_label)
                             phase_index += 1
                             next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
                         if elapsed >= effective_timeout:
                             process.kill()
                             process.wait(timeout=5)
+                            log(
+                                "codex progress timeout "
+                                f"chat={chat_id} timeout={effective_timeout} "
+                                f"progress_style={progress_style}"
+                            )
                             if status_message_id is not None:
                                 self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.")
                             if approval_policy == "never" and sandbox_mode == "workspace-write":
@@ -7840,6 +8808,7 @@ class TelegramBridge:
                 timeout_seconds=effective_timeout,
                 progress_style=progress_style,
                 replace_status_with_answer=replace_status_with_answer,
+                target_label=target_label,
             )
 
         answer = self._finalize_codex_result(
@@ -7851,7 +8820,7 @@ class TelegramBridge:
             approval_policy=approval_policy,
             postprocess=postprocess,
         )
-        self._finish_progress_status(chat_id, status_message_id, initial_status, answer, progress_style, replace_status_with_answer)
+        self._finish_progress_status(chat_id, status_message_id, initial_status, answer, progress_style, replace_status_with_answer, target_label)
         return answer
 
     def _retry_codex_with_progress(
@@ -7867,6 +8836,7 @@ class TelegramBridge:
         timeout_seconds: Optional[int] = None,
         progress_style: str = "jarvis",
         replace_status_with_answer: bool = False,
+        target_label: str = "",
     ) -> str:
         started_at = time.perf_counter()
         effective_timeout = timeout_seconds or self.config.codex_timeout
@@ -7891,12 +8861,17 @@ class TelegramBridge:
                         if now >= next_update_at:
                             self.beat_heartbeat()
                             self.send_chat_action(chat_id, "typing")
-                            self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style)
+                            self._update_progress_status(chat_id, status_message_id, initial_status, elapsed, phase_index, progress_style, target_label)
                             phase_index += 1
                             next_update_at = now + CODEX_PROGRESS_UPDATE_SECONDS
                         if elapsed >= effective_timeout:
                             process.kill()
                             process.wait(timeout=5)
+                            log(
+                                "codex retry progress timeout "
+                                f"chat={chat_id} timeout={effective_timeout} "
+                                f"progress_style={progress_style}"
+                            )
                             if status_message_id is not None:
                                 self.edit_status_message(chat_id, status_message_id, f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.")
                             if approval_policy == "never" and sandbox_mode == "workspace-write":
@@ -7924,7 +8899,7 @@ class TelegramBridge:
             approval_policy=approval_policy,
             postprocess=postprocess,
         )
-        self._finish_progress_status(chat_id, status_message_id, initial_status, answer, progress_style, replace_status_with_answer)
+        self._finish_progress_status(chat_id, status_message_id, initial_status, answer, progress_style, replace_status_with_answer, target_label)
         return answer
 
     def _finalize_codex_result(
@@ -7964,10 +8939,11 @@ class TelegramBridge:
         elapsed_seconds: int,
         phase_index: int,
         progress_style: str = "jarvis",
+        target_label: str = "",
     ) -> None:
         if status_message_id is None:
             return
-        status_text = build_progress_status(initial_status, elapsed_seconds, phase_index, progress_style)
+        status_text = build_progress_status(initial_status, elapsed_seconds, phase_index, progress_style, target_label)
         self.edit_status_message(chat_id, status_message_id, status_text)
 
     def _finish_progress_status(
@@ -7978,47 +8954,49 @@ class TelegramBridge:
         answer: str,
         progress_style: str = "jarvis",
         replace_status_with_answer: bool = False,
+        target_label: str = "",
     ) -> None:
         if status_message_id is None:
             return
         if replace_status_with_answer and answer and answer not in {JARVIS_OFFLINE_TEXT, JARVIS_NETWORK_ERROR_TEXT}:
             self.edit_status_message(chat_id, status_message_id, answer)
+            self.mark_answer_delivered_via_status(chat_id)
             return
         if progress_style == "enterprise":
             if answer in {JARVIS_OFFLINE_TEXT, JARVIS_NETWORK_ERROR_TEXT}:
                 status_text = (
                     f"{initial_status}\n\n"
                     "✖ Enterprise сейчас недоступен.\n"
-                    "Дмитрий, либо движок не поднялся, либо сеть отвалилась.\n"
+                    "Похоже, движок не поднялся или пропала сеть до внешнего сервиса.\n"
                     "Нужен рабочий маршрут, а не повтор сырой ошибки."
                 )
             elif answer == UPGRADE_TIMEOUT_TEXT or answer.startswith("Слишком долгий ответ."):
                 status_text = (
                     f"{initial_status}\n\n"
                     "⌛ Время вышло.\n"
-                    "Дмитрий, задача всё ещё живая, но лимит ожидания уже кончился.\n"
-                    "Если хочешь, можно дожать её более узким заходом."
+                    "Задача всё ещё живая, но лимит ожидания уже кончился.\n"
+                    "Если нужно, можно дожать её более узким заходом."
                 )
             elif answer.startswith(UPGRADE_FAILED_TEXT) or answer.startswith("Ошибка Enterprise Core:"):
                 status_text = (
                     f"{initial_status}\n\n"
                     "⚠ Выполнение завершилось с ошибкой.\n"
                     "Я не замял это под ковёр, детали уже в ответе ниже.\n"
-                    "Сэр Дмитрий, тут был не фокус, а реальный сбой."
+                    "Это реальный сбой, а не ложная тревога."
                 )
             else:
                 status_text = (
                     f"{initial_status}\n\n"
                     "✔ Готово.\n"
-                    "Дмитрий, задача дожата.\n"
-                    "Можно идти смотреть результат и делать вид, что так и было задумано."
+                    "Задача дожата.\n"
+                    "Результат готов к просмотру."
                 )
         else:
             if answer in {JARVIS_OFFLINE_TEXT, JARVIS_NETWORK_ERROR_TEXT}:
                 status_text = (
                     f"{initial_status}\n\n"
                     "✖ Jarvis сейчас не отвечает как надо.\n"
-                    "Дмитрий, тут проблема либо в запуске, либо в сети до внешнего сервиса."
+                    "Проблема либо в запуске, либо в сети до внешнего сервиса."
                 )
             elif answer == UPGRADE_TIMEOUT_TEXT or answer.startswith("Слишком долгий ответ."):
                 status_text = (
@@ -8030,13 +9008,13 @@ class TelegramBridge:
                 status_text = (
                     f"{initial_status}\n\n"
                     "⚠ Не всё пошло гладко.\n"
-                    "Дмитрий, магия споткнулась о реальность, но детали уже есть ниже."
+                    "Произошёл реальный сбой, детали уже есть ниже."
                 )
             else:
                 status_text = (
                     f"{initial_status}\n\n"
                     "✔ Всё готово.\n"
-                    "Дмитрий, ответ собран и причёсан."
+                    "Ответ собран."
                 )
         self.edit_status_message(chat_id, status_message_id, status_text)
 
@@ -8369,6 +9347,7 @@ class TelegramBridge:
         except Exception as error:
             log_exception("world-state git status failed", error, limit=6)
             dirty_lines = []
+        runtime_snapshot = inspect_runtime_log(self.log_path)
         recent_errors = read_recent_log_highlights(self.log_path, limit=12)
         recent_events = read_recent_operational_highlights(self.log_path, limit=12, category="all")
         memory_due = len(self.state.get_chats_due_for_memory_refresh(limit=20))
@@ -8380,7 +9359,13 @@ class TelegramBridge:
             live_failures = self.state.db.execute(
                 """SELECT COUNT(*) FROM request_diagnostics
                 WHERE created_at >= strftime('%s','now') - 86400
-                  AND (used_live = 1 OR used_web = 1)
+                  AND used_live = 1
+                  AND outcome IN ('error', 'uncertain')"""
+            ).fetchone()[0]
+            web_failures = self.state.db.execute(
+                """SELECT COUNT(*) FROM request_diagnostics
+                WHERE created_at >= strftime('%s','now') - 86400
+                  AND used_web = 1
                   AND outcome IN ('error', 'uncertain')"""
             ).fetchone()[0]
             unresolved_tasks = self.state.db.execute(
@@ -8393,26 +9378,54 @@ class TelegramBridge:
         except ValueError:
             last_backup_value = 0.0
         backup_age_hours = ((time.time() - last_backup_value) / 3600.0) if last_backup_value > 0 else -1.0
+        now_ts = int(time.time())
+        severe_errors_count = int(runtime_snapshot.get("severe_error_count", 0))
+        warning_count = int(runtime_snapshot.get("warning_count", 0))
+        restart_count = int(runtime_snapshot.get("restart_count", 0))
+        heartbeat_kill_count = int(runtime_snapshot.get("heartbeat_kill_count", 0))
+        last_severe_error_at = int(runtime_snapshot.get("last_severe_error_at", 0) or 0)
+        last_heartbeat_kill_at = int(runtime_snapshot.get("last_heartbeat_kill_at", 0) or 0)
+        severe_error_age_seconds = max(0, now_ts - last_severe_error_at) if last_severe_error_at else -1
+        heartbeat_kill_age_seconds = max(0, now_ts - last_heartbeat_kill_at) if last_heartbeat_kill_at else -1
         state_payload = {
             "git_dirty_count": len(dirty_lines),
-            "recent_errors_count": len(recent_errors),
+            "recent_errors_count": severe_errors_count,
+            "recent_warning_count": warning_count,
             "recent_events_count": len(recent_events),
             "live_failures_count": int(live_failures or 0),
+            "web_failures_count": int(web_failures or 0),
             "memory_due_count": memory_due,
             "docs_drift_count": len(docs_drift_lines),
             "unresolved_tasks_count": int(unresolved_tasks or 0),
             "backup_age_hours": round(backup_age_hours, 1) if backup_age_hours >= 0 else -1.0,
             "upgrade_active": 1 if self.state.global_upgrade_active else 0,
             "chat_tasks_active": len(self.state.chat_tasks_in_progress),
+            "restart_count": restart_count,
+            "heartbeat_kill_count": heartbeat_kill_count,
+            "severe_error_age_seconds": severe_error_age_seconds,
+            "heartbeat_kill_age_seconds": heartbeat_kill_age_seconds,
         }
-        runtime_status = "risk" if recent_errors else ("attention" if self.state.global_upgrade_active else "ok")
+        if (
+            (severe_errors_count and 0 <= severe_error_age_seconds <= 7200)
+            or (heartbeat_kill_count and 0 <= heartbeat_kill_age_seconds <= 7200)
+        ):
+            runtime_status = "risk"
+        elif restart_count or warning_count or self.state.global_upgrade_active:
+            runtime_status = "attention"
+        else:
+            runtime_status = "ok"
         git_status_text = "dirty" if dirty_lines else "clean"
         self.state.upsert_world_state_entry(
             "runtime_health",
             category="runtime",
             status=runtime_status,
-            value_text=f"errors={len(recent_errors)}; events={len(recent_events)}; memory_due={memory_due}; upgrade_active={'yes' if self.state.global_upgrade_active else 'no'}",
-            value_number=float(len(recent_errors)),
+            value_text=(
+                f"errors={severe_errors_count}; warnings={warning_count}; restarts={restart_count}; "
+                f"heartbeat_kills={heartbeat_kill_count}; events={len(recent_events)}; memory_due={memory_due}; "
+                f"last_error_age_s={severe_error_age_seconds if severe_error_age_seconds >= 0 else 'n/a'}; "
+                f"upgrade_active={'yes' if self.state.global_upgrade_active else 'no'}"
+            ),
+            value_number=float(severe_errors_count),
             source=source,
         )
         self.state.upsert_world_state_entry(
@@ -8427,7 +9440,7 @@ class TelegramBridge:
             "live_source_health",
             category="live",
             status="attention" if int(live_failures or 0) else "ok",
-            value_text=f"recent_live_failures={int(live_failures or 0)}",
+            value_text=f"recent_live_failures={int(live_failures or 0)}; recent_web_failures={int(web_failures or 0)}",
             value_number=float(int(live_failures or 0)),
             source=source,
         )
@@ -8449,7 +9462,7 @@ class TelegramBridge:
         )
         if source in {"startup", "owner_report", "reflection", "upgrade", "runtime_error"} or recent_errors or docs_drift_lines:
             summary = (
-                f"runtime={runtime_status}; git={git_status_text}; live_failures={int(live_failures or 0)}; "
+                f"runtime={runtime_status}; git={git_status_text}; live_failures={int(live_failures or 0)}; web_failures={int(web_failures or 0)}; "
                 f"open_tasks={int(unresolved_tasks or 0)}; docs_drift={len(docs_drift_lines)}"
             )
             self.state.add_world_state_snapshot(source, summary, state_payload)
@@ -8468,9 +9481,23 @@ class TelegramBridge:
         stale_memory_score = min(100.0, float(int(state_payload.get("memory_due_count", 0)) * 18))
         unresolved_task_score = min(100.0, float(int(state_payload.get("unresolved_tasks_count", 0)) * 20 + len(self.state.chat_tasks_in_progress) * 12))
         doc_sync_score = min(100.0, float(int(state_payload.get("docs_drift_count", 0)) * 25))
+        severe_error_age_seconds = int(state_payload.get("severe_error_age_seconds", -1) or -1)
+        heartbeat_kill_age_seconds = int(state_payload.get("heartbeat_kill_age_seconds", -1) or -1)
+        fresh_runtime_penalty = 0.0
+        if 0 <= severe_error_age_seconds <= 7200:
+            fresh_runtime_penalty += 30.0
+        if 0 <= heartbeat_kill_age_seconds <= 7200:
+            fresh_runtime_penalty += 30.0
         runtime_risk_score = min(
             100.0,
-            float(int(state_payload.get("recent_errors_count", 0)) * 18 + int(state_payload.get("live_failures_count", 0)) * 10 + int(state_payload.get("upgrade_active", 0)) * 12),
+            float(
+                int(state_payload.get("recent_errors_count", 0)) * 3
+                + int(state_payload.get("recent_warning_count", 0)) * 2
+                + int(state_payload.get("live_failures_count", 0)) * 10
+                + int(state_payload.get("heartbeat_kill_count", 0)) * 6
+                + int(state_payload.get("upgrade_active", 0)) * 12
+                + fresh_runtime_penalty
+            ),
         )
         scores = {
             "uncertainty_pressure": uncertainty_score,
@@ -8486,7 +9513,13 @@ class TelegramBridge:
             "stale_memory_pressure": f"chats due for refresh={int(state_payload.get('memory_due_count', 0))}",
             "unresolved_task_pressure": f"open tasks={int(state_payload.get('unresolved_tasks_count', 0))}; active_chat_tasks={len(self.state.chat_tasks_in_progress)}",
             "doc_sync_pressure": f"docs/runtime drift entries={int(state_payload.get('docs_drift_count', 0))}",
-            "runtime_risk_pressure": f"errors={int(state_payload.get('recent_errors_count', 0))}; live_failures={int(state_payload.get('live_failures_count', 0))}; upgrade_active={int(state_payload.get('upgrade_active', 0))}",
+            "runtime_risk_pressure": (
+                f"errors={int(state_payload.get('recent_errors_count', 0))}; "
+                f"warnings={int(state_payload.get('recent_warning_count', 0))}; "
+                f"live_failures={int(state_payload.get('live_failures_count', 0))}; "
+                f"heartbeat_kills={int(state_payload.get('heartbeat_kill_count', 0))}; "
+                f"upgrade_active={int(state_payload.get('upgrade_active', 0))}"
+            ),
         }
         for drive_name, score in scores.items():
             self.state.set_drive_score(drive_name, score, reasons[drive_name])
@@ -8732,10 +9765,22 @@ class TelegramBridge:
                     zf.write(file_path, rel.as_posix())
         return archive_path
 
-    def safe_send_text(self, chat_id: int, text: str) -> None:
+    def safe_send_text(self, chat_id: int, text: str, reply_to_message_id: Optional[int] = None) -> None:
+        normalized_text = normalize_whitespace(text)
+        if normalized_text:
+            now = time.time()
+            with self.outgoing_dedupe_lock:
+                recent = self.recent_outgoing_messages.get(chat_id)
+                if recent and recent[0] == normalized_text and now - recent[1] <= 12:
+                    log(f"duplicate outgoing suppressed chat={chat_id} text={shorten_for_log(normalized_text)}")
+                    return
+                self.recent_outgoing_messages[chat_id] = (normalized_text, now)
         for chunk in split_long_message(text):
             try:
-                self.send_message_with_html_fallback({"chat_id": chat_id, "text": chunk})
+                payload = {"chat_id": chat_id, "text": chunk}
+                if reply_to_message_id is not None:
+                    payload["reply_to_message_id"] = int(reply_to_message_id)
+                self.send_message_with_html_fallback(payload)
             except RequestException as error:
                 log(f"failed to send message chat={chat_id}: {error}")
                 break
@@ -9084,6 +10129,8 @@ def build_location_query_variants(text: str) -> List[str]:
     irregular_forms = {
         "брянске": "Брянск",
         "москве": "Москва",
+        "донбасс": "Донецк",
+        "донбассе": "Донецк",
         "петербурге": "Санкт-Петербург",
         "питере": "Санкт-Петербург",
         "екатеринбурге": "Екатеринбург",
@@ -9135,11 +10182,53 @@ def detect_weather_location(text: str) -> str:
     for pattern in patterns:
         match = re.search(pattern, cleaned, flags=re.IGNORECASE)
         if match:
-            return normalize_location_query(match.group(1))
+            candidate = match.group(1)
+            candidate = re.split(
+                r"(?i)(?:[!?]|,\s*(?:и\s+на|и\s+в|курс|какой|когда|кто|что|как)|\b(?:курс|какой|когда|кто|что|как)\b)",
+                candidate,
+                maxsplit=1,
+            )[0]
+            return normalize_location_query(candidate)
     words = cleaned.split()
     if len(words) >= 2 and words[0].lower() in {"погода", "weather"}:
         return normalize_location_query(" ".join(words[1:]))
     return ""
+
+
+def detect_weather_locations(text: str, limit: int = 3) -> List[str]:
+    cleaned = normalize_whitespace(text)
+    lowered = cleaned.lower()
+    if not cleaned or "погод" not in lowered:
+        return []
+    candidates: List[str] = []
+    primary = detect_weather_location(cleaned)
+    if primary:
+        candidates.append(primary)
+    segment_match = re.search(r"(?i)(?:погода|прогноз)(?:\s+сейчас|\s+сегодня|\s+на\s+сегодня|\s+завтра)?\s+в\s+(.+)", cleaned)
+    if segment_match:
+        segment = segment_match.group(1)
+        segment = re.split(r"(?i)\b(?:курс|битко|bitcoin|смартфон|как меня звать|кто в чате|какие были|важные события)\b", segment, maxsplit=1)[0]
+        for part in re.split(r"(?i),|\s+и\s+на\s+|\s+и\s+в\s+|\s+и\s+", segment):
+            candidate = normalize_location_query(part)
+            if not candidate:
+                continue
+            lowered_candidate = candidate.lower()
+            if lowered_candidate in {"на", "в", "и", "донбассе"}:
+                if lowered_candidate == "донбассе":
+                    candidates.append("Донбасс")
+                continue
+            candidates.append(candidate)
+    deduped: List[str] = []
+    seen: Set[str] = set()
+    for candidate in candidates:
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+        if len(deduped) >= max(1, limit):
+            break
+    return deduped
 
 
 def detect_currency_pair(text: str) -> Optional[Tuple[str, str]]:
@@ -9177,6 +10266,8 @@ def detect_crypto_asset(text: str) -> str:
     return ""
 
 
+
+
 def detect_stock_symbol(text: str) -> str:
     lowered = normalize_whitespace(text).lower()
     if not lowered:
@@ -9197,13 +10288,19 @@ def detect_news_query(text: str) -> str:
     lowered = cleaned.lower()
     if not lowered:
         return ""
-    if detect_local_chat_query(lowered):
+    if is_purchase_advice_request(lowered) or is_comparison_request(lowered) or is_recommendation_request(lowered):
+        return ""
+    if detect_local_chat_query(lowered) and not has_external_research_signal(lowered):
         return ""
     news_markers = (
         "новост",
         "latest",
         "today",
         "сегодня",
+        "за последний день",
+        "за день",
+        "за сутки",
+        "важные события",
         "что нового",
         "что случилось",
         "что происходит",
@@ -9215,6 +10312,11 @@ def detect_news_query(text: str) -> str:
     )
     if not any(marker in lowered for marker in news_markers):
         return ""
+    if (
+        any(marker in lowered for marker in ("важные события", "что в мире творится", "в мире"))
+        and any(marker in lowered for marker in ("за последний день", "за день", "за сутки", "сегодня", "последние", "свежие"))
+    ):
+        return "важные события в мире за последний день"
     query = lowered
     replacements = (
         "последние новости",
@@ -9236,6 +10338,191 @@ def detect_news_query(text: str) -> str:
         query = query.replace(token, " ")
     normalized = normalize_location_query(query)
     return normalized or normalize_whitespace(cleaned)
+
+
+def detect_smartphone_sales_query(text: str) -> str:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return ""
+    if "смартфон" not in lowered and "iphone" not in lowered and "android" not in lowered:
+        return ""
+    sales_markers = ("самый продаваем", "лидер продаж", "больше всего прода", "топ продаж")
+    if not any(marker in lowered for marker in sales_markers):
+        return ""
+    if "в мире" in lowered or "world" in lowered:
+        return "самый продаваемый смартфон в мире сейчас"
+    return "самый продаваемый смартфон сейчас"
+
+
+def detect_bitcoin_market_query(text: str) -> str:
+    lowered = normalize_whitespace(text).lower()
+    if "битко" not in lowered and "bitcoin" not in lowered:
+        return ""
+    if any(marker in lowered for marker in ("бум", "рост", "когда", "прогноз", "рынок")):
+        return "биткойн прогноз роста сейчас"
+    return ""
+
+
+def normalize_external_search_query(text: str) -> str:
+    cleaned = normalize_whitespace(remove_urls_from_text(text))
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"(?i)\b(?:как меня звать|кто в чате сегодня общался|кто сегодня общался|кто в чате)\b.*", " ", cleaned)
+    cleaned = re.sub(r"(?i)\b(?:jarvis|enterprise)\b[:\s-]*", " ", cleaned)
+    cleaned = normalize_whitespace(cleaned)
+    return cleaned
+
+
+def build_external_search_needs_object_reply(query: str) -> str:
+    return (
+        f"Запрос «{truncate_text(normalize_whitespace(query), 180)}» слишком широкий для внешнего поиска. "
+        "Нужен объект поиска: человек, компания, цена/тикер/валюта, город/погода, новость/событие, дата/период, конкретный факт или тема."
+    )
+
+
+def build_external_search_not_confirmed_reply(query: str) -> str:
+    return (
+        f"По запросу «{truncate_text(normalize_whitespace(query), 180)}» внешний поиск не дал подтверждённой релевантной выдачи. "
+        "Похоже, запрос слишком общий или без объекта поиска."
+    )
+
+
+def build_direct_url_blocked_reply(url: str) -> str:
+    host = urlparse(url).netloc or url
+    return (
+        f"Прямой доступ к странице {truncate_text(host, 120)} сейчас не подтверждён: сайт отдал anti-bot/captcha или заблокировал обычный fetch. "
+        "Отзывы и детали товара по этой ссылке не прочитаны."
+    )
+
+
+def is_direct_url_antibot_block(
+    url: str,
+    title: str,
+    meta_description: str,
+    response_text: str = "",
+    error: Optional[BaseException] = None,
+) -> bool:
+    host = (urlparse(url).netloc or "").lower()
+    combined = normalize_whitespace(" ".join((title, meta_description, response_text[:1200]))).lower()
+    if error is not None:
+        error_text = normalize_whitespace(str(error)).lower()
+        if any(marker in error_text for marker in ("403", "forbidden", "captcha", "antibot", "access denied")):
+            if any(domain in host for domain in ("ozon.", "wildberries.", "market.yandex.", "leroymerlin.")):
+                return True
+    markers = (
+        "antibot",
+        "captcha",
+        "access denied",
+        "forbidden",
+        "robot check",
+        "prove you are human",
+    )
+    return any(marker in combined for marker in markers)
+
+
+def is_irrelevant_web_search_result(title: str, snippet: str, url: str) -> bool:
+    text = normalize_whitespace(" ".join((title, snippet, url))).lower()
+    if not text:
+        return False
+    markers = (
+        "как искать",
+        "как найти информацию",
+        "поиск информации",
+        "поиск в интернете",
+        "как пользоваться google",
+        "как пользоваться гугл",
+        "поисковая система",
+        "советы по поиску",
+        "how to search",
+        "search for information",
+        "search tips",
+        "internet search",
+        "google search",
+    )
+    return any(marker in text for marker in markers)
+
+
+def is_query_too_broad_for_external_search(text: str) -> bool:
+    cleaned = normalize_external_search_query(text)
+    lowered = cleaned.lower()
+    if not lowered:
+        return True
+    if extract_urls(text):
+        return False
+    if any(
+        detector(cleaned)
+        for detector in (
+            detect_news_query,
+            detect_current_fact_query,
+            detect_smartphone_sales_query,
+            detect_bitcoin_market_query,
+            detect_crypto_asset,
+            detect_stock_symbol,
+        )
+    ):
+        return False
+    if detect_currency_pair(cleaned) or detect_weather_location(cleaned):
+        return False
+    broad_phrases = (
+        "найди все ответы",
+        "найди всё",
+        "найди все",
+        "что там вообще",
+        "проверь всё",
+        "проверь все",
+        "посмотри всё",
+        "посмотри все",
+        "что там",
+    )
+    if lowered in broad_phrases:
+        return True
+    tokens = re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9_-]+", lowered)
+    generic_tokens = {
+        "найди", "найти", "ищи", "искать", "поищи", "проверь", "проверить", "посмотри", "смотри",
+        "что", "там", "вообще", "все", "всё", "вся", "всю", "весь", "ответ", "ответы",
+        "информация", "инфу", "данные", "вопрос", "вопросы", "тема", "темы", "факт", "факты",
+        "новости", "погода", "курс", "цена", "стоимость", "поиск",
+    }
+    object_tokens = [token for token in tokens if len(token) >= 3 and token not in generic_tokens]
+    if not object_tokens:
+        return True
+    if len(object_tokens) == 1 and object_tokens[0] in {"новости", "погода", "курс", "цена"}:
+        return True
+    return False
+
+
+def plan_external_research_tasks(text: str) -> List[ExternalResearchTask]:
+    normalized = normalize_whitespace(text)
+    if not normalized:
+        return []
+    tasks: List[ExternalResearchTask] = []
+    news_query = detect_news_query(normalized)
+    if news_query:
+        tasks.append(ExternalResearchTask(kind="news", label="Новости", payload=news_query))
+    smartphone_query = detect_smartphone_sales_query(normalized)
+    if smartphone_query:
+        tasks.append(ExternalResearchTask(kind="current_fact", label="Смартфон", payload=smartphone_query))
+    for location in detect_weather_locations(normalized, limit=3):
+        tasks.append(ExternalResearchTask(kind="weather", label=f"Погода:{location}", payload=location))
+    currency_pair = detect_currency_pair(normalized)
+    if currency_pair:
+        tasks.append(ExternalResearchTask(kind="fx", label="Курс", payload="/".join(currency_pair)))
+    bitcoin_query = detect_bitcoin_market_query(normalized)
+    if bitcoin_query:
+        tasks.append(ExternalResearchTask(kind="crypto", label="Bitcoin price", payload="bitcoin"))
+        tasks.append(ExternalResearchTask(kind="current_fact", label="Bitcoin outlook", payload=bitcoin_query))
+    search_query = normalize_external_search_query(normalized)
+    if search_query:
+        tasks.append(ExternalResearchTask(kind="web_search", label="Web", payload=search_query))
+    deduped: List[ExternalResearchTask] = []
+    seen: Set[Tuple[str, str]] = set()
+    for task in tasks:
+        key = (task.kind, task.payload.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(task)
+    return deduped
 
 
 def detect_current_fact_query(text: str) -> str:
@@ -9332,7 +10619,13 @@ def select_long_progress_note(elapsed_seconds: int, notes: List[Tuple[int, str]]
     return note
 
 
-def build_progress_status(initial_status: str, elapsed_seconds: int, phase_index: int, style: str = "jarvis") -> str:
+def build_progress_status(
+    initial_status: str,
+    elapsed_seconds: int,
+    phase_index: int,
+    style: str = "jarvis",
+    target_label: str = "",
+) -> str:
     steps, spinners, jokes, long_notes = progress_style_config(style)
     phase, note = steps[phase_index % len(steps)]
     spinner = spinners[phase_index % len(spinners)]
@@ -9341,6 +10634,7 @@ def build_progress_status(initial_status: str, elapsed_seconds: int, phase_index
     progress_bar = build_progress_bar(phase_index, elapsed_seconds, width=12)
     stage_text = f"Этап {phase_index + 1}"
     long_note = select_long_progress_note(elapsed_seconds, long_notes)
+    target_line = f"│ Собеседник: {truncate_text(target_label, 22)}\n" if target_label else ""
     extra_block = f"\n{long_note}" if long_note else ""
     return (
         f"{initial_status}\n\n"
@@ -9348,6 +10642,7 @@ def build_progress_status(initial_status: str, elapsed_seconds: int, phase_index
         f"{note}\n\n"
         f"┌ {'─' * 18}\n"
         f"│ [{progress_bar}] {stage_text}\n"
+        f"{target_line}"
         f"│ Прошло: {elapsed_text}\n"
         f"└ {'─' * 18}\n"
         f"{joke}"
@@ -9863,6 +11158,10 @@ def is_operational_log_line(lowered_line: str, category: str = "all") -> bool:
     return _is_operational_log_line(lowered_line, category)
 
 
+def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str, object]:
+    return _inspect_runtime_log(log_path, window_seconds)
+
+
 def run_git_command(repo_path: Path, args: List[str], timeout_seconds: int = 20) -> str:
     return _run_git_command(repo_path, args, build_subprocess_env, normalize_whitespace, timeout_seconds)
 
@@ -9920,9 +11219,11 @@ def build_prompt(
     event_context: str = "",
     database_context: str = "",
     reply_context: str = "",
+    discussion_context: str = "",
     identity_label: str = "Jarvis",
     include_identity_prompt: bool = True,
     persona_note: str = "",
+    owner_note: str = "",
     web_context: str = "",
     route_summary: str = "",
     guardrail_note: str = "",
@@ -9953,9 +11254,11 @@ def build_prompt(
         event_context=event_context,
         database_context=database_context,
         reply_context=reply_context,
+        discussion_context=discussion_context,
         identity_label=identity_label,
         include_identity_prompt=include_identity_prompt,
         persona_note=persona_note,
+        owner_note=owner_note,
         web_context=web_context,
         route_summary=route_summary,
         guardrail_note=guardrail_note,
@@ -9999,6 +11302,26 @@ def build_actor_name(user_id: Optional[int], username: str, first_name: str, las
     if display:
         return f"{display} id={user_id}" if user_id is not None else display
     return f"user_id={user_id}" if user_id is not None else "user"
+
+
+def build_progress_target_label(message: Optional[dict], user_id: Optional[int]) -> str:
+    from_user = (message or {}).get("from") or {}
+    if from_user.get("is_bot"):
+        return ""
+    username = (from_user.get("username") or "").strip().lstrip("@")
+    first_name = normalize_whitespace(from_user.get("first_name") or "")
+    last_name = normalize_whitespace(from_user.get("last_name") or "")
+    display = " ".join(part for part in [first_name, last_name] if part).strip()
+    if first_name:
+        return first_name
+    if display:
+        return display
+    if username:
+        return f"@{username}"
+    if user_id == OWNER_USER_ID:
+        owner_name = OWNER_USERNAME.lstrip("@").strip()
+        return owner_name or "владельца"
+    return ""
 
 def render_event_rows(rows: List[Tuple[int, Optional[int], str, str, str, str, str, str]], title: str = "Events") -> str:
     return _render_event_rows(rows, title, build_actor_name, truncate_text)
@@ -10056,6 +11379,217 @@ def detect_local_chat_query(user_text: str) -> bool:
     return any(marker in lowered for marker in chat_markers)
 
 
+def has_external_research_signal(text: str) -> bool:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return False
+    triggers = (
+        "найди",
+        "поищи",
+        "поиск",
+        "в интернете",
+        "интернет",
+        "изучи",
+        "исследуй",
+        "что пишут",
+        "свеж",
+        "новост",
+        "latest",
+        "today",
+        "сегодня",
+        "проверь",
+        "погода",
+        "температур",
+        "прогноз",
+        "курс",
+        "доллар",
+        "евро",
+        "битко",
+        "bitcoin",
+        "продаваем",
+    )
+    return any(trigger in lowered for trigger in triggers)
+
+
+def is_product_selection_help_request(text: str) -> bool:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return False
+    product_markers = (
+        "смартфон",
+        "телефон",
+        "ноутбук",
+        "планшет",
+        "камера",
+        "наушник",
+        "монитор",
+        "роутер",
+        "товар",
+    )
+    selection_markers = (
+        "помоги выбрать",
+        "помогите выбрать",
+        "что выбрать",
+        "что лучше взять",
+        "лучше взять",
+        "выбор",
+        "бюджет",
+        "до ",
+    )
+    return any(marker in lowered for marker in product_markers) and any(marker in lowered for marker in selection_markers)
+
+
+def is_purchase_advice_request(text: str) -> bool:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return False
+    product_markers = (
+        "смартфон",
+        "телефон",
+        "ноутбук",
+        "планшет",
+        "камера",
+        "наушник",
+        "монитор",
+        "роутер",
+        "флагман",
+        "айфон",
+        "iphone",
+        "samsung",
+        "xiaomi",
+        "realme",
+        "oppo",
+        "poco",
+        "pixel",
+        "honor",
+        "vivo",
+        "iqoo",
+    )
+    purchase_markers = (
+        "что купить",
+        "что лучше купить",
+        "что выбрать",
+        "помоги выбрать",
+        "помогите выбрать",
+        "лучше взять",
+        "стоит ли брать",
+        "сравни",
+        "сравнить",
+        "что круче",
+        "круче",
+        "лучше",
+        "бюджет",
+        "до ",
+        "для игр",
+        "для фото",
+        "для фотосъем",
+        "для камеры",
+        "автономност",
+        "производительност",
+    )
+    return any(marker in lowered for marker in product_markers) and any(marker in lowered for marker in purchase_markers)
+
+
+def is_comparison_request(text: str) -> bool:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return False
+    comparison_markers = (
+        "сравни",
+        "сравнить",
+        "что лучше",
+        "что круче",
+        "чем отличается",
+        "vs",
+        "versus",
+        "или",
+        "против",
+    )
+    object_markers = (
+        "смартфон",
+        "телефон",
+        "ноутбук",
+        "планшет",
+        "камера",
+        "наушник",
+        "монитор",
+        "роутер",
+        "процессор",
+        "видеокарта",
+        "iphone",
+        "samsung",
+        "xiaomi",
+        "realme",
+        "oppo",
+        "vivo",
+        "honor",
+        "poco",
+        "pixel",
+        "iqoo",
+    )
+    has_compare_marker = any(marker in lowered for marker in comparison_markers)
+    has_object_marker = any(marker in lowered for marker in object_markers)
+    has_pair_shape = " или " in lowered or " vs " in lowered or " versus " in lowered
+    return has_compare_marker and (has_object_marker or has_pair_shape)
+
+
+def is_recommendation_request(text: str) -> bool:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return False
+    recommendation_markers = (
+        "посоветуй",
+        "посоветуйте",
+        "порекомендуй",
+        "порекомендуйте",
+        "что взять",
+        "какой взять",
+        "какую взять",
+        "что выбрать",
+        "что посоветуешь",
+        "что порекомендуешь",
+    )
+    topic_markers = (
+        "смартфон",
+        "телефон",
+        "ноутбук",
+        "планшет",
+        "камера",
+        "монитор",
+        "роутер",
+        "игр",
+        "фильм",
+        "сериал",
+        "книга",
+        "наушник",
+        "мыш",
+        "клавиатур",
+        "процессор",
+        "видеокарт",
+    )
+    return any(marker in lowered for marker in recommendation_markers) and (
+        any(marker in lowered for marker in topic_markers) or len(lowered.split()) >= 4
+    )
+
+
+def is_opinion_request(text: str) -> bool:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return False
+    markers = (
+        "как думаешь",
+        "как считaешь",
+        "как считаешь",
+        "твое мнение",
+        "твоё мнение",
+        "что скажешь",
+        "нормально ли",
+        "есть смысл",
+        "стоит ли",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 def should_include_event_context(user_text: str) -> bool:
     text = user_text.lower()
     markers = [
@@ -10086,8 +11620,18 @@ def detect_intent(user_text: str) -> str:
     text = user_text.lower()
     if detect_runtime_query(text):
         return "runtime_status"
-    if detect_local_chat_query(text):
+    if is_comparison_request(text):
+        return "comparison_request"
+    if is_purchase_advice_request(text):
+        return "purchase_advice"
+    if is_recommendation_request(text):
+        return "recommendation_request"
+    if detect_local_chat_query(text) and not has_external_research_signal(text):
         return "chat_dynamics"
+    if is_explicit_help_request(text):
+        return "troubleshooting_help"
+    if is_opinion_request(text):
+        return "opinion_request"
     if any(token in text for token in ["error", "ошибка", "traceback", "exception", "не работает", "сломалось"]):
         return "error_analysis"
     if any(token in text for token in ["код", "python", "js", "ts", "bash", "sql", "script", "скрипт", "функц", "класс"]):
@@ -10099,11 +11643,130 @@ def detect_intent(user_text: str) -> str:
     return "general_dialog"
 
 
+def is_explicit_help_request(text: str) -> bool:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered or len(lowered) < 12:
+        return False
+    help_markers = (
+        "помоги",
+        "помогите",
+        "подскажи",
+        "подскажите",
+        "кто знает",
+        "что делать",
+        "как исправить",
+        "как решить",
+        "можно ли",
+        "есть ли",
+        "не работает",
+        "не получается",
+        "не могу",
+        "почему",
+        "как исправить",
+        "как решить",
+        "как выбрать",
+        "как настроить",
+        "зачем",
+        "ошибка",
+        "сломалось",
+        "в чем проблема",
+        "что выбрать",
+        "как лучше",
+    )
+    if not any(marker in lowered for marker in help_markers):
+        return False
+    if "?" in lowered:
+        return True
+    question_words = ("как", "почему", "зачем", "где", "кто", "что", "можно ли", "есть ли")
+    return any(lowered.startswith(word + " ") or f" {word} " in lowered for word in question_words)
+
+
+def compute_group_spontaneous_reply_score(user_text: str) -> int:
+    lowered = normalize_whitespace(user_text).lower()
+    if not lowered:
+        return 0
+    if not is_explicit_help_request(lowered):
+        return 0
+    score = 0
+    if len(lowered) >= 24:
+        score += 1
+    if "?" in lowered:
+        score += 1
+    markers = (
+        "не работает",
+        "не получается",
+        "не могу",
+        "ошиб",
+        "проблем",
+        "что с",
+        "почему",
+        "как исправить",
+        "что делать",
+        "как решить",
+        "можно ли",
+        "есть ли",
+    )
+    if any(marker in lowered for marker in markers):
+        score += 2
+    if detect_local_chat_query(lowered):
+        score += 2
+    elif detect_intent(lowered) in {"error_analysis", "task_solving"}:
+        score += 1
+    structured_help_markers = (
+        "выбор",
+        "выбрать",
+        "смартфон",
+        "телефон",
+        "ноутбук",
+        "планшет",
+        "камера",
+        "бюджет",
+        "до ",
+        "лучше взять",
+        "что выбрать",
+        "что лучше",
+        "игр",
+        "производительност",
+        "энергоэффектив",
+    )
+    if any(marker in lowered for marker in structured_help_markers):
+        score += 2
+    if any(marker in lowered for marker in ("бот", "jarvis", "джарвис", "ссылка", "ozon", "озон", "чат", "контекст")):
+        score += 1
+    return score
+
+
 def response_shape_hint(intent: str) -> str:
     if intent == "runtime_status":
         return "Сначала конкретный статус или метрика. Если точной проверки не было, прямо скажи это. Не имитируй выполненную диагностику."
+    if intent == "purchase_advice":
+        return (
+            "Отвечай как внятный советчик по выбору покупки. "
+            "Сначала короткий вывод под запрос пользователя. "
+            "Потом 2-4 лучших варианта с понятными плюсами и минусами. "
+            "Если в чате уже обсуждали модели или предпочтения, учитывай именно их. "
+            "Если данных не хватает, задай один уточняющий вопрос вместо общего рассуждения. "
+            "Не подавай рекомендацию как абсолютную истину: если выбор спорный, прямо скажи, в чём компромисс."
+        )
+    if intent == "comparison_request":
+        return (
+            "Отвечай как внятное сравнение. "
+            "Сначала коротко скажи, кто сильнее и в каком сценарии. "
+            "Потом сравни по 3-5 ключевым критериям, которые реально важны для этого вопроса. "
+            "Если явного победителя нет, прямо скажи, от чего зависит выбор."
+        )
+    if intent == "recommendation_request":
+        return (
+            "Отвечай как нормальная рекомендация, а не как общий список. "
+            "Сначала дай короткий вывод, потом 2-4 подходящих варианта. "
+            "Если пользователь не уточнил важные ограничения, задай один короткий уточняющий вопрос."
+        )
     if intent == "chat_dynamics":
         return "Сначала коротко скажи, что происходит в этом чате сейчас. Затем по делу: участники, динамика, тон, суть. Не уходи в новости и не пересказывай лишнее."
+    if intent == "troubleshooting_help":
+        return "Сначала наиболее вероятная причина. Потом конкретные шаги, что проверить и что сделать. Не раздувай ответ."
+    if intent == "opinion_request":
+        return "Отвечай как мнение и оценка, а не как абсолютный факт. Сначала короткая позиция, потом 2-4 аргумента по делу."
     if intent == "error_analysis":
         return "Сначала вероятная причина. Затем конкретное решение. Без длинных вступлений."
     if intent == "coding":
@@ -10121,30 +11784,17 @@ def should_use_web_research(text: str) -> bool:
         return False
     if detect_runtime_query(lowered):
         return False
-    if detect_local_chat_query(lowered):
+    if is_product_selection_help_request(lowered) and not has_external_research_signal(lowered):
         return False
-    triggers = (
-        "найди",
-        "поищи",
-        "поиск",
-        "в интернете",
-        "интернет",
-        "изучи",
-        "исследуй",
-        "что пишут",
-        "свеж",
-        "новост",
-        "latest",
-        "today",
-        "сегодня",
-        "проверь",
-    )
-    return any(trigger in lowered for trigger in triggers)
+    local_chat_query = detect_local_chat_query(lowered)
+    if local_chat_query and not has_external_research_signal(lowered):
+        return False
+    return has_external_research_signal(lowered)
 
 
 ROUTE_KIND_LIVE_MAP = {
     "live_weather": ("open-meteo", detect_weather_location),
-    "live_fx": ("frankfurter", detect_currency_pair),
+    "live_fx": ("frankfurter+yahoo-finance", detect_currency_pair),
     "live_crypto": ("coingecko", detect_crypto_asset),
     "live_stocks": ("yahoo-finance", detect_stock_symbol),
     "live_current_fact": ("duckduckgo+Enterprise", detect_current_fact_query),
@@ -10170,12 +11820,13 @@ def analyze_request_route(
     workspace_allowed = can_owner_use_workspace_mode(user_id, chat_type, assistant_persona)
     route_kind = "codex_workspace" if workspace_allowed else "codex_chat"
     source_label = "Enterprise runtime" if runtime_query and workspace_allowed else "Enterprise"
+    live_hits: List[Tuple[str, str]] = []
     for candidate_kind, (candidate_source, detector) in ROUTE_KIND_LIVE_MAP.items():
         detected_value = detector(normalized_text)
         if detected_value:
-            route_kind = candidate_kind
-            source_label = candidate_source
-            break
+            live_hits.append((candidate_kind, candidate_source))
+    if len(live_hits) == 1:
+        route_kind, source_label = live_hits[0]
     use_live = route_kind.startswith("live_")
     use_web = should_use_web_research(normalized_text) and not use_live and not runtime_query
     if use_web:
@@ -10271,6 +11922,7 @@ def render_enterprise_runtime_report() -> str:
         format_swap_line_func=format_swap_line,
         truncate_text_func=truncate_text,
         build_subprocess_env_func=build_subprocess_env,
+        render_bridge_runtime_watch_func=render_bridge_runtime_watch,
     )
 
 
@@ -10291,6 +11943,24 @@ def render_network_summary() -> str:
     return _render_network_summary(psutil_module=psutil, format_bytes_func=format_bytes)
 
 
+def render_bridge_runtime_watch() -> str:
+    script_dir = Path(__file__).resolve().parent
+    heartbeat_path = Path(os.getenv("HEARTBEAT_PATH", DEFAULT_HEARTBEAT_PATH).strip() or DEFAULT_HEARTBEAT_PATH)
+    if not heartbeat_path.is_absolute():
+        heartbeat_path = script_dir / heartbeat_path
+    bridge_log_path = script_dir / "tg_codex_bridge.log"
+    supervisor_log_path = script_dir / "supervisor_boot.log"
+    return _render_bridge_runtime_watch(
+        psutil_module=psutil,
+        format_bytes_func=format_bytes,
+        truncate_text_func=truncate_text,
+        heartbeat_path=heartbeat_path,
+        bridge_log_path=bridge_log_path,
+        supervisor_log_path=supervisor_log_path,
+        runtime_log_snapshot=inspect_runtime_log(bridge_log_path),
+    )
+
+
 def format_swap_line() -> str:
     return _format_swap_line(psutil_module=psutil, format_bytes_func=format_bytes)
 
@@ -10309,34 +11979,27 @@ def format_bytes(value: int) -> str:
 
 
 def postprocess_answer(text: str, latency_ms: Optional[int] = None) -> str:
-    cleaned = normalize_whitespace(text)
-    cleaned = strip_banned_openers(cleaned)
-    cleaned = trim_generic_followup(cleaned)
-    timestamp = datetime.now(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S MSK")
-    footer = f"🕒 {timestamp}"
-    if latency_ms is not None:
-        footer = f"{footer}\n🏓 {latency_ms} ms"
-    if cleaned:
-        cleaned = f"{cleaned}\n\n{footer}"
-    else:
-        cleaned = footer
-    return truncate_text(cleaned, MAX_CODEX_OUTPUT_CHARS)
+    return _postprocess_answer(
+        text,
+        latency_ms=latency_ms,
+        normalize_whitespace_func=normalize_whitespace,
+        trim_generic_followup_func=trim_generic_followup,
+        truncate_text_func=truncate_text,
+        display_timezone=DISPLAY_TIMEZONE,
+        max_output_chars=MAX_CODEX_OUTPUT_CHARS,
+    )
 
 
 def strip_banned_openers(text: str) -> str:
-    banned_prefixes = [
-        "я умею",
-        "я могу",
-        "я способен",
-        "как ии",
-        "вот список",
-        "мои возможности",
-    ]
-    lowered = text.lower()
-    for prefix in banned_prefixes:
-        if lowered.startswith(prefix):
-            return text.split("\n", 1)[-1].strip() or text
-    return text
+    return _strip_banned_openers(text)
+
+
+def strip_meta_reply_wrapper(text: str) -> str:
+    return _strip_meta_reply_wrapper(text)
+
+
+def collapse_duplicate_answer_blocks(text: str) -> str:
+    return _collapse_duplicate_answer_blocks(text)
 
 
 def trim_generic_followup(text: str) -> str:
