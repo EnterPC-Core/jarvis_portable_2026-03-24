@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-SCRIPT_DIR="/data/data/com.termux/files/home/jarvis-ai-worker"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SUPERVISOR="$SCRIPT_DIR/run_jarvis_supervisor.sh"
 OUT="$SCRIPT_DIR/tg_supervisor.out"
 BOOT_LOG="$SCRIPT_DIR/supervisor_boot.log"

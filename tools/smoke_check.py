@@ -60,6 +60,24 @@ def main() -> int:
         )
         if not web_route.use_web or web_route.use_live:
             raise RuntimeError(f"unexpected web route: {web_route}")
+        project_audit_route = bridge.analyze_request_route(
+            "Enterprise проанализируй проект и улучши 3 критичных зоны: строгий роутинг запросов про current/latest/кто сейчас",
+            assistant_persona="enterprise",
+            chat_type="supergroup",
+            user_id=bridge.OWNER_USER_ID,
+            reply_context="",
+        )
+        if project_audit_route.route_kind != "codex_workspace" or project_audit_route.use_live or project_audit_route.use_web:
+            raise RuntimeError(f"project audit route regressed: {project_audit_route}")
+        local_incident_route = bridge.analyze_request_route(
+            "Давай сначала, ты удалил сообщение, потом написал JARVIS: сообщение удалено. OLEG id=1870338495, предупреждение за нарушение правил: оскорбления JARVIS. Дальше изучи и дай ответ.",
+            assistant_persona="jarvis",
+            chat_type="supergroup",
+            user_id=bridge.OWNER_USER_ID,
+            reply_context="",
+        )
+        if local_incident_route.use_web or local_incident_route.use_live or not local_incident_route.use_database:
+            raise RuntimeError(f"local incident route regressed: {local_incident_route}")
         if not bridge.is_query_too_broad_for_external_search("найди все ответы"):
             raise RuntimeError("broad search guard did not trigger")
         if bridge.is_query_too_broad_for_external_search("новости по NVIDIA за последние сутки"):

@@ -12,3 +12,5 @@ local/__pycache__/
 tg_supervisor.out
 tg_codex_bridge.heartbeat
 tg_manual.out
+.jarvis_supervisor.pid
+data/local-state.json

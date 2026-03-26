@@ -7,6 +7,113 @@
 
 Проект работает прямо в текущей Linux/UserLAnd-среде. Отдельный деплой для основной рабочей схемы не нужен. Главная точка входа — [`tg_codex_bridge.py`](./tg_codex_bridge.py), а не Cloudflare Worker-часть.
 
+## Статус Проекта
+
+- текущий режим: локальный runtime в `UserLAnd` / `Termux`
+- основной entrypoint: [`tg_codex_bridge.py`](./tg_codex_bridge.py)
+- поддерживаемый способ удержания процесса: [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh)
+- модель доступа по умолчанию: бот отвечает только владельцу `OWNER_USER_ID`
+- storage: локальная SQLite-память + legacy SQLite для рейтингов и апелляций
+
+Это не библиотека и не SaaS-сервис. Это рабочий локальный Telegram runtime со своей памятью, маршрутизацией, live-проверками и owner-ops сценариями.
+
+## Быстрый Старт
+
+### 1. Минимальные зависимости
+
+- `python3`
+- `node`
+- установленный `codex`
+- Python-пакет `requests`
+
+Установка минимального Python-слоя:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+### 2. Настрой окружение
+
+```bash
+cp .env.example .env
+```
+
+Минимально нужно заполнить:
+
+```env
+BOT_TOKEN=...
+OWNER_USER_ID=...
+ADMIN_ID=...
+OWNER_USERNAME=@...
+```
+
+### 3. Проверка синтаксиса
+
+```bash
+python3 -m py_compile tg_codex_bridge.py
+python3 tools/smoke_check.py
+python3 tools/behavioral_check.py
+```
+
+### 4. Запуск
+
+Нормальный рабочий запуск:
+
+```bash
+sh run_jarvis_supervisor.sh
+```
+
+Фоновый запуск для UserLAnd:
+
+```bash
+sh start_jarvis_on_userland.sh
+```
+
+Фоновый запуск для Termux:
+
+```bash
+sh start_jarvis_on_termux.sh
+```
+
+## Структура Репозитория
+
+- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной bridge, routing, runtime, Telegram polling, orchestration
+- [`handlers/`](./handlers) — парсинг команд и разбор входящих текстов
+- [`services/`](./services) — orchestration, context assembly, postprocess, moderation, discussion state
+- [`utils/`](./utils) — текстовые, файловые, runtime и reporting helper-функции
+- [`prompts/`](./prompts) — builders для prompt layer
+- [`tools/`](./tools) — smoke/behavioral checks, runtime-backup export, repo refresh
+- [`data/runtime_backups/`](./data/runtime_backups) — schema и summary snapshot'ы для синхронизации runtime и GitHub
+- [`legacy_jarvis_adapter.py`](./legacy_jarvis_adapter.py) — мост к legacy `jarvis.db`
+
+## Модель Доступа
+
+По умолчанию bridge работает в owner-only режиме:
+
+- владелец с `OWNER_USER_ID` имеет доступ к основному conversational и enterprise flow
+- остальные участники не получают полный доступ к runtime-возможностям
+- в группах поведение зависит от триггеров, reply-контекста, moderation-политики и текущих guardrails
+
+Если бот "молчит", сначала проверь:
+
+- что сообщение отправлено владельцем
+- что есть триггер `Jarvis` / `Enterprise` или корректный reply/mention
+- что живы `run_jarvis_supervisor.sh` и `tg_codex_bridge.py`
+- что `BOT_TOKEN` и локальный `codex` реально доступны в этой среде
+
+## Что Проверять Перед Пушем
+
+Базовый локальный чек:
+
+```bash
+python3 -m py_compile tg_codex_bridge.py
+python3 tools/smoke_check.py
+python3 tools/behavioral_check.py
+sh tools/refresh_repo_state.sh
+```
+
+Это минимальный набор, который стоит прогонять до коммита, чтобы GitHub не расходился с локальным runtime.
+
 ## Идея проекта
 
 Проект задуман как единая рабочая оболочка `Enterprise Core` в Telegram:
@@ -170,6 +277,30 @@ Health-слой:
 - проект живёт в этой среде и использует локальные процессы
 - `Enterprise` не получает “магический root”; он видит только то, что реально доступно текущему UserLAnd/Termux runtime, но runtime-метрики теперь читает напрямую локальными командами и `/proc`, а не через пересказ модели
 - документация ниже должна отражать именно это, без старой облачной/worker-схемы и альтернативных launchers
+
+## Ограничения И Операционные Замечания
+
+- live-источники зависят от сети и внешних API; при сбое бот должен честно это показывать
+- `Enterprise` не равен unrestricted shell; доступ ограничен текущим runtime и guardrails
+- локальные проектные/meta-запросы не должны уходить во внешний web/live-маршрут
+- reply-aware сценарии чувствительны к качеству контекста: если Telegram не дал нужный `reply_to_message`, ответ будет уже по усечённому основанию
+- long-running ответы опираются на supervisor, heartbeat и состояние локального `codex`
+
+## Для GitHub
+
+Если репозиторий используется как публичная точка входа, в нём уже есть главное:
+
+- актуальный локальный entrypoint
+- инструкции по запуску
+- список команд
+- runtime backup snapshot'ы
+- smoke/behavioral checks
+
+Чего здесь намеренно нет:
+
+- cloud deployment как основной сценарий
+- fake demo-mode без реального runtime
+- обещаний "автоматически работает везде" без проверки `node`, `codex`, `BOT_TOKEN` и локальной среды
 
 ## Жёсткие правила проекта
 

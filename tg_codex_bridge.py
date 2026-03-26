@@ -771,6 +771,8 @@ BASE_SYSTEM_PROMPT = (
     "Если запрос про этот чат, сначала анализируй локальный контекст переписки, участников и память чата. "
     "Если в чате участвуют несколько людей, отвечай именно текущему собеседнику и не смешивай его позицию с мнениями других участников. "
     "Если другой участник продолжает ту же тему, учитывай общий контекст дискуссии, но явно держи в фокусе, кто пишет текущее сообщение. "
+    "Если в контексте есть reply, различай автора текущего сообщения и reply-target: reply-target не равен текущему собеседнику по умолчанию. "
+    "Не приписывай адресат reply текущему пользователю без прямого подтверждения в сообщении или структуре чата. "
     "Jarvis работает в beta-режиме: не подавай ответ как абсолютную истину, если есть неопределённость, спорные варианты или нехватка данных. "
     "Лучше честно обозначить ограничение, чем звучать уверенно там, где вывод не полностью подтверждён. "
     "Не уходи в web/live/news без явного запроса на внешнюю свежую информацию. "
@@ -7761,6 +7763,7 @@ class TelegramBridge:
         reply_message_id = reply_to.get("message_id")
         reply_user = reply_to.get("from") or {}
         actor = build_service_actor_name(reply_user) if reply_user else "участник"
+        lines.append("Важно: это reply-target, а не текущий автор сообщения.")
         if reply_message_id is not None:
             lines.append(f"Reply target message_id: {reply_message_id}")
         lines.append(f"Reply target author: {actor}")
@@ -8476,8 +8479,6 @@ class TelegramBridge:
                 labels.append("CoinGecko")
             elif label in {"Смартфон", "Bitcoin outlook"} and "DuckDuckGo snippets" not in labels:
                 labels.append("DuckDuckGo snippets")
-            elif label == "Web" and "DuckDuckGo web" not in labels:
-                labels.append("DuckDuckGo web")
         return labels
 
     def build_observed_mixed_answer(self, chat_id: int, user_text: str, user_id: Optional[int] = None) -> str:
@@ -8527,8 +8528,6 @@ class TelegramBridge:
         if web_fallback and len(external_sections) <= 1:
             lines.append(f"- Доп. веб-контекст: {web_fallback}")
         source_labels = self.collect_observed_source_labels(external_sections)
-        if source_labels == ["DuckDuckGo web"]:
-            source_labels = []
         if source_labels:
             lines.append("")
             lines.append("Источники: " + ", ".join(source_labels) + ".")
@@ -11379,9 +11378,74 @@ def detect_local_chat_query(user_text: str) -> bool:
     return any(marker in lowered for marker in chat_markers)
 
 
+def is_local_project_meta_request(user_text: str) -> bool:
+    lowered = normalize_whitespace(user_text).lower()
+    if not lowered:
+        return False
+    primary_scope_markers = (
+        "этот чат",
+        "наш чат",
+        "в чате",
+        "по базе",
+        "из базы",
+        "локальный",
+        "в проекте",
+        "по проекту",
+        "этот проект",
+        "весь проект",
+        "код",
+        "логика",
+        "роут",
+        "маршрут",
+        "контекст",
+        "reply",
+        "chat_id",
+    )
+    service_scope_markers = ("jarvis", "enterprise", "бот")
+    local_evidence_markers = (
+        "предупреждение",
+        "warn",
+        "санкц",
+        "модера",
+        "удалил сообщение",
+        "сообщение удалено",
+        "reply",
+        "роут",
+        "маршрут",
+        "контекст",
+        "логика",
+        "chat_id",
+        "по базе",
+        "из базы",
+        "проект",
+        "код",
+        "id=",
+    )
+    action_markers = (
+        "изучи",
+        "разбери",
+        "проанализируй",
+        "исправ",
+        "почини",
+        "улучши",
+        "посмотри",
+        "проверь",
+        "делай",
+    )
+    if any(marker in lowered for marker in primary_scope_markers) and any(marker in lowered for marker in action_markers):
+        return True
+    return (
+        any(marker in lowered for marker in service_scope_markers)
+        and any(marker in lowered for marker in local_evidence_markers)
+        and any(marker in lowered for marker in action_markers)
+    )
+
+
 def has_external_research_signal(text: str) -> bool:
     lowered = normalize_whitespace(text).lower()
     if not lowered:
+        return False
+    if is_local_project_meta_request(lowered):
         return False
     triggers = (
         "найди",
@@ -11782,6 +11846,8 @@ def should_use_web_research(text: str) -> bool:
     lowered = normalize_whitespace(text).lower()
     if not lowered:
         return False
+    if is_local_project_meta_request(lowered):
+        return False
     if detect_runtime_query(lowered):
         return False
     if is_product_selection_help_request(lowered) and not has_external_research_signal(lowered):
@@ -11815,22 +11881,22 @@ def analyze_request_route(
     reply_context: str = "",
 ) -> RouteDecision:
     normalized_text = normalize_whitespace(user_text)
+    local_project_meta_request = is_local_project_meta_request(normalized_text)
     intent = detect_intent(normalized_text)
     runtime_query = detect_runtime_query(normalized_text)
     workspace_allowed = can_owner_use_workspace_mode(user_id, chat_type, assistant_persona)
     route_kind = "codex_workspace" if workspace_allowed else "codex_chat"
     source_label = "Enterprise runtime" if runtime_query and workspace_allowed else "Enterprise"
     live_hits: List[Tuple[str, str]] = []
-    for candidate_kind, (candidate_source, detector) in ROUTE_KIND_LIVE_MAP.items():
-        detected_value = detector(normalized_text)
-        if detected_value:
-            live_hits.append((candidate_kind, candidate_source))
-    if len(live_hits) == 1:
+    if not local_project_meta_request:
+        for candidate_kind, (candidate_source, detector) in ROUTE_KIND_LIVE_MAP.items():
+            detected_value = detector(normalized_text)
+            if detected_value:
+                live_hits.append((candidate_kind, candidate_source))
+    if live_hits:
         route_kind, source_label = live_hits[0]
     use_live = route_kind.startswith("live_")
     use_web = should_use_web_research(normalized_text) and not use_live and not runtime_query
-    if use_web:
-        source_label = "duckduckgo-web"
     use_events = should_include_event_context(normalized_text) and not runtime_query
     use_database = should_include_database_context(normalized_text) and not runtime_query
     use_reply = bool(reply_context.strip())
