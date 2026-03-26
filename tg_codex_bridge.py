@@ -170,7 +170,6 @@ from pipeline.diagnostics import (
     enrich_self_check_report,
 )
 from pipeline.context_pipeline import ContextPipeline
-from services.context_bundle_utils import build_context_bundle as _build_context_bundle
 from services.answer_postprocess import (
     collapse_duplicate_answer_blocks as _collapse_duplicate_answer_blocks,
     postprocess_answer as _postprocess_answer,
