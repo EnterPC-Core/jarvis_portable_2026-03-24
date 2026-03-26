@@ -45,12 +45,20 @@ This keeps source permissions explicit instead of relying on stacked heuristics.
   owner/admin command execution and owner-report rendering
 - `handlers/`
   Telegram message handlers, callback/UI flow, command dispatch and parser normalization
+- `handlers/control_panel_renderer.py`
+  owner/public panel rendering separated from callback transport and bridge lifecycle
 - `services/live_gateway.py`
   normalized live-provider access, provider status, live route execution surface
 - `services/runtime_service.py`
   runtime world-state refresh, drive score recomputation, runtime/storage health rollups
 - `services/memory_service.py`
   AI-assisted refresh for chat memory summaries and user memory summaries
+- `services/bridge_runtime_text.py`
+  stateless text/access/help/group-trigger helpers used by bridge compatibility wrappers
+- `services/bridge_file_helpers.py`
+  stateless sdcard/file/media helper wrappers used by bridge compatibility wrappers
+- `services/bridge_ops_helpers.py`
+  stateless git/log/runtime ops helper wrappers used by bridge compatibility wrappers
 - `services/context_assembly.py`
   `ContextBundle` composition for text and attachments
 - `services/discussion_context.py`
@@ -77,6 +85,7 @@ Controlled migration note:
 - the bridge still contains compatibility wrappers for legacy call sites
 - `services/route_contracts.py`, `services/diagnostics_pipeline.py` and `services/admin_registry.py`
   remain as compatibility layers that re-export or bridge to the new package layout
+- bridge helper wrappers are now progressively backed by `services/bridge_runtime_text.py`, `services/bridge_file_helpers.py` and `services/bridge_ops_helpers.py`
 - this keeps behavior stable while reducing the legacy file incrementally instead of rewriting it in one pass
 
 ## 4. Improved Data Contracts

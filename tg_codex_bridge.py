@@ -84,16 +84,6 @@ from utils.runtime_utils import (
     split_file_parts as _split_file_parts,
 )
 from utils.chat_text import extract_assistant_persona as _extract_assistant_persona
-from utils.ops_utils import (
-    inspect_runtime_log as _inspect_runtime_log,
-    is_error_log_line as _is_error_log_line,
-    is_operational_log_line as _is_operational_log_line,
-    read_recent_log_highlights as _read_recent_log_highlights,
-    read_recent_operational_highlights as _read_recent_operational_highlights,
-    render_git_last_commits as _render_git_last_commits,
-    render_git_status_summary as _render_git_status_summary,
-    run_git_command as _run_git_command,
-)
 from utils.report_utils import (
     extract_meminfo_value as _extract_meminfo_value,
     render_bridge_runtime_watch as _render_bridge_runtime_watch,
@@ -132,6 +122,16 @@ from services.bridge_file_helpers import (
     read_document_excerpt as _bridge_read_document_excerpt,
     resolve_sdcard_path as _bridge_resolve_sdcard_path,
     resolve_sdcard_save_target as _bridge_resolve_sdcard_save_target,
+)
+from services.bridge_ops_helpers import (
+    inspect_runtime_log as _bridge_inspect_runtime_log,
+    is_error_log_line as _bridge_is_error_log_line,
+    is_operational_log_line as _bridge_is_operational_log_line,
+    read_recent_log_highlights as _bridge_read_recent_log_highlights,
+    read_recent_operational_highlights as _bridge_read_recent_operational_highlights,
+    render_git_last_commits as _bridge_render_git_last_commits,
+    render_git_status_summary as _bridge_render_git_status_summary,
+    run_git_command as _bridge_run_git_command,
 )
 from utils.message_utils import (
     build_service_actor_name as _build_service_actor_name,
@@ -9476,35 +9476,52 @@ def describe_message_media_kind(message: dict) -> str:
 
 
 def read_recent_log_highlights(log_path: Path, limit: int = 8) -> List[str]:
-    return _read_recent_log_highlights(log_path, normalize_whitespace, truncate_text, limit)
+    return _bridge_read_recent_log_highlights(
+        log_path,
+        normalize_whitespace_func=normalize_whitespace,
+        truncate_text_func=truncate_text,
+        limit=limit,
+    )
 
 
 def is_error_log_line(lowered_line: str) -> bool:
-    return _is_error_log_line(lowered_line)
+    return _bridge_is_error_log_line(lowered_line)
 
 
 def read_recent_operational_highlights(log_path: Path, limit: int = 8, category: str = "all") -> List[str]:
-    return _read_recent_operational_highlights(log_path, normalize_whitespace, truncate_text, limit, category)
+    return _bridge_read_recent_operational_highlights(
+        log_path,
+        normalize_whitespace_func=normalize_whitespace,
+        truncate_text_func=truncate_text,
+        limit=limit,
+        category=category,
+    )
 
 
 def is_operational_log_line(lowered_line: str, category: str = "all") -> bool:
-    return _is_operational_log_line(lowered_line, category)
+    return _bridge_is_operational_log_line(lowered_line, category)
 
 
 def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str, object]:
-    return _inspect_runtime_log(log_path, window_seconds)
+    return _bridge_inspect_runtime_log(log_path, window_seconds)
 
 
 def run_git_command(repo_path: Path, args: List[str], timeout_seconds: int = 20) -> str:
-    return _run_git_command(repo_path, args, build_subprocess_env, normalize_whitespace, timeout_seconds)
+    return _bridge_run_git_command(
+        repo_path,
+        args,
+        build_subprocess_env_func=build_subprocess_env,
+        normalize_whitespace_func=normalize_whitespace,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def render_git_status_summary(repo_path: Path) -> str:
-    return _render_git_status_summary(repo_path, run_git_command)
+    return _bridge_render_git_status_summary(repo_path, run_git_command_func=run_git_command)
 
 
 def render_git_last_commits(repo_path: Path, limit: int = 5) -> str:
-    return _render_git_last_commits(repo_path, run_git_command, limit)
+    return _bridge_render_git_last_commits(repo_path, run_git_command_func=run_git_command, limit=limit)
 
 
 def read_document_excerpt(file_path: Path, mime_type: str, max_chars: int = 3500) -> str:

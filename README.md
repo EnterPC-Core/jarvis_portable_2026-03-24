@@ -242,9 +242,13 @@ sh tools/refresh_repo_state.sh
 - [`handlers/telegram_handlers.py`](./handlers/telegram_handlers.py) — text/photo/document/voice Telegram handlers
 - [`handlers/command_dispatch.py`](./handlers/command_dispatch.py) — command dispatcher без смешивания с polling/runtime кодом
 - [`handlers/ui_handlers.py`](./handlers/ui_handlers.py) — inline UI, callback flow и pending-input сценарии
+- [`handlers/control_panel_renderer.py`](./handlers/control_panel_renderer.py) — owner/public control-panel rendering без UI transport-логики
 - [`services/live_gateway.py`](./services/live_gateway.py) — live provider gateway и normalized live records
 - [`services/runtime_service.py`](./services/runtime_service.py) — world-state refresh, drive recompute и runtime health rollups
 - [`services/memory_service.py`](./services/memory_service.py) — AI summary refresh для chat/user memory
+- [`services/bridge_runtime_text.py`](./services/bridge_runtime_text.py) — stateless runtime text/access/help/group-trigger helper layer для bridge wrappers
+- [`services/bridge_file_helpers.py`](./services/bridge_file_helpers.py) — stateless file/sdcard/media helper layer для bridge wrappers
+- [`services/bridge_ops_helpers.py`](./services/bridge_ops_helpers.py) — stateless git/log/runtime ops helper layer для bridge wrappers
 - [`services/failure_detectors.py`](./services/failure_detectors.py) — incident/failure detection
 - [`services/repair_playbooks.py`](./services/repair_playbooks.py) — repair playbook registry без ложных auto-fix claims
 
