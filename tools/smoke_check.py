@@ -17,6 +17,7 @@ def main() -> int:
     from services.diagnostics_metrics import collect_diagnostics_metrics, render_diagnostics_metrics
     from services.failure_detectors import detect_failure_signals
     from services.repair_playbooks import select_playbooks_for_signals
+    from services.self_heal_manager import run_self_heal_cycle
     from pipeline.context_pipeline import ContextPipeline
 
     state = bridge.BridgeState(
@@ -170,8 +171,8 @@ def main() -> int:
         playbooks = select_playbooks_for_signals(signals)
         if not any(signal.signal_code == "restart_loop" for signal in signals):
             raise RuntimeError("failure detector did not emit restart_loop signal")
-        if not any(playbook.playbook_id == "restart_bridge_runtime" for playbook in playbooks):
-            raise RuntimeError("repair playbook selector did not return restart_bridge_runtime")
+        if not any(playbook.playbook_id == "restart_runtime" for playbook in playbooks):
+            raise RuntimeError("repair playbook selector did not return restart_runtime")
         if "не абсолютная истина" not in bridge.PUBLIC_HOME_TEXT.lower():
             raise RuntimeError("public home text does not mention beta caution")
         all_pedals_rules = get_group_rules_text("Все педали!")
@@ -267,6 +268,8 @@ def main() -> int:
             raise RuntimeError("duplicate answer blocks were not collapsed")
         bot = bridge.TelegramBridge(bridge.BotConfig())
         try:
+            if "Failure classifier" not in run_self_heal_cycle(bot, source="smoke_check", auto_execute=False):
+                raise RuntimeError("self-heal cycle renderer regressed")
             if "JARVIS" not in bot.build_help_panel_text("public"):
                 raise RuntimeError("bridge help panel adapter regressed")
             if "inline_keyboard" not in bot.build_help_panel_markup("public"):

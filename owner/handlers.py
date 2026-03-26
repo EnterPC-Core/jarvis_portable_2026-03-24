@@ -245,6 +245,7 @@ class OwnerCommandService:
         if not self.is_owner_private_chat_func(user_id, chat_id):
             bridge.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
             return True
+        self_heal_summary = bridge.run_self_heal_cycle("owner_repair_status", auto_execute=False)
         runtime_snapshot = bridge.inspect_runtime_log()
         recent_errors = bridge.read_recent_log_highlights(limit=10)
         recent_routes = bridge.state.get_recent_request_diagnostics(limit=8)
@@ -267,6 +268,8 @@ class OwnerCommandService:
                     notes="repair not executed automatically",
                 )
         lines = [
+            self_heal_summary,
+            "",
             render_failure_signals(signals),
             "",
             render_playbook_summary(playbooks),
@@ -281,6 +284,14 @@ class OwnerCommandService:
                 )
                 if row["summary"]:
                     lines.append(f"  {truncate_text(row['summary'], 200)}")
+        incidents = bridge.state.get_recent_self_heal_incidents(limit=6)
+        if incidents:
+            lines.extend(["", "Self-heal incidents"])
+            for row in incidents:
+                stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
+                lines.append(
+                    f"- [{stamp}] incident={int(row['id'])} problem={row['problem_type']} state={row['state']} autonomy={row['autonomy_level']}"
+                )
         bridge.safe_send_text(chat_id, "\n".join(lines))
         return True
 
@@ -325,6 +336,7 @@ class OwnerCommandService:
         )
         repair_playbooks = select_playbooks_for_signals(failure_signals)
         repair_journal = bridge.state.get_recent_repair_journal(limit=4)
+        self_heal_incidents = bridge.state.get_recent_self_heal_incidents(limit=4)
         lines = [
             "OWNER REPORT",
             f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
@@ -367,6 +379,14 @@ class OwnerCommandService:
                 stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
                 lines.append(
                     f"- [{stamp}] signal={row['signal_code'] or '-'} playbook={row['playbook_id'] or '-'} status={row['status'] or '-'}"
+                )
+        if self_heal_incidents:
+            lines.append("")
+            lines.append("Последние self-heal incidents:")
+            for row in self_heal_incidents:
+                stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
+                lines.append(
+                    f"- [{stamp}] incident={int(row['id'])} problem={row['problem_type']} state={row['state']} playbook={row['suggested_playbook'] or '-'}"
                 )
         if recent_errors:
             lines.extend(["", "Недавние ошибки/сбои:", *[f"- {item}" for item in recent_errors]])

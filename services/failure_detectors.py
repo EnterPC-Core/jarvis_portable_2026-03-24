@@ -29,7 +29,10 @@ def detect_failure_signals(
                 evidence=f"restart_count={restart_count}; last_restart_at={last_restart_at}",
                 confidence=0.88,
                 source="runtime_log",
-                suggested_playbook="restart_bridge_runtime",
+                suggested_playbook="restart_runtime",
+                problem_type="unhealthy_loop",
+                detection_method="runtime_log_restart_counter",
+                auto_repairable=False,
             )
         )
     if heartbeat_kill_count > 0:
@@ -41,7 +44,10 @@ def detect_failure_signals(
                 evidence=f"heartbeat_kill_count={heartbeat_kill_count}",
                 confidence=0.92,
                 source="runtime_log",
-                suggested_playbook="restart_bridge_runtime",
+                suggested_playbook="refresh_runtime_state",
+                problem_type="runtime_degraded",
+                detection_method="runtime_log_heartbeat_marker",
+                auto_repairable=True,
             )
         )
     if any("sqlite3.operationalerror" in line.lower() and ("no such table" in line.lower() or "values for" in line.lower()) for line in error_lines):
@@ -54,6 +60,9 @@ def detect_failure_signals(
                 confidence=0.95,
                 source="runtime_log",
                 suggested_playbook="repair_sqlite_schema",
+                problem_type="sqlite_error",
+                detection_method="sqlite_operational_error_log",
+                auto_repairable=False,
             )
         )
     if warning_count >= 3 and any("lookup failed" in line.lower() for line in error_lines):
@@ -65,7 +74,10 @@ def detect_failure_signals(
                 evidence=f"warning_count={warning_count}",
                 confidence=0.76,
                 source="runtime_log",
-                suggested_playbook="stabilize_live_providers",
+                suggested_playbook="recover_failed_live_provider_config",
+                problem_type="live_provider_failed",
+                detection_method="provider_warning_burst",
+                auto_repairable=True,
             )
         )
     degraded_routes = 0
@@ -84,6 +96,9 @@ def detect_failure_signals(
                 confidence=0.7,
                 source="request_diagnostics",
                 suggested_playbook="audit_route_regression",
+                problem_type="route_drift",
+                detection_method="request_diagnostics_rollup",
+                auto_repairable=True,
             )
         )
     if severe_error_count > 0 and not signals:
@@ -95,7 +110,10 @@ def detect_failure_signals(
                 evidence=f"severe_error_count={severe_error_count}",
                 confidence=0.64,
                 source="runtime_log",
-                suggested_playbook="audit_route_regression",
+                suggested_playbook="recheck_health",
+                problem_type="runtime_degraded",
+                detection_method="runtime_log_severe_errors",
+                auto_repairable=True,
             )
         )
     return signals

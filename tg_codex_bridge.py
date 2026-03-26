@@ -18,7 +18,7 @@ from difflib import SequenceMatcher
 from threading import Event, Lock, RLock, Thread
 from collections import OrderedDict, deque
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Set, Tuple
+from typing import Deque, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -1271,6 +1271,79 @@ class BridgeState:
                 )"""
             )
             self.db.execute(
+                """CREATE TABLE IF NOT EXISTS self_heal_incidents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    problem_type TEXT NOT NULL DEFAULT '',
+                    signal_code TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL DEFAULT '',
+                    severity TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    evidence TEXT NOT NULL DEFAULT '',
+                    risk_level TEXT NOT NULL DEFAULT '',
+                    autonomy_level TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    suggested_playbook TEXT NOT NULL DEFAULT '',
+                    verification_status TEXT NOT NULL DEFAULT '',
+                    lesson_text TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS self_heal_transitions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    from_state TEXT NOT NULL DEFAULT '',
+                    to_state TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS self_heal_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    playbook_id TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    execution_summary TEXT NOT NULL DEFAULT '',
+                    executed_steps_json TEXT NOT NULL DEFAULT '',
+                    failed_step TEXT NOT NULL DEFAULT '',
+                    artifacts_changed_json TEXT NOT NULL DEFAULT '',
+                    verification_required INTEGER NOT NULL DEFAULT 1,
+                    notes TEXT NOT NULL DEFAULT '',
+                    stdout_json TEXT NOT NULL DEFAULT '',
+                    stderr_json TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS self_heal_verifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    attempt_id INTEGER,
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    before_state_json TEXT NOT NULL DEFAULT '',
+                    after_state_json TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    remaining_issues_json TEXT NOT NULL DEFAULT '',
+                    regressions_json TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS self_heal_lessons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    lesson_key TEXT NOT NULL DEFAULT '',
+                    lesson_text TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
                 "CREATE TABLE IF NOT EXISTS moderation_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), expires_at INTEGER, active INTEGER NOT NULL DEFAULT 1, completed_at INTEGER)"
             )
             self.db.execute(
@@ -1284,6 +1357,24 @@ class BridgeState:
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_repair_journal_created_at ON repair_journal(created_at DESC, id DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_self_heal_incidents_created_at ON self_heal_incidents(created_at DESC, id DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_self_heal_incidents_problem_state ON self_heal_incidents(problem_type, state, updated_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_self_heal_transitions_incident ON self_heal_transitions(incident_id, created_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_self_heal_attempts_incident ON self_heal_attempts(incident_id, created_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_self_heal_verifications_incident ON self_heal_verifications(incident_id, created_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_self_heal_lessons_incident ON self_heal_lessons(incident_id, created_at DESC)"
             )
             self.db.execute(
                 "CREATE TABLE IF NOT EXISTS warnings (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, expires_at INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
@@ -3397,6 +3488,229 @@ class BridgeState:
                 (effective_limit,),
             ).fetchall()
 
+    def has_recent_self_heal_incident(self, problem_type: str, signal_code: str, window_seconds: int = 900) -> bool:
+        with self.db_lock:
+            row = self.db.execute(
+                """SELECT 1 FROM self_heal_incidents
+                   WHERE problem_type = ? AND signal_code = ?
+                     AND updated_at >= strftime('%s','now') - ?
+                   ORDER BY id DESC
+                   LIMIT 1""",
+                (problem_type, signal_code, max(60, int(window_seconds))),
+            ).fetchone()
+        return row is not None
+
+    def record_self_heal_incident(
+        self,
+        *,
+        problem_type: str,
+        signal_code: str,
+        state: str,
+        severity: str,
+        summary: str,
+        evidence: str,
+        risk_level: str,
+        autonomy_level: str,
+        source: str,
+        confidence: float,
+        suggested_playbook: str = "",
+    ) -> int:
+        with self.db_lock:
+            cursor = self.db.execute(
+                """INSERT INTO self_heal_incidents(
+                    problem_type, signal_code, state, severity, summary, evidence, risk_level, autonomy_level,
+                    source, confidence, suggested_playbook
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    truncate_text(problem_type, 80),
+                    truncate_text(signal_code, 80),
+                    truncate_text(state, 40),
+                    truncate_text(severity, 40),
+                    truncate_text(normalize_whitespace(summary), 300),
+                    truncate_text(normalize_whitespace(evidence), 600),
+                    truncate_text(risk_level, 40),
+                    truncate_text(autonomy_level, 40),
+                    truncate_text(source, 80),
+                    max(0.0, min(1.0, float(confidence))),
+                    truncate_text(suggested_playbook, 120),
+                ),
+            )
+            incident_id = int(cursor.lastrowid or 0)
+            self.db.execute(
+                """INSERT INTO self_heal_transitions(incident_id, from_state, to_state, note)
+                   VALUES(?, ?, ?, ?)""",
+                (incident_id, "", truncate_text(state, 40), "incident detected"),
+            )
+            self.db.commit()
+        return incident_id
+
+    def update_self_heal_incident_state(
+        self,
+        incident_id: int,
+        *,
+        new_state: str,
+        note: str = "",
+        verification_status: str = "",
+        lesson_text: str = "",
+    ) -> None:
+        with self.db_lock:
+            current = self.db.execute(
+                "SELECT state FROM self_heal_incidents WHERE id = ?",
+                (incident_id,),
+            ).fetchone()
+            previous_state = str(current["state"] or "") if current else ""
+            self.db.execute(
+                """UPDATE self_heal_incidents
+                   SET state = ?, verification_status = CASE WHEN ? != '' THEN ? ELSE verification_status END,
+                       lesson_text = CASE WHEN ? != '' THEN ? ELSE lesson_text END,
+                       updated_at = strftime('%s','now')
+                   WHERE id = ?""",
+                (
+                    truncate_text(new_state, 40),
+                    verification_status,
+                    truncate_text(verification_status, 80),
+                    lesson_text,
+                    truncate_text(normalize_whitespace(lesson_text), 600),
+                    incident_id,
+                ),
+            )
+            self.db.execute(
+                """INSERT INTO self_heal_transitions(incident_id, from_state, to_state, note)
+                   VALUES(?, ?, ?, ?)""",
+                (
+                    incident_id,
+                    truncate_text(previous_state, 40),
+                    truncate_text(new_state, 40),
+                    truncate_text(normalize_whitespace(note), 300),
+                ),
+            )
+            self.db.commit()
+
+    def record_self_heal_attempt(
+        self,
+        *,
+        incident_id: int,
+        playbook_id: str,
+        state: str,
+        status: str,
+        execution_summary: str,
+        executed_steps: Sequence[str] = (),
+        failed_step: str = "",
+        artifacts_changed: Sequence[str] = (),
+        verification_required: bool = True,
+        notes: str = "",
+        stdout_log: Sequence[str] = (),
+        stderr_log: Sequence[str] = (),
+    ) -> int:
+        with self.db_lock:
+            cursor = self.db.execute(
+                """INSERT INTO self_heal_attempts(
+                    incident_id, playbook_id, state, status, execution_summary, executed_steps_json, failed_step,
+                    artifacts_changed_json, verification_required, notes, stdout_json, stderr_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    incident_id,
+                    truncate_text(playbook_id, 120),
+                    truncate_text(state, 40),
+                    truncate_text(status, 40),
+                    truncate_text(normalize_whitespace(execution_summary), 400),
+                    truncate_text(json.dumps(list(executed_steps), ensure_ascii=False), 4000),
+                    truncate_text(failed_step, 120),
+                    truncate_text(json.dumps(list(artifacts_changed), ensure_ascii=False), 2000),
+                    1 if verification_required else 0,
+                    truncate_text(normalize_whitespace(notes), 800),
+                    truncate_text(json.dumps(list(stdout_log), ensure_ascii=False), 4000),
+                    truncate_text(json.dumps(list(stderr_log), ensure_ascii=False), 4000),
+                ),
+            )
+            self.db.commit()
+        return int(cursor.lastrowid or 0)
+
+    def record_self_heal_verification(
+        self,
+        *,
+        incident_id: int,
+        attempt_id: Optional[int],
+        verified: bool,
+        before_state: dict,
+        after_state: dict,
+        confidence: float,
+        remaining_issues: Sequence[str] = (),
+        regressions_detected: Sequence[str] = (),
+        notes: str = "",
+    ) -> int:
+        with self.db_lock:
+            cursor = self.db.execute(
+                """INSERT INTO self_heal_verifications(
+                    incident_id, attempt_id, verified, before_state_json, after_state_json, confidence,
+                    remaining_issues_json, regressions_json, notes
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    incident_id,
+                    attempt_id,
+                    1 if verified else 0,
+                    truncate_text(json.dumps(before_state, ensure_ascii=False, sort_keys=True), 4000),
+                    truncate_text(json.dumps(after_state, ensure_ascii=False, sort_keys=True), 4000),
+                    max(0.0, min(1.0, float(confidence))),
+                    truncate_text(json.dumps(list(remaining_issues), ensure_ascii=False), 2000),
+                    truncate_text(json.dumps(list(regressions_detected), ensure_ascii=False), 2000),
+                    truncate_text(normalize_whitespace(notes), 800),
+                ),
+            )
+            self.db.commit()
+        return int(cursor.lastrowid or 0)
+
+    def record_self_heal_lesson(self, *, incident_id: int, lesson_key: str, lesson_text: str, confidence: float = 0.5) -> int:
+        with self.db_lock:
+            cursor = self.db.execute(
+                """INSERT INTO self_heal_lessons(incident_id, lesson_key, lesson_text, confidence)
+                   VALUES(?, ?, ?, ?)""",
+                (
+                    incident_id,
+                    truncate_text(lesson_key, 120),
+                    truncate_text(normalize_whitespace(lesson_text), 800),
+                    max(0.0, min(1.0, float(confidence))),
+                ),
+            )
+            self.db.commit()
+        return int(cursor.lastrowid or 0)
+
+    def get_recent_self_heal_incidents(self, limit: int = 8) -> List[sqlite3.Row]:
+        effective_limit = max(1, min(20, int(limit)))
+        with self.db_lock:
+            return self.db.execute(
+                """SELECT id, problem_type, signal_code, state, severity, summary, evidence, risk_level,
+                          autonomy_level, source, confidence, suggested_playbook, verification_status, lesson_text, created_at, updated_at
+                   FROM self_heal_incidents
+                   ORDER BY id DESC
+                   LIMIT ?""",
+                (effective_limit,),
+            ).fetchall()
+
+    def get_world_state_rows(self, category: str = "", limit: int = 10) -> List[sqlite3.Row]:
+        effective_limit = max(1, min(30, int(limit)))
+        with self.db_lock:
+            if category:
+                rows = self.db.execute(
+                    """SELECT state_key, category, status, value_text, value_number, source, confidence,
+                              ttl_seconds, verification_method, stale_flag, updated_at
+                       FROM world_state_registry
+                       WHERE category = ?
+                       ORDER BY updated_at DESC
+                       LIMIT ?""",
+                    (category, effective_limit),
+                ).fetchall()
+            else:
+                rows = self.db.execute(
+                    """SELECT state_key, category, status, value_text, value_number, source, confidence,
+                              ttl_seconds, verification_method, stale_flag, updated_at
+                       FROM world_state_registry
+                       ORDER BY updated_at DESC
+                       LIMIT ?""",
+                    (effective_limit,),
+                ).fetchall()
+        return rows
+
     def get_meta(self, key: str, default: str = "") -> str:
         with self.db_lock:
             row = self.db.execute("SELECT value FROM bot_meta WHERE key = ?", (key,)).fetchone()
@@ -4050,6 +4364,7 @@ class TelegramBridge:
         self.load_bot_identity()
         self.refresh_world_state_registry("startup")
         self.recompute_drive_scores()
+        self.run_self_heal_cycle("startup", auto_execute=self.owner_autofix_enabled())
         self.state.record_autobiographical_event(
             category="runtime",
             event_type="startup",
@@ -4087,6 +4402,7 @@ class TelegramBridge:
                 log(f"network error in main loop: {error}")
                 self.refresh_world_state_registry("runtime_error")
                 self.recompute_drive_scores()
+                self.run_self_heal_cycle("runtime_error", auto_execute=self.owner_autofix_enabled())
                 self.state.record_autobiographical_event(
                     category="runtime",
                     event_type="network_error",
@@ -4102,6 +4418,7 @@ class TelegramBridge:
                 log_exception("unexpected main loop error", error, limit=12)
                 self.refresh_world_state_registry("runtime_error")
                 self.recompute_drive_scores()
+                self.run_self_heal_cycle("runtime_error", auto_execute=self.owner_autofix_enabled())
                 self.state.record_autobiographical_event(
                     category="runtime",
                     event_type="unexpected_error",
@@ -7987,6 +8304,11 @@ class TelegramBridge:
 
     def recompute_drive_scores(self, operational_state: Optional[Dict[str, object]] = None) -> Dict[str, float]:
         return self.runtime_service.recompute_drive_scores(self, operational_state)
+
+    def run_self_heal_cycle(self, source: str, auto_execute: bool = False) -> str:
+        from services.self_heal_manager import run_self_heal_cycle
+
+        return run_self_heal_cycle(self, source=source, auto_execute=auto_execute)
 
     def apply_persistent_pressures_to_route(self, route_decision: RouteDecision, user_text: str) -> RouteDecision:
         drive_map = {row["drive_name"]: float(row["score"] or 0) for row in self.state.get_drive_scores()}
