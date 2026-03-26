@@ -88,17 +88,18 @@ class HistoryService:
             ).fetchone()
             snapshot["sanction_history_count"] = safe_int(sanction_count[0] if sanction_count else 0)
 
-            appeal_row = conn.execute(
-                """SELECT COUNT(*) AS total_count,
-                          SUM(CASE WHEN status IN ('approved','auto_approved') THEN 1 ELSE 0 END) AS approved_count,
-                          SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
-                FROM appeals WHERE user_id = ?""",
-                (user_id,),
-            ).fetchone()
-            if appeal_row:
-                snapshot["past_appeals"] = safe_int(appeal_row["total_count"])
-                snapshot["approved_appeals"] = safe_int(appeal_row["approved_count"])
-                snapshot["rejected_appeals"] = safe_int(appeal_row["rejected_count"])
+            if self._table_exists(conn, "appeals"):
+                appeal_row = conn.execute(
+                    """SELECT COUNT(*) AS total_count,
+                              SUM(CASE WHEN status IN ('approved','auto_approved') THEN 1 ELSE 0 END) AS approved_count,
+                              SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
+                    FROM appeals WHERE user_id = ?""",
+                    (user_id,),
+                ).fetchone()
+                if appeal_row:
+                    snapshot["past_appeals"] = safe_int(appeal_row["total_count"])
+                    snapshot["approved_appeals"] = safe_int(appeal_row["approved_count"])
+                    snapshot["rejected_appeals"] = safe_int(appeal_row["rejected_count"])
 
             snapshot["unlocked_achievements"] = self.repository.count_unlocked_achievements(conn, user_id)
         return snapshot
@@ -124,3 +125,9 @@ class HistoryService:
     def build_appeal_snapshot_json(self, user_id: int) -> str:
         return json.dumps(self.build_snapshot(user_id), ensure_ascii=False)
 
+    def _table_exists(self, conn, table: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            (table,),
+        ).fetchone()
+        return row is not None

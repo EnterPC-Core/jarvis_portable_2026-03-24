@@ -216,9 +216,18 @@ class GroupReplyPolicy:
             return False
         if self.is_ambient_group_chatter(message, text):
             return False
+        if self._is_direct_bot_help_request(message, text):
+            return True
         if self.get_chat_event_count(chat_id) < 80:
             return False
         return self.compute_score(text) >= 3
+
+    def _is_direct_bot_help_request(self, message: dict, raw_text: str) -> bool:
+        reply_to = (message or {}).get("reply_to_message") or {}
+        reply_from = reply_to.get("from") or {}
+        if not reply_from.get("is_bot"):
+            return False
+        return self.is_meaningful_group_request(message, raw_text)
 
     def grant_group_followup_window(self, chat_id: int, user_id: Optional[int]) -> None:
         if user_id is None or chat_id >= 0:

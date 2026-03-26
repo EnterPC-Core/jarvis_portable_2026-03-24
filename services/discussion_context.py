@@ -182,6 +182,12 @@ def build_current_discussion_context(
                 for name, count in sorted(participant_counts.items(), key=lambda item: (-item[1], item[0]))[:12]
             )
             header_lines.append(f"- active_participants: {truncate_text_func(top_participants, 400)}")
+        else:
+            fallback_participants = [name for name in (current_speaker, reply_target) if name]
+            if fallback_participants:
+                header_lines.append(
+                    f"- active_participants: {truncate_text_func(', '.join(dict.fromkeys(fallback_participants)), 400)}"
+                )
         if active_thread:
             header_lines.append(f"- active_thread_anchor_message_id: {thread_anchor_message_id}")
             if thread_keywords:
@@ -197,6 +203,13 @@ def build_current_discussion_context(
     )
     if discussion_summary:
         blocks.append(discussion_summary)
+    elif query_text and (current_speaker or reply_target):
+        summary_lines = ["Discussion summary:"]
+        if current_speaker:
+            summary_lines.append(f"- current_speaker_intent: {truncate_text_func(query_text, 220)}")
+        if reply_target:
+            summary_lines.append(f"- reply_target: {reply_target}")
+        blocks.append("\n".join(summary_lines))
 
     if ranked_recent_rows:
         window_label = "Focused active thread window:" if active_thread and focused_rows else "Recent chat window (ranked selection from last 100 messages):"
@@ -206,6 +219,15 @@ def build_current_discussion_context(
             actor = build_actor_name_func(event_user_id, username or "", first_name or "", last_name or "", role)
             lines.append(f"- [{stamp}] {actor} ({message_type}): {truncate_text_func(content or '', 180)}")
         blocks.append("\n".join(lines))
+    elif query_text and current_speaker:
+        blocks.append(
+            "\n".join(
+                [
+                    "Recent chat window (ranked selection from last 100 messages):",
+                    f"- [--:--] {current_speaker} (text): {truncate_text_func(query_text, 180)}",
+                ]
+            )
+        )
 
     if user_id is not None:
         user_rows = state.get_recent_user_rows(chat_id, user_id, limit=12)
@@ -216,6 +238,15 @@ def build_current_discussion_context(
                 actor = build_actor_name_func(event_user_id, username or "", first_name or "", last_name or "", "user")
                 lines.append(f"- [{stamp}] {actor} ({message_type}): {truncate_text_func(content or '', 180)}")
             blocks.append("\n".join(lines))
+        elif current_speaker and query_text:
+            blocks.append(
+                "\n".join(
+                    [
+                        "Current speaker recent messages:",
+                        f"- [--:--] {current_speaker} (text): {truncate_text_func(query_text, 180)}",
+                    ]
+                )
+            )
 
     reply_message_id = reply_to.get("message_id")
     if reply_message_id is not None:

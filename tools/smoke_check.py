@@ -14,6 +14,8 @@ def main() -> int:
 
     import tg_codex_bridge as bridge
     from services.auto_moderation import detect_auto_moderation_decision, get_group_rules_text
+    from services.failure_detectors import detect_failure_signals
+    from services.repair_playbooks import select_playbooks_for_signals
 
     state = bridge.BridgeState(
         bridge.DEFAULT_HISTORY_LIMIT,
@@ -135,6 +137,18 @@ def main() -> int:
             raise RuntimeError("owner priority note is too weak")
         if "beta" not in bridge.START_TEXT.lower():
             raise RuntimeError("start text does not mention beta mode")
+        signals = detect_failure_signals(
+            runtime_snapshot={"restart_count": 4, "last_restart_at": 1, "heartbeat_kill_count": 0, "warning_count": 0, "severe_error_count": 0},
+            recent_errors=[],
+            recent_routes=[],
+            heartbeat_timeout_seconds=90,
+            now_ts=100,
+        )
+        playbooks = select_playbooks_for_signals(signals)
+        if not any(signal.signal_code == "restart_loop" for signal in signals):
+            raise RuntimeError("failure detector did not emit restart_loop signal")
+        if not any(playbook.playbook_id == "restart_bridge_runtime" for playbook in playbooks):
+            raise RuntimeError("repair playbook selector did not return restart_bridge_runtime")
         if "не абсолютная истина" not in bridge.PUBLIC_HOME_TEXT.lower():
             raise RuntimeError("public home text does not mention beta caution")
         all_pedals_rules = get_group_rules_text("Все педали!")

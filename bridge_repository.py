@@ -25,9 +25,18 @@ class BridgeRepository:
         return conn
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, name: str, type_name: str) -> None:
+        if not self._table_exists(conn, table):
+            return
         columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if name not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {type_name}")
+
+    def _table_exists(self, conn: sqlite3.Connection, table: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            (table,),
+        ).fetchone()
+        return row is not None
 
     def ensure_schema(self) -> None:
         with self.connect() as conn:
@@ -276,4 +285,3 @@ class BridgeRepository:
             (user_id,),
         ).fetchone()
         return safe_int(row[0] if row else 0)
-

@@ -77,9 +77,13 @@ sh start_jarvis_on_termux.sh
 
 ## Структура Репозитория
 
-- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной bridge, routing, runtime, Telegram polling, orchestration
-- [`handlers/`](./handlers) — парсинг команд и разбор входящих текстов
-- [`services/`](./services) — orchestration, context assembly, postprocess, moderation, discussion state
+- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — runtime entrypoint и coordinator: Telegram polling, orchestration, интеграция router/pipeline/services
+- [`handlers/`](./handlers) — Telegram message handlers, command dispatch и command parsers
+- [`models/`](./models) — типизированные контракты: `RouteDecision`, `ContextBundle`, `SelfCheckReport`, `AttachmentBundle`, live records
+- [`router/`](./router) — deterministic routing policy и request classification без Telegram I/O
+- [`pipeline/`](./pipeline) — diagnostics/self-check enrichment и traceable response pipeline
+- [`owner/`](./owner) — owner/admin registry и command handlers для owner-ops
+- [`services/`](./services) — runtime services, memory services, live providers, discussion context, storage/repair helpers и compatibility layer для controlled migration
 - [`utils/`](./utils) — текстовые, файловые, runtime и reporting helper-функции
 - [`prompts/`](./prompts) — builders для prompt layer
 - [`tools/`](./tools) — smoke/behavioral checks, runtime-backup export, repo refresh
@@ -222,10 +226,27 @@ sh tools/refresh_repo_state.sh
 
 ### Локальный runtime
 
-- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Enterprise Core bridge
+- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Enterprise Core coordinator
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — supervisor, который держит один живой процесс бота
 - [`start_jarvis_on_userland.sh`](./start_jarvis_on_userland.sh) — фоновый запуск под UserLAnd
 - [`start_jarvis_on_termux.sh`](./start_jarvis_on_termux.sh) — фоновый запуск под Termux
+
+Критичные runtime-domain модули:
+
+- [`models/contracts.py`](./models/contracts.py) — единые data contracts для route/context/self-check/live
+- [`router/request_router.py`](./router/request_router.py) — строгий router и request-kind classification
+- [`pipeline/diagnostics.py`](./pipeline/diagnostics.py) — response contract enrichment и persisted diagnostics shaping
+- [`pipeline/context_pipeline.py`](./pipeline/context_pipeline.py) — context-bundle orchestration и discussion-context assembly
+- [`owner/admin_registry.py`](./owner/admin_registry.py) — owner/admin command catalog
+- [`owner/handlers.py`](./owner/handlers.py) — owner/admin command handlers и owner-report rendering
+- [`handlers/telegram_handlers.py`](./handlers/telegram_handlers.py) — text/photo/document/voice Telegram handlers
+- [`handlers/command_dispatch.py`](./handlers/command_dispatch.py) — command dispatcher без смешивания с polling/runtime кодом
+- [`handlers/ui_handlers.py`](./handlers/ui_handlers.py) — inline UI, callback flow и pending-input сценарии
+- [`services/live_gateway.py`](./services/live_gateway.py) — live provider gateway и normalized live records
+- [`services/runtime_service.py`](./services/runtime_service.py) — world-state refresh, drive recompute и runtime health rollups
+- [`services/memory_service.py`](./services/memory_service.py) — AI summary refresh для chat/user memory
+- [`services/failure_detectors.py`](./services/failure_detectors.py) — incident/failure detection
+- [`services/repair_playbooks.py`](./services/repair_playbooks.py) — repair playbook registry без ложных auto-fix claims
 
 ### Данные
 
@@ -268,6 +289,7 @@ Health-слой:
 - [Portable-пакет и перенос на другое устройство](./PORTABLE_RUN_INSTRUCTIONS.md)
 - [Инструкция по боту и панелям](./BOT_UI_GUIDE.md)
 - [Полный список команд](./COMMANDS.md)
+- [Architecture blueprint](./ARCHITECTURE_BLUEPRINT.md)
 - [Runtime backups](./data/runtime_backups/README.md)
 
 ## Что важно понимать

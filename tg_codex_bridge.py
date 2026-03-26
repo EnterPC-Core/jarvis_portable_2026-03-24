@@ -13,7 +13,6 @@ import time
 import traceback
 import xml.etree.ElementTree as ET
 import zipfile
-from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
 from threading import Event, Lock, RLock, Thread
@@ -27,6 +26,9 @@ from requests import Response, Session
 from requests.exceptions import RequestException
 
 from appeals_service import AppealsService
+from handlers.command_dispatch import CommandDispatcher
+from handlers.telegram_handlers import TelegramMessageHandlers
+from handlers.ui_handlers import UIHandlers
 from handlers.command_parsers import (
     normalize_mode as _normalize_mode,
     parse_autobio_command as _parse_autobio_command,
@@ -161,28 +163,64 @@ from services.orchestration_utils import (
     has_freshness_marker as _has_freshness_marker,
     validate_route_decision as _validate_route_decision,
 )
-from services.context_bundle_utils import (
-    build_context_bundle as _build_context_bundle,
-    should_include_entity_context as _should_include_entity_context,
+from services.live_gateway import LiveGateway, LiveGatewayDeps
+from pipeline.diagnostics import (
+    build_attachment_bundle,
+    build_persisted_self_check_report,
+    enrich_self_check_report,
 )
-from services.context_assembly import (
-    build_attachment_context_bundle as _build_attachment_context_bundle,
-    build_text_context_bundle as _build_text_context_bundle,
-)
+from pipeline.context_pipeline import ContextPipeline
+from services.context_bundle_utils import build_context_bundle as _build_context_bundle
 from services.answer_postprocess import (
     collapse_duplicate_answer_blocks as _collapse_duplicate_answer_blocks,
     postprocess_answer as _postprocess_answer,
     strip_banned_openers as _strip_banned_openers,
     strip_meta_reply_wrapper as _strip_meta_reply_wrapper,
 )
+from models.contracts import (
+    AttachmentBundle,
+    ContextBundle,
+    ExternalResearchTask,
+    LiveProviderRecord,
+    RequestRoutePolicy,
+    RouteDecision,
+    SelfCheckReport,
+    ROUTER_POLICY_MATRIX,
+)
 from services.auto_moderation import (
     AutoModerationDecision,
     detect_auto_moderation_decision as _detect_auto_moderation_decision,
     get_group_rules_text as _get_group_rules_text,
 )
+from owner.admin_registry import render_admin_command_catalog
+from owner.handlers import OwnerCommandService
+from router.request_router import (
+    RouterRuntimeDeps,
+    analyze_request_route as _analyze_request_route_module,
+    classify_request_kind as _classify_request_kind_module,
+    detect_intent as _detect_intent_module,
+    detect_local_chat_query as _detect_local_chat_query_module,
+    detect_owner_admin_request as _detect_owner_admin_request_module,
+    detect_runtime_query as _detect_runtime_query_module,
+    has_external_research_signal as _has_external_research_signal_module,
+    is_comparison_request as _is_comparison_request_module,
+    is_explicit_help_request as _is_explicit_help_request_module,
+    is_local_project_meta_request as _is_local_project_meta_request_module,
+    is_opinion_request as _is_opinion_request_module,
+    is_product_selection_help_request as _is_product_selection_help_request_module,
+    is_purchase_advice_request as _is_purchase_advice_request_module,
+    is_recommendation_request as _is_recommendation_request_module,
+    response_shape_hint as _response_shape_hint_module,
+    should_include_database_context as _should_include_database_context_module,
+    should_include_event_context as _should_include_event_context_module,
+    should_use_web_research as _should_use_web_research_module,
+)
+from services.failure_detectors import detect_failure_signals, render_failure_signals
+from services.repair_playbooks import render_playbook_summary, select_playbooks_for_signals
 from services.conversation_state import GroupConversationState
-from services.discussion_context import build_current_discussion_context as _build_current_discussion_context
 from services.group_reply_policy import GroupReplyPolicy
+from services.memory_service import MemoryService, MemoryServiceDeps
+from services.runtime_service import RuntimeService, RuntimeServiceDeps
 
 try:
     import psutil
@@ -374,6 +412,7 @@ HISTORY_USAGE_TEXT = "Используй: /history @username, /history user_id �
 DIGEST_USAGE_TEXT = "Используй: /digest [YYYY-MM-DD]"
 CHAT_DIGEST_USAGE_TEXT = "Используй: /chatdigest <chat_id> [YYYY-MM-DD]"
 OWNER_REPORT_USAGE_TEXT = "Используй: /ownerreport"
+REPAIR_STATUS_USAGE_TEXT = "Используй: /repairstatus"
 ROUTES_USAGE_TEXT = "Используй: /routes [количество]"
 MEMORY_CHAT_USAGE_TEXT = "Используй: /memorychat [запрос]"
 MEMORY_USER_USAGE_TEXT = "Используй: /memoryuser @username, /memoryuser user_id или reply на сообщение участника"
@@ -508,6 +547,7 @@ COMMANDS_LIST_TEXT = (
     "/digest [YYYY-MM-DD]\n"
     "/chatdigest <chat_id> [YYYY-MM-DD]\n"
     "/ownerreport\n"
+    "/repairstatus\n"
     "/export [chat|today|@username|user_id]\n"
     "/portrait [@username]\n"
     "/mode jarvis\n"
@@ -924,60 +964,6 @@ class BotConfig:
         self.owner_weekly_digest_weekday_utc = read_int_env("OWNER_WEEKLY_DIGEST_WEEKDAY_UTC", DEFAULT_OWNER_WEEKLY_DIGEST_WEEKDAY_UTC, minimum=0, maximum=6)
 
 
-@dataclass(frozen=True)
-class RouteDecision:
-    persona: str
-    intent: str
-    chat_type: str
-    route_kind: str
-    source_label: str
-    use_live: bool
-    use_web: bool
-    use_events: bool
-    use_database: bool
-    use_reply: bool
-    use_workspace: bool
-    guardrails: Tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ContextBundle:
-    summary_text: str = ""
-    facts_text: str = ""
-    event_context: str = ""
-    database_context: str = ""
-    reply_context: str = ""
-    discussion_context: str = ""
-    self_model_text: str = ""
-    autobiographical_text: str = ""
-    skill_memory_text: str = ""
-    world_state_text: str = ""
-    drive_state_text: str = ""
-    user_memory_text: str = ""
-    relation_memory_text: str = ""
-    chat_memory_text: str = ""
-    summary_memory_text: str = ""
-    web_context: str = ""
-    route_summary: str = ""
-    guardrail_note: str = ""
-
-
-@dataclass(frozen=True)
-class SelfCheckReport:
-    outcome: str
-    answer: str
-    flags: Tuple[str, ...]
-    observed_basis: Tuple[str, ...] = ()
-    uncertain_points: Tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class ExternalResearchTask:
-    kind: str
-    label: str
-    payload: str = ""
-
-
 class BridgeState:
     def __init__(self, history_limit: int, default_mode: str, db_path: str) -> None:
         self.history_limit = history_limit
@@ -1169,6 +1155,10 @@ class BridgeState:
                     value_text TEXT NOT NULL DEFAULT '',
                     value_number REAL,
                     source TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    ttl_seconds INTEGER NOT NULL DEFAULT 0,
+                    verification_method TEXT NOT NULL DEFAULT '',
+                    stale_flag INTEGER NOT NULL DEFAULT 0,
                     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
                 )"""
             )
@@ -1246,8 +1236,29 @@ class BridgeState:
                     used_workspace INTEGER NOT NULL DEFAULT 0,
                     guardrails TEXT NOT NULL DEFAULT '',
                     outcome TEXT NOT NULL DEFAULT '',
+                    request_kind TEXT NOT NULL DEFAULT '',
+                    response_mode TEXT NOT NULL DEFAULT '',
+                    sources TEXT NOT NULL DEFAULT '',
+                    tools_used TEXT NOT NULL DEFAULT '',
+                    memory_used TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    freshness TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
                     latency_ms INTEGER NOT NULL DEFAULT 0,
                     query_text TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS repair_journal (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_code TEXT NOT NULL DEFAULT '',
+                    playbook_id TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    evidence TEXT NOT NULL DEFAULT '',
+                    verification_result TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
                 )"""
             )
@@ -1262,6 +1273,9 @@ class BridgeState:
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_request_diagnostics_chat_id_id ON request_diagnostics(chat_id, id)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_repair_journal_created_at ON repair_journal(created_at DESC, id DESC)"
             )
             self.db.execute(
                 "CREATE TABLE IF NOT EXISTS warnings (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, expires_at INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
@@ -1282,6 +1296,8 @@ class BridgeState:
             self._ensure_warnings_columns()
             self._ensure_chat_events_columns()
             self._ensure_user_memory_profile_columns()
+            self._ensure_world_state_registry_columns()
+            self._ensure_request_diagnostics_columns()
             self._rebuild_chat_events_fts()
             self._seed_self_model_state()
             self._seed_skill_memory()
@@ -1322,6 +1338,34 @@ class BridgeState:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(user_memory_profiles)").fetchall()}
         if "ai_summary" not in columns:
             self.db.execute("ALTER TABLE user_memory_profiles ADD COLUMN ai_summary TEXT NOT NULL DEFAULT ''")
+
+    def _ensure_world_state_registry_columns(self) -> None:
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(world_state_registry)").fetchall()}
+        required = {
+            "confidence": "REAL NOT NULL DEFAULT 0.0",
+            "ttl_seconds": "INTEGER NOT NULL DEFAULT 0",
+            "verification_method": "TEXT NOT NULL DEFAULT ''",
+            "stale_flag": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for name, definition in required.items():
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE world_state_registry ADD COLUMN {name} {definition}")
+
+    def _ensure_request_diagnostics_columns(self) -> None:
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(request_diagnostics)").fetchall()}
+        required = {
+            "request_kind": "TEXT NOT NULL DEFAULT ''",
+            "response_mode": "TEXT NOT NULL DEFAULT ''",
+            "sources": "TEXT NOT NULL DEFAULT ''",
+            "tools_used": "TEXT NOT NULL DEFAULT ''",
+            "memory_used": "TEXT NOT NULL DEFAULT ''",
+            "confidence": "REAL NOT NULL DEFAULT 0.0",
+            "freshness": "TEXT NOT NULL DEFAULT ''",
+            "notes": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in required.items():
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE request_diagnostics ADD COLUMN {name} {definition}")
 
     def _seed_self_model_state(self) -> None:
         self.db.execute(
@@ -2483,17 +2527,28 @@ class BridgeState:
         value_text: str = "",
         value_number: Optional[float] = None,
         source: str = "",
+        confidence: float = 0.0,
+        ttl_seconds: int = 0,
+        verification_method: str = "",
+        stale_flag: bool = False,
     ) -> None:
         with self.db_lock:
             self.db.execute(
-                """INSERT INTO world_state_registry(state_key, category, status, value_text, value_number, source, updated_at)
-                VALUES(?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                """INSERT INTO world_state_registry(
+                    state_key, category, status, value_text, value_number, source,
+                    confidence, ttl_seconds, verification_method, stale_flag, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
                 ON CONFLICT(state_key) DO UPDATE SET
                     category = excluded.category,
                     status = excluded.status,
                     value_text = excluded.value_text,
                     value_number = excluded.value_number,
                     source = excluded.source,
+                    confidence = excluded.confidence,
+                    ttl_seconds = excluded.ttl_seconds,
+                    verification_method = excluded.verification_method,
+                    stale_flag = excluded.stale_flag,
                     updated_at = excluded.updated_at""",
                 (
                     truncate_text(state_key, 120),
@@ -2502,6 +2557,10 @@ class BridgeState:
                     truncate_text(normalize_whitespace(value_text), 800),
                     value_number,
                     truncate_text(source, 120),
+                    max(0.0, min(1.0, float(confidence))),
+                    max(0, int(ttl_seconds)),
+                    truncate_text(verification_method, 160),
+                    1 if stale_flag else 0,
                 ),
             )
             self.db.commit()
@@ -3208,6 +3267,7 @@ class BridgeState:
         intent: str,
         route_kind: str,
         source_label: str,
+        request_kind: str,
         used_live: bool,
         used_web: bool,
         used_events: bool,
@@ -3216,6 +3276,13 @@ class BridgeState:
         used_workspace: bool,
         guardrails: str,
         outcome: str,
+        response_mode: str,
+        sources: str,
+        tools_used: str,
+        memory_used: str,
+        confidence: float,
+        freshness: str,
+        notes: str,
         latency_ms: int,
         query_text: str,
     ) -> None:
@@ -3224,8 +3291,9 @@ class BridgeState:
                 """INSERT INTO request_diagnostics(
                     chat_id, user_id, chat_type, persona, intent, route_kind, source_label,
                     used_live, used_web, used_events, used_database, used_reply, used_workspace,
-                    guardrails, outcome, latency_ms, query_text
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    guardrails, outcome, request_kind, response_mode, sources, tools_used, memory_used,
+                    confidence, freshness, notes, latency_ms, query_text
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     chat_id,
                     user_id,
@@ -3242,6 +3310,14 @@ class BridgeState:
                     1 if used_workspace else 0,
                     guardrails,
                     outcome,
+                    truncate_text(request_kind, 40),
+                    truncate_text(response_mode, 40),
+                    truncate_text(sources, 400),
+                    truncate_text(tools_used, 400),
+                    truncate_text(memory_used, 400),
+                    max(0.0, min(1.0, float(confidence))),
+                    truncate_text(freshness, 80),
+                    truncate_text(normalize_whitespace(notes), 600),
                     max(0, int(latency_ms)),
                     truncate_text(normalize_whitespace(query_text), 900),
                 ),
@@ -3273,6 +3349,45 @@ class BridgeState:
                     (chat_id, effective_limit),
                 ).fetchall()
         return rows
+
+    def record_repair_journal(
+        self,
+        *,
+        signal_code: str,
+        playbook_id: str,
+        status: str,
+        summary: str,
+        evidence: str = "",
+        verification_result: str = "",
+        notes: str = "",
+    ) -> None:
+        with self.db_lock:
+            self.db.execute(
+                """INSERT INTO repair_journal(
+                    signal_code, playbook_id, status, summary, evidence, verification_result, notes
+                ) VALUES(?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    truncate_text(signal_code, 80),
+                    truncate_text(playbook_id, 120),
+                    truncate_text(status, 40),
+                    truncate_text(normalize_whitespace(summary), 300),
+                    truncate_text(normalize_whitespace(evidence), 500),
+                    truncate_text(normalize_whitespace(verification_result), 300),
+                    truncate_text(normalize_whitespace(notes), 500),
+                ),
+            )
+            self.db.commit()
+
+    def get_recent_repair_journal(self, limit: int = 8) -> List[sqlite3.Row]:
+        effective_limit = max(1, min(20, int(limit)))
+        with self.db_lock:
+            return self.db.execute(
+                """SELECT created_at, signal_code, playbook_id, status, summary, evidence, verification_result, notes
+                   FROM repair_journal
+                   ORDER BY id DESC
+                   LIMIT ?""",
+                (effective_limit,),
+            ).fetchall()
 
     def get_meta(self, key: str, default: str = "") -> str:
         with self.db_lock:
@@ -3651,8 +3766,63 @@ class TelegramBridge:
         self.legacy = LegacyJarvisAdapter(config.legacy_jarvis_db_path, config.db_path)
         self.appeals = AppealsService(config.db_path, config.legacy_jarvis_db_path)
         self.session = Session()
+        self.live_gateway = LiveGateway(
+            LiveGatewayDeps(
+                request_json_with_retry=self.request_json_with_retry,
+                request_text_with_retry=self.request_text_with_retry,
+                log_func=log,
+                normalize_whitespace_func=normalize_whitespace,
+                truncate_text_func=truncate_text,
+                shorten_for_log_func=shorten_for_log,
+                normalize_location_query_func=normalize_location_query,
+                build_location_query_variants_func=build_location_query_variants,
+                format_signed_value_func=format_signed_value,
+                summarize_current_fact_results_func=self.summarize_current_fact_results,
+                weather_code_labels=WEATHER_CODE_LABELS,
+            )
+        )
         self.script_path = Path(__file__).resolve()
         self.log_path = self.script_path.with_name("tg_codex_bridge.log")
+        self.runtime_service = RuntimeService(
+            RuntimeServiceDeps(
+                log_func=log,
+                log_exception_func=log_exception,
+                doc_runtime_drift_markers=DOC_RUNTIME_DRIFT_MARKERS,
+            )
+        )
+        self.memory_service = MemoryService(
+            MemoryServiceDeps(
+                build_actor_name_func=build_actor_name,
+            )
+        )
+        self.owner_handlers = OwnerCommandService(
+            owner_user_id=OWNER_USER_ID,
+            is_owner_private_chat_func=is_owner_private_chat,
+            memory_user_usage_text=MEMORY_USER_USAGE_TEXT,
+            reflections_usage_text=REFLECTIONS_USAGE_TEXT,
+            chat_digest_usage_text=CHAT_DIGEST_USAGE_TEXT,
+        )
+        self.context_pipeline = ContextPipeline()
+        self.telegram_handlers = TelegramMessageHandlers(
+            owner_user_id=OWNER_USER_ID,
+            safe_mode_reply=SAFE_MODE_REPLY,
+        )
+        self.command_dispatcher = CommandDispatcher(
+            owner_username=OWNER_USERNAME,
+            public_help_text=PUBLIC_HELP_TEXT,
+            mode_prompts=MODE_PROMPTS,
+        )
+        self.ui_handlers = UIHandlers(
+            owner_user_id=OWNER_USER_ID,
+            access_denied_text=ACCESS_DENIED_TEXT,
+            ui_pending_appeal=UI_PENDING_APPEAL,
+            ui_pending_approve_comment=UI_PENDING_APPROVE_COMMENT,
+            ui_pending_reject_comment=UI_PENDING_REJECT_COMMENT,
+            ui_pending_close_comment=UI_PENDING_CLOSE_COMMENT,
+            admin_help_sections=set(ADMIN_HELP_PANEL_SECTIONS),
+            public_help_sections=set(PUBLIC_HELP_PANEL_SECTIONS),
+            control_panel_sections=set(CONTROL_PANEL_SECTIONS),
+        )
         self.bot_username = config.bot_username
         self.bot_user_id: Optional[int] = None
         self.backup_lock = Lock()
@@ -3690,6 +3860,96 @@ class TelegramBridge:
         with self.state.db_lock:
             row = self.state.db.execute("SELECT COUNT(*) FROM chat_events WHERE chat_id = ?", (chat_id,)).fetchone()
         return int(row[0] or 0) if row else 0
+
+    def build_actor_name(self, user_id: Optional[int], username: str, first_name: str, last_name: str, role: str) -> str:
+        return build_actor_name(user_id, username, first_name, last_name, role)
+
+    def truncate_text(self, text: str, limit: int = 280) -> str:
+        return truncate_text(text, limit)
+
+    def build_service_actor_name(self, payload: dict) -> str:
+        return build_service_actor_name(payload)
+
+    def log(self, message: str) -> None:
+        log(message)
+
+    def log_exception(self, prefix: str, error: Exception, limit: int = 8) -> None:
+        log_exception(prefix, error, limit=limit)
+
+    def shorten_for_log(self, value: str, limit: int = 220) -> str:
+        return shorten_for_log(value, limit)
+
+    def normalize_incoming_text(self, raw_text: str, bot_username: str) -> str:
+        return normalize_incoming_text(raw_text, bot_username)
+
+    def extract_assistant_persona(self, text: str) -> Tuple[str, str]:
+        return extract_assistant_persona(text)
+
+    def detect_local_chat_query(self, user_text: str) -> bool:
+        return detect_local_chat_query(user_text)
+
+    def should_include_database_context(self, user_text: str) -> bool:
+        return should_include_database_context(user_text)
+
+    def should_include_event_context(self, user_text: str) -> bool:
+        return should_include_event_context(user_text)
+
+    def is_owner_private_chat(self, user_id: Optional[int], chat_id: int) -> bool:
+        return is_owner_private_chat(user_id, chat_id)
+
+    def build_route_summary_text(self, route_info: RouteDecision) -> str:
+        return build_route_summary_text(route_info)
+
+    def build_guardrail_note(self, route_info: RouteDecision) -> str:
+        return build_guardrail_note(route_info)
+
+    def has_chat_access(self, authorized_user_ids: set[int], user_id: Optional[int]) -> bool:
+        return has_chat_access(authorized_user_ids, user_id)
+
+    def contains_profanity(self, text: str) -> bool:
+        return contains_profanity(text)
+
+    def is_dangerous_request(self, text: str) -> bool:
+        return is_dangerous_request(text)
+
+    def can_owner_use_workspace_mode(self, user_id: Optional[int], chat_type: str, assistant_persona: str) -> bool:
+        return can_owner_use_workspace_mode(user_id, chat_type, assistant_persona)
+
+    def compute_group_spontaneous_reply_score(self, text: str) -> int:
+        return compute_group_spontaneous_reply_score(text)
+
+    def should_attempt_owner_autofix(self, raw_text: str, message: dict) -> bool:
+        return should_attempt_owner_autofix(raw_text, message)
+
+    def build_user_autofix_label(self, payload: dict) -> str:
+        return build_user_autofix_label(payload)
+
+    def parse_sd_save_command(self, text: str) -> Optional[str]:
+        return parse_sd_save_command(text)
+
+    def parse_owner_report_command(self, text: str) -> bool:
+        return parse_owner_report_command(text)
+
+    def parse_export_command(self, text: str) -> Optional[str]:
+        return parse_export_command(text)
+
+    def parse_portrait_command(self, text: str) -> Optional[str]:
+        return parse_portrait_command(text)
+
+    def parse_welcome_command(self, text: str) -> Optional[Tuple[str, str]]:
+        return parse_welcome_command(text)
+
+    def has_public_callback_access(self, data: str) -> bool:
+        return has_public_callback_access(data)
+
+    def is_message_not_modified_error(self, error: Exception) -> bool:
+        return is_message_not_modified_error(error)
+
+    def is_message_edit_recoverable_error(self, error: Exception) -> bool:
+        return is_message_edit_recoverable_error(error)
+
+    def is_request_exception(self, error: Exception) -> bool:
+        return isinstance(error, RequestException)
 
     def try_claim_group_spontaneous_reply_slot(self, chat_id: int, message_id: Optional[int]) -> bool:
         return self.group_reply_policy.try_claim_group_spontaneous_reply_slot(chat_id, message_id)
@@ -4018,26 +4278,10 @@ class TelegramBridge:
         return destination
 
     def open_control_panel(self, chat_id: int, user_id: int, section: str = "home", payload: str = "") -> None:
-        text, markup = self.build_control_panel(user_id, section, payload)
-        message_id = self.send_inline_message(chat_id, text, markup)
-        if message_id is not None:
-            self.state.set_ui_session(user_id, chat_id, int(message_id), section)
+        self.ui_handlers.open_control_panel(self, chat_id, user_id, section, payload)
 
     def edit_control_panel(self, chat_id: int, user_id: int, message_id: int, section: str = "home", payload: str = "") -> None:
-        text, markup = self.build_control_panel(user_id, section, payload)
-        try:
-            self.edit_inline_message(chat_id, message_id, text, markup)
-            self.state.set_ui_session(user_id, chat_id, message_id, section)
-        except RequestException as error:
-            if is_message_not_modified_error(error):
-                self.state.set_ui_session(user_id, chat_id, message_id, section)
-                return
-            if is_message_edit_recoverable_error(error):
-                new_message_id = self.send_inline_message(chat_id, text, markup)
-                if new_message_id is not None:
-                    self.state.set_ui_session(user_id, chat_id, int(new_message_id), section)
-                    return
-            raise
+        self.ui_handlers.edit_control_panel(self, chat_id, user_id, message_id, section, payload)
 
     def build_public_control_panel(self, user_id: int, section: str, payload: str = "") -> Tuple[str, dict]:
         if section == "profile":
@@ -4394,10 +4638,11 @@ class TelegramBridge:
             return text, markup
         if section == "owner_commands" and user_id == OWNER_USER_ID:
             text = (
-                "JARVIS • ВСЕ КОМАНДЫ ПРОЕКТА\n\n"
-                "Это полный текстовый реестр команд без фильтрации.\n"
-                "Если не помнишь usage, смотри сюда.\n"
-                "Если нужна подробная инструкция по панели и навигации, она описана в GitHub-документации проекта.\n\n"
+                render_admin_command_catalog(
+                    owner_user_id=OWNER_USER_ID,
+                    owner_username=OWNER_USERNAME,
+                )
+                + "\n\nПолный legacy-список команд:\n\n"
                 + COMMANDS_LIST_TEXT
             )
             markup = {
@@ -4611,64 +4856,7 @@ class TelegramBridge:
         return text, {"inline_keyboard": keyboard}
 
     def handle_ui_pending_input(self, chat_id: int, user_id: int, text: str) -> bool:
-        session = self.state.get_ui_session(user_id)
-        if not session:
-            return False
-        pending_action = session["pending_action"] or ""
-        pending_payload = session["pending_payload"] or ""
-        if not pending_action:
-            return False
-        if text.strip().lower() == "/cancel":
-            self.state.clear_ui_pending(user_id)
-            self.safe_send_text(chat_id, "Сценарий отменен.")
-            return True
-        if pending_action == UI_PENDING_APPEAL:
-            self.state.clear_ui_pending(user_id)
-            result = self.appeals.submit_appeal(user_id, chat_id, text)
-            self.state.record_event(chat_id, user_id, "assistant", f"appeal_{result.get('status', 'unknown')}", text)
-            self.safe_send_text(chat_id, str(result.get("message", "Апелляция обработана.")))
-            if result.get("status") == "auto_approved":
-                self.process_appeal_release_actions(
-                    user_id,
-                    result.get("release_actions", []),
-                    "appeal_auto_release",
-                    f"[appeal auto approved user_id={user_id}]",
-                )
-            elif result.get("status") == "new":
-                snapshot = result.get("snapshot", {})
-                self.notify_owner(
-                    f"Новая апелляция #{result.get('appeal_id')}\n"
-                    f"user_id={user_id}\n"
-                    f"Причина: {text}\n"
-                    f"Активные баны: {len(snapshot.get('active_bans', []))}\n"
-                    f"Активные муты: {len(snapshot.get('active_mutes', []))}\n"
-                    f"Подтвержденные нарушения: {snapshot.get('confirmed_violations', 0)}"
-                )
-            return True
-        if pending_action in {UI_PENDING_APPROVE_COMMENT, UI_PENDING_REJECT_COMMENT, UI_PENDING_CLOSE_COMMENT} and pending_payload.isdigit():
-            appeal_id = int(pending_payload)
-            self.state.clear_ui_pending(user_id)
-            if pending_action == UI_PENDING_CLOSE_COMMENT:
-                result = self.appeals.close_appeal(appeal_id, user_id, text)
-                self.safe_send_text(chat_id, str(result.get("message", "Готово.")))
-                return True
-            approved = pending_action == UI_PENDING_APPROVE_COMMENT
-            result = self.appeals.resolve_appeal(appeal_id, user_id, approved=approved, resolution=text)
-            self.safe_send_text(chat_id, str(result.get("message", f"Статус: {result.get('status', 'unknown')}")))
-            if result.get("ok"):
-                target_user_id = int(result["user_id"])
-                if approved:
-                    self.process_appeal_release_actions(
-                        target_user_id,
-                        result.get("release_actions", []),
-                        "appeal_manual_release",
-                        f"[appeal approved #{appeal_id}]",
-                    )
-                    self.safe_send_text(target_user_id, f"Ваша апелляция #{appeal_id} одобрена.\n{text}")
-                else:
-                    self.safe_send_text(target_user_id, f"Ваша апелляция #{appeal_id} отклонена.\n{text}")
-            return True
-        return False
+        return self.ui_handlers.handle_ui_pending_input(self, chat_id, user_id, text)
 
     def handle_update(self, item: dict) -> None:
         callback_query = item.get("callback_query")
@@ -5014,121 +5202,7 @@ class TelegramBridge:
         log(f"incoming reaction chat={chat_id} user={user_id} message_id={message_id} value={shorten_for_log(content)}")
 
     def handle_text_message(self, chat_id: int, user_id: Optional[int], message: dict, chat_type: str = "private") -> None:
-        raw_text = (message.get("text") or "").strip()
-        text = normalize_incoming_text(raw_text, self.bot_username)
-        assistant_persona, text = extract_assistant_persona(text)
-        spontaneous_group_reply = False
-        active_group_followup = False
-        active_group_discussion = False
-        direct_group_help_request = False
-        log(f"incoming text chat={chat_id} type={chat_type} user={user_id} text={shorten_for_log(raw_text)}")
-
-        if (
-            chat_type == "private"
-            and user_id is not None
-            and user_id != OWNER_USER_ID
-            and contains_profanity(raw_text)
-        ):
-            self.enforce_private_profanity_global_ban(chat_id, user_id, raw_text, message)
-            return
-
-        if chat_type in {"group", "supergroup"}:
-            if user_id != OWNER_USER_ID and self.is_group_discussion_rate_limited(chat_id, user_id):
-                log(f"group discussion rate-limited chat={chat_id} user={user_id} text={shorten_for_log(raw_text)}")
-                return
-            active_group_followup = self.is_group_followup_message(chat_id, message, raw_text)
-            active_group_discussion = self.is_group_discussion_continuation(chat_id, message, raw_text)
-            participant_priority = self.get_group_participant_priority(chat_id, message)
-            should_handle_as_bot = should_process_group_message(
-                message,
-                raw_text,
-                self.bot_username,
-                self.config.trigger_name,
-                bot_user_id=self.bot_user_id,
-                allow_owner_reply=False,
-            )
-            meaningful_group_request = self.is_meaningful_group_request(message, raw_text)
-            ambient_group_chatter = self.is_ambient_group_chatter(message, raw_text)
-            if ambient_group_chatter and not active_group_followup and not active_group_discussion and user_id != OWNER_USER_ID:
-                return
-            if (
-                should_handle_as_bot
-                and user_id is not None
-                and user_id != OWNER_USER_ID
-                and not has_chat_access(self.state.authorized_user_ids, user_id)
-                and self.is_group_spontaneous_reply_candidate(chat_id, message, raw_text)
-                and meaningful_group_request
-            ):
-                direct_group_help_request = True
-                assistant_persona = assistant_persona or "jarvis"
-            elif should_handle_as_bot and user_id is not None and user_id != OWNER_USER_ID and not meaningful_group_request and not active_group_followup and not active_group_discussion:
-                log(
-                    f"group direct trigger suppressed chat={chat_id} user={user_id} "
-                    f"priority={participant_priority} text={shorten_for_log(raw_text)}"
-                )
-                return
-            if not should_handle_as_bot and not active_group_followup and not active_group_discussion:
-                if self.should_consider_group_spontaneous_reply(chat_id, message, raw_text):
-                    log(
-                        f"group spontaneous reply accepted chat={chat_id} user={user_id} "
-                        f"message_id={message.get('message_id')} score={compute_group_spontaneous_reply_score(raw_text)} "
-                        f"priority={participant_priority}"
-                    )
-                    assistant_persona = assistant_persona or "jarvis"
-                    spontaneous_group_reply = True
-                else:
-                    if self.owner_autofix_enabled() and should_attempt_owner_autofix(raw_text, message):
-                        author_label = build_user_autofix_label(message.get("from") or {})
-                        worker = Thread(
-                            target=self.run_owner_autofix_task,
-                            args=(chat_id, message.get("message_id"), raw_text, author_label),
-                            daemon=True,
-                        )
-                        worker.start()
-                    return
-            elif direct_group_help_request:
-                log(
-                    f"group direct help reply accepted chat={chat_id} user={user_id} "
-                    f"message_id={message.get('message_id')} score={compute_group_spontaneous_reply_score(raw_text)} "
-                    f"priority={participant_priority}"
-                )
-                spontaneous_group_reply = True
-            elif active_group_discussion:
-                assistant_persona = assistant_persona or "jarvis"
-
-        if not text:
-            self.safe_send_text(chat_id, "Нужен текстовый запрос.")
-            return
-
-        if chat_type == "private" and user_id is not None and not raw_text.startswith("/"):
-            if self.handle_ui_pending_input(chat_id, user_id, raw_text):
-                return
-
-        if self.handle_command(chat_id, user_id, text, message, allow_followup_text=(spontaneous_group_reply or active_group_followup or active_group_discussion)):
-            return
-
-        if self.config.safe_chat_only and is_dangerous_request(text) and not can_owner_use_workspace_mode(user_id, chat_type, assistant_persona):
-            self.safe_send_text(chat_id, SAFE_MODE_REPLY)
-            return
-
-        if not self.state.try_start_chat_task(chat_id):
-            log(f"chat task busy chat={chat_id} type={chat_type} user={user_id} text={shorten_for_log(raw_text)}")
-            self.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
-            return
-
-        if chat_type in {"group", "supergroup"} and user_id != OWNER_USER_ID:
-            if not self.record_group_discussion_turn(chat_id, user_id):
-                self.state.finish_chat_task(chat_id)
-                log(f"group discussion turn blocked chat={chat_id} user={user_id} text={shorten_for_log(raw_text)}")
-                return
-
-        self.send_chat_action(chat_id, "typing")
-        worker = Thread(
-            target=self.run_text_task,
-            args=(chat_id, text, user_id, chat_type, assistant_persona, message, spontaneous_group_reply),
-            daemon=True,
-        )
-        worker.start()
+        self.telegram_handlers.handle_text_message(self, chat_id, user_id, message, chat_type)
 
     def enforce_private_profanity_global_ban(self, chat_id: int, user_id: int, raw_text: str, message: dict) -> None:
         reason = f"pm profanity auto global ban: {truncate_text(' '.join((raw_text or '').split()), 160)}"
@@ -5459,329 +5533,26 @@ class TelegramBridge:
         )
 
     def handle_photo_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
-        photos = message.get("photo") or []
-        caption = (message.get("caption") or "").strip()
-        log(f"incoming photo chat={chat_id} user={user_id} caption={shorten_for_log(caption)}")
-
-        if not photos:
-            self.safe_send_text(chat_id, "Изображение не удалось прочитать.")
-            return
-
-        best_photo = max(photos, key=lambda item: item.get("file_size", 0))
-        file_id = best_photo.get("file_id")
-        if not file_id:
-            self.safe_send_text(chat_id, "Не удалось получить файл изображения.")
-            return
-
-        if not self.state.try_start_chat_task(chat_id):
-            self.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
-            return
-
-        self.safe_send_status(chat_id, "Анализирую изображение...")
-        worker = Thread(
-            target=self.run_photo_task,
-            args=(chat_id, file_id, caption, message),
-            daemon=True,
-        )
-        worker.start()
+        self.telegram_handlers.handle_photo_message(self, chat_id, user_id, message)
 
     def handle_document_message(self, chat_id: int, user_id: Optional[int], message: dict, chat_type: str) -> None:
-        document = message.get("document") or {}
-        file_id = document.get("file_id")
-        caption = (message.get("caption") or "").strip()
-        file_name = document.get("file_name") or "document"
-        log(f"incoming document chat={chat_id} user={user_id} file={shorten_for_log(file_name)} caption={shorten_for_log(caption)}")
-
-        if not file_id:
-            self.safe_send_text(chat_id, "Не удалось получить файл документа.")
-            return
-
-        save_target = parse_sd_save_command(caption)
-        if save_target is not None:
-            if not is_owner_private_chat(user_id, chat_id):
-                self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
-                return
-            self.handle_sd_save_command(chat_id, user_id, save_target, message)
-            return
-        if chat_type in {"group", "supergroup"}:
-            should_handle_as_bot = should_process_group_message(
-                message,
-                caption or file_name,
-                self.bot_username,
-                self.config.trigger_name,
-                bot_user_id=self.bot_user_id,
-                allow_owner_reply=False,
-            )
-            if not should_handle_as_bot:
-                return
-        if not self.state.try_start_chat_task(chat_id):
-            self.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
-            return
-        self.safe_send_status(chat_id, "Смотрю файл...")
-        worker = Thread(
-            target=self.run_document_task,
-            args=(chat_id, file_id, document, caption, message),
-            daemon=True,
-        )
-        worker.start()
+        self.telegram_handlers.handle_document_message(self, chat_id, user_id, message, chat_type)
 
     def handle_voice_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
-        try:
-            voice = message.get("voice") or {}
-            file_id = voice.get("file_id")
-            duration = voice.get("duration")
-            chat = message.get("chat") or {}
-            chat_type = (chat.get("type") or "private").lower()
-            log(f"incoming voice chat={chat_id} user={user_id} duration={duration}")
-
-            if not file_id:
-                self.safe_send_text(chat_id, "Не удалось получить голосовое сообщение.")
-                return
-
-            if chat_type in {"group", "supergroup"}:
-                if not should_process_group_message(
-                    message,
-                    "",
-                    self.bot_username,
-                    self.config.trigger_name,
-                    bot_user_id=self.bot_user_id,
-                    allow_owner_reply=False,
-                ) and user_id != OWNER_USER_ID:
-                    log(f"voice trigger not found chat={chat_id} file_id={file_id}")
-                    return
-
-            if not self.state.try_start_chat_task(chat_id):
-                self.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
-                return
-
-            worker = Thread(
-                target=self.run_voice_task,
-                args=(chat_id, user_id, file_id, message),
-                daemon=True,
-            )
-            worker.start()
-        except Exception as error:
-            log_exception(f"voice handler failed chat={chat_id}", error, limit=8)
-            self.safe_send_text(chat_id, "Ошибка при обработке голосового. Детали записаны в лог.")
+        self.telegram_handlers.handle_voice_message(self, chat_id, user_id, message)
 
     def build_voice_initial_prompt(self, chat_id: int, strict_trigger: bool = False) -> str:
-        terms = self.state.get_voice_prompt_terms(chat_id, limit=28)
-        joined_terms = ", ".join(terms[:28])
-        if strict_trigger:
-            return (
-                "Это русское голосовое сообщение для Telegram-чата. "
-                "Распознавай слова и имена максимально точно. "
-                "Особенно важно корректно распознавать имя Джарвис. "
-                f"Возможные слова и имена: {joined_terms}."
-            )
-        return (
-            "Это русское голосовое сообщение для Telegram-чата. "
-            "Сохраняй имена, названия и термины без искажений. "
-            f"Возможные слова и имена: {joined_terms}."
-        )
+        return self.telegram_handlers.build_voice_initial_prompt(self, chat_id, strict_trigger)
 
     def handle_command(self, chat_id: int, user_id: Optional[int], text: str, message: Optional[dict] = None, allow_followup_text: bool = False) -> bool:
-        has_access = has_chat_access(self.state.authorized_user_ids, user_id)
-        if text == "/start":
-            if user_id is not None:
-                self.open_control_panel(chat_id, user_id, "home")
-            return True
-        if text == "/help":
-            if user_id is not None:
-                self.open_control_panel(chat_id, user_id, "home")
-            elif not has_access:
-                self.safe_send_text(chat_id, PUBLIC_HELP_TEXT)
-            return True
-        if text == "/rules":
-            self.safe_send_text(chat_id, self.get_group_rules_text(message))
-            return True
-        if text == "/commands":
-            if not has_access:
-                self.safe_send_text(chat_id, "Команда недоступна.")
-                return True
-            return self.handle_commands_command(chat_id, user_id)
-        if text == "/appeals" or text.startswith("/appeal_review") or text.startswith("/appeal_approve") or text.startswith("/appeal_reject"):
-            return self.handle_appeal_admin_command(chat_id, user_id, text)
-        owner_autofix_payload = parse_owner_autofix_command(text)
-        if owner_autofix_payload is not None:
-            return self.handle_owner_autofix_command(chat_id, user_id, owner_autofix_payload)
-        password_value = parse_password_command(text)
-        if password_value is not None:
-            self.safe_send_text(chat_id, f"Вход по паролю отключён. Бот отвечает только владельцу {OWNER_USERNAME}.")
-            return True
-        if not has_access:
-            if allow_followup_text and text and not text.startswith("/"):
-                return False
-            if text == "/rating" and user_id is not None:
-                self.open_control_panel(chat_id, user_id, "profile")
-                return True
-            if text == "/top" and user_id is not None:
-                self.open_control_panel(chat_id, user_id, "top_all")
-                return True
-            if text == "/topweek" and user_id is not None:
-                self.open_control_panel(chat_id, user_id, "top_week")
-                return True
-            if text == "/topday" and user_id is not None:
-                self.open_control_panel(chat_id, user_id, "top_day")
-                return True
-            if text == "/stats":
-                self.safe_send_text(chat_id, self.legacy.render_stats())
-                return True
-            if text.startswith("/appeal"):
-                return self.handle_appeal_command(chat_id, user_id, text)
-            self.send_access_denied(chat_id)
-            return True
-        if text == "/ping":
-            started_at = time.perf_counter()
-            latency_ms = max(1, int((time.perf_counter() - started_at) * 1000))
-            self.safe_send_text(chat_id, f"pong\n\n🏓 {latency_ms} ms")
-            return True
-        if text == "/restart":
-            return self.handle_restart_command(chat_id, user_id)
-        if text == "/status":
-            return self.handle_status_command(chat_id)
-        if text == "/rating" and user_id is not None:
-            self.open_control_panel(chat_id, user_id, "profile")
-            return True
-        if text == "/top":
-            if user_id is not None:
-                self.open_control_panel(chat_id, user_id, "top_all")
-            return True
-        if text == "/topweek":
-            if user_id is not None:
-                self.open_control_panel(chat_id, user_id, "top_week")
-            return True
-        if text == "/topday":
-            if user_id is not None:
-                self.open_control_panel(chat_id, user_id, "top_day")
-            return True
-        if text == "/stats":
-            self.safe_send_text(chat_id, self.legacy.render_stats())
-            return True
-        if text == "/achievements" and user_id is not None:
-            self.open_control_panel(chat_id, user_id, "achievements")
-            return True
-        if text.startswith("/appeal"):
-            return self.handle_appeal_command(chat_id, user_id, text)
-        remember_value = parse_remember_command(text)
-        if remember_value is not None:
-            return self.handle_remember_command(chat_id, user_id, remember_value)
-        recall_value = parse_recall_command(text)
-        if recall_value is not None:
-            return self.handle_recall_command(chat_id, user_id, recall_value)
-        search_value = parse_search_command(text)
-        if search_value is not None:
-            return self.handle_search_command(chat_id, search_value)
-        if parse_git_status_command(text):
-            return self.handle_git_status_command(chat_id, user_id)
-        git_last_value = parse_git_last_command(text)
-        if git_last_value is not None:
-            return self.handle_git_last_command(chat_id, user_id, git_last_value)
-        errors_value = parse_errors_command(text)
-        if errors_value is not None:
-            return self.handle_errors_command(chat_id, user_id, errors_value)
-        events_value = parse_events_command(text)
-        if events_value is not None:
-            return self.handle_events_command(chat_id, user_id, events_value)
-        if text == "/resources":
-            return self.handle_resources_command(chat_id, user_id)
-        if text == "/topproc":
-            return self.handle_topproc_command(chat_id, user_id)
-        if text == "/disk":
-            return self.handle_disk_command(chat_id, user_id)
-        if text == "/net":
-            return self.handle_net_command(chat_id, user_id)
-        sd_list_value = parse_sd_list_command(text)
-        if sd_list_value is not None:
-            return self.handle_sd_list_command(chat_id, user_id, sd_list_value)
-        sd_send_value = parse_sd_send_command(text)
-        if sd_send_value is not None:
-            return self.handle_sd_send_command(chat_id, user_id, sd_send_value)
-        sd_save_value = parse_sd_save_command(text)
-        if sd_save_value is not None:
-            return self.handle_sd_save_command(chat_id, user_id, sd_save_value, message)
-        who_said_value = parse_who_said_command(text)
-        if who_said_value is not None:
-            return self.handle_who_said_command(chat_id, who_said_value)
-        history_value = parse_history_command(text)
-        if history_value is not None:
-            return self.handle_history_command(chat_id, history_value, message)
-        daily_value = parse_daily_command(text)
-        if daily_value is not None:
-            return self.handle_daily_command(chat_id, daily_value)
-        digest_value = parse_digest_command(text)
-        if digest_value is not None:
-            return self.handle_digest_command(chat_id, digest_value)
-        routes_value = parse_routes_command(text)
-        if routes_value is not None:
-            return self.handle_routes_command(chat_id, user_id, routes_value)
-        memory_chat_value = parse_memory_chat_command(text)
-        if memory_chat_value is not None:
-            return self.handle_memory_chat_command(chat_id, user_id, memory_chat_value)
-        memory_user_value = parse_memory_user_command(text)
-        if memory_user_value is not None:
-            return self.handle_memory_user_command(chat_id, user_id, memory_user_value, message)
-        if parse_memory_summary_command(text):
-            return self.handle_memory_summary_command(chat_id, user_id)
-        if parse_self_state_command(text):
-            return self.handle_self_state_command(chat_id, user_id)
-        if parse_world_state_command(text):
-            return self.handle_world_state_command(chat_id, user_id)
-        if parse_drives_command(text):
-            return self.handle_drives_command(chat_id, user_id)
-        autobio_value = parse_autobio_command(text)
-        if autobio_value is not None:
-            return self.handle_autobio_command(chat_id, user_id, autobio_value)
-        skills_value = parse_skills_command(text)
-        if skills_value is not None:
-            return self.handle_skills_command(chat_id, user_id, skills_value)
-        reflections_value = parse_reflections_command(text)
-        if reflections_value is not None:
-            return self.handle_reflections_command(chat_id, user_id, reflections_value)
-        chat_digest_value = parse_chat_digest_command(text)
-        if chat_digest_value is not None:
-            return self.handle_chat_digest_command(chat_id, user_id, chat_digest_value)
-        if parse_owner_report_command(text):
-            return self.handle_owner_report_command(chat_id, user_id)
-        export_value = parse_export_command(text)
-        if export_value is not None:
-            return self.handle_export_command(chat_id, export_value)
-        portrait_value = parse_portrait_command(text)
-        if portrait_value is not None:
-            return self.handle_portrait_command(chat_id, user_id, portrait_value, message)
-        moderation = parse_moderation_command(text)
-        if moderation is not None:
-            return self.handle_moderation_command(chat_id, user_id, moderation, message)
-        warn_command = parse_warn_command(text)
-        if warn_command is not None:
-            return self.handle_warn_command(chat_id, user_id, warn_command, message)
-        welcome_command = parse_welcome_command(text)
-        if welcome_command is not None:
-            return self.handle_welcome_command(chat_id, user_id, welcome_command)
-        if text == "/reset":
-            self.state.reset_chat(chat_id)
-            log(f"chat reset chat={chat_id}")
-            self.safe_send_text(chat_id, "Контекст очищен.")
-            return True
-
-        upgrade_task = parse_upgrade_command(text)
-        if upgrade_task is not None:
-            return self.handle_upgrade_command(chat_id, user_id, upgrade_task, is_private_chat=(chat_id > 0))
-
-        parsed_mode = parse_mode_command(text)
-        if parsed_mode is None:
-            return False
-        if parsed_mode == "":
-            self.safe_send_text(chat_id, f"Режим: {self.state.get_mode(chat_id)}")
-            return True
-        if parsed_mode not in MODE_PROMPTS:
-            self.safe_send_text(chat_id, "Используй: /mode jarvis, /mode code или /mode strict")
-            return True
-
-        self.state.set_mode(chat_id, parsed_mode)
-        log(f"mode changed chat={chat_id} mode={parsed_mode}")
-        self.safe_send_text(chat_id, f"Mode: {parsed_mode}")
-        return True
+        return self.command_dispatcher.handle_command(
+            self,
+            chat_id,
+            user_id,
+            text,
+            message=message,
+            allow_followup_text=allow_followup_text,
+        )
 
     def run_text_task(
         self,
@@ -6300,153 +6071,7 @@ class TelegramBridge:
         self.safe_send_text(chat_id, ACCESS_DENIED_TEXT)
 
     def handle_callback_query(self, callback_query: dict) -> None:
-        callback_query_id = callback_query.get("id")
-        data = (callback_query.get("data") or "").strip()
-        message = callback_query.get("message") or {}
-        chat_id = ((message.get("chat") or {}).get("id"))
-        message_id = message.get("message_id")
-        from_user = callback_query.get("from") or {}
-        user_id = from_user.get("id")
-        if callback_query_id:
-            try:
-                self.answer_callback_query(callback_query_id)
-            except RequestException as error:
-                log(f"failed to answer callback query: {error}")
-        if chat_id is None or message_id is None:
-            return
-        user_has_full_access = has_chat_access(self.state.authorized_user_ids, user_id)
-        if user_id is not None and not user_has_full_access:
-            if not has_public_callback_access(data):
-                self.safe_send_text(chat_id, ACCESS_DENIED_TEXT)
-                return
-        if data.startswith("ui:") and user_id is not None:
-            parts = data.split(":")
-            try:
-                if data == "ui:home":
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "home")
-                    return
-                if len(parts) == 3 and parts[1] == "panel":
-                    target_section = parts[2].strip()
-                    if target_section in CONTROL_PANEL_SECTIONS:
-                        self.edit_control_panel(chat_id, user_id, int(message_id), target_section)
-                        return
-                if data == "ui:profile":
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "profile")
-                    return
-                if data == "ui:achievements":
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "achievements")
-                    return
-                if data == "ui:top":
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "top_menu")
-                    return
-                if len(parts) == 3 and parts[1] == "top":
-                    mapping = {
-                        "all": "top_all",
-                        "history": "top_history",
-                        "week": "top_week",
-                        "day": "top_day",
-                        "social": "top_social",
-                        "season": "top_season",
-                    }
-                    section = mapping.get(parts[2], "top_menu")
-                    self.edit_control_panel(chat_id, user_id, int(message_id), section)
-                    return
-                if data == "ui:appeals":
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "appeals")
-                    return
-                if data == "ui:appeal:history":
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "appeal_history")
-                    return
-                if data == "ui:appeal:new":
-                    self.state.set_ui_session(user_id, chat_id, int(message_id), "appeals", UI_PENDING_APPEAL)
-                    self.edit_inline_message(
-                        chat_id,
-                        int(message_id),
-                        "JARVIS • НОВАЯ АПЕЛЛЯЦИЯ\n\n"
-                        "Следующим сообщением отправьте текст апелляции.\n"
-                        "Проверка пройдет по базе: активные санкции, предупреждения, подтвержденные нарушения, история прошлых решений.\n\n"
-                        "Если оснований нет, система снимет ограничение автоматически.",
-                        {"inline_keyboard": [[{"text": "Назад", "callback_data": "ui:appeals"}]]},
-                    )
-                    return
-                if user_id == OWNER_USER_ID and data == "ui:adm:queue":
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "admin_appeals")
-                    return
-                if user_id == OWNER_USER_ID and data == "ui:adm:moderation":
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "admin_moderation")
-                    return
-                if user_id == OWNER_USER_ID and len(parts) == 4 and parts[1] == "adm" and parts[2] == "view":
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "admin_appeal_detail", parts[3])
-                    return
-                if user_id == OWNER_USER_ID and len(parts) == 4 and parts[1] == "adm" and parts[2] == "review":
-                    result = self.appeals.mark_in_review(int(parts[3]), user_id)
-                    self.safe_send_text(chat_id, str(result.get("message", "Готово.")))
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "admin_appeal_detail", parts[3])
-                    return
-                if user_id == OWNER_USER_ID and len(parts) == 4 and parts[1] == "adm" and parts[2] in {"approve", "reject"}:
-                    approved = parts[2] == "approve"
-                    appeal_id = int(parts[3])
-                    result = self.appeals.resolve_appeal(
-                        appeal_id,
-                        user_id,
-                        approved=approved,
-                        resolution="Одобрено модератором." if approved else "Отклонено модератором.",
-                    )
-                    self.safe_send_text(chat_id, str(result.get("message", "Готово.")))
-                    if result.get("ok"):
-                        target_user_id = int(result["user_id"])
-                        if approved:
-                            self.process_appeal_release_actions(
-                                target_user_id,
-                                result.get("release_actions", []),
-                                "appeal_manual_release",
-                                f"[appeal approved #{appeal_id}]",
-                            )
-                            self.safe_send_text(target_user_id, f"Ваша апелляция #{appeal_id} одобрена.")
-                        else:
-                            self.safe_send_text(target_user_id, f"Ваша апелляция #{appeal_id} отклонена.")
-                    self.edit_control_panel(chat_id, user_id, int(message_id), "admin_appeals")
-                    return
-                if user_id == OWNER_USER_ID and len(parts) == 4 and parts[1] == "adm" and parts[2] in {"approvec", "rejectc", "closec"}:
-                    pending_map = {
-                        "approvec": UI_PENDING_APPROVE_COMMENT,
-                        "rejectc": UI_PENDING_REJECT_COMMENT,
-                        "closec": UI_PENDING_CLOSE_COMMENT,
-                    }
-                    self.state.set_ui_session(user_id, chat_id, int(message_id), "admin_appeal_detail", pending_map[parts[2]], parts[3])
-                    self.edit_inline_message(
-                        chat_id,
-                        int(message_id),
-                        f"JARVIS • КОММЕНТАРИЙ К АПЕЛЛЯЦИИ #{parts[3]}\n\n"
-                        "Следующим сообщением отправьте комментарий модератора.",
-                        {"inline_keyboard": [[{"text": "Назад", "callback_data": f"ui:adm:view:{parts[3]}"}]]},
-                    )
-                    return
-            except RequestException as error:
-                log(f"ui callback telegram error chat={chat_id} message_id={message_id}: {error}")
-                return
-            except Exception as error:
-                log_exception(f"ui callback error chat={chat_id} message_id={message_id}", error, limit=8)
-                self.safe_send_text(chat_id, "Не удалось обновить окно.")
-                return
-        if not data.startswith("help:") or user_id is None:
-            return
-        section = data.split(":", 1)[1].strip() or "main"
-        if has_chat_access(self.state.authorized_user_ids, user_id):
-            if section not in ADMIN_HELP_PANEL_SECTIONS:
-                section = "main"
-        else:
-            if section not in PUBLIC_HELP_PANEL_SECTIONS:
-                section = "public"
-        try:
-            self.edit_inline_message(chat_id, int(message_id), build_help_panel_text(section), build_help_panel_markup(section))
-        except RequestException as error:
-            if is_message_not_modified_error(error):
-                return
-            if is_message_edit_recoverable_error(error):
-                self.send_inline_message(chat_id, build_help_panel_text(section), build_help_panel_markup(section))
-                return
-            log(f"failed to edit help panel chat={chat_id} message_id={message_id}: {error}")
+        self.ui_handlers.handle_callback_query(self, callback_query)
 
     def handle_commands_command(self, chat_id: int, user_id: Optional[int]) -> bool:
         self.send_help_panel(chat_id, "main" if has_chat_access(self.state.authorized_user_ids, user_id) else "public")
@@ -6963,267 +6588,46 @@ class TelegramBridge:
         return True
 
     def handle_memory_chat_command(self, chat_id: int, user_id: Optional[int], query: str) -> bool:
-        if user_id != OWNER_USER_ID:
-            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
-            return True
-        self.safe_send_text(chat_id, self.state.get_chat_memory_context(chat_id, query=query or "") or "Chat memory пока пуста.")
-        return True
+        return self.owner_handlers.handle_memory_chat_command(self, chat_id, user_id, query)
 
     def handle_memory_user_command(self, chat_id: int, user_id: Optional[int], raw_target: str, message: Optional[dict]) -> bool:
-        if user_id != OWNER_USER_ID:
-            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
-            return True
-        target_user_id: Optional[int] = None
-        cleaned = (raw_target or "").strip()
-        reply_to = (message or {}).get("reply_to_message") or {}
-        reply_from = reply_to.get("from") or {}
-        if cleaned:
-            if cleaned.startswith("@"):
-                resolved_id, _label = self.state.resolve_chat_user(chat_id, cleaned)
-                target_user_id = resolved_id
-            else:
-                try:
-                    target_user_id = int(cleaned)
-                except ValueError:
-                    resolved_id, _label = self.state.resolve_chat_user(chat_id, cleaned)
-                    target_user_id = resolved_id
-        elif reply_to and not reply_from.get("is_bot"):
-            target_user_id = reply_from.get("id")
-        else:
-            self.safe_send_text(chat_id, MEMORY_USER_USAGE_TEXT)
-            return True
-        if target_user_id is None:
-            self.safe_send_text(chat_id, "Не удалось определить участника в памяти текущего чата.")
-            return True
-        context = self.state.get_user_memory_context(chat_id, user_id=target_user_id)
-        if not context:
-            self.safe_send_text(chat_id, "User memory по этому участнику пока пуста.")
-            return True
-        self.safe_send_text(chat_id, context)
-        return True
+        return self.owner_handlers.handle_memory_user_command(self, chat_id, user_id, raw_target, message)
 
     def handle_memory_summary_command(self, chat_id: int, user_id: Optional[int]) -> bool:
-        if user_id != OWNER_USER_ID:
-            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
-            return True
-        context = self.state.get_summary_memory_context(chat_id, limit=6)
-        self.safe_send_text(chat_id, context or "Summary memory пока пуста.")
-        return True
+        return self.owner_handlers.handle_memory_summary_command(self, chat_id, user_id)
 
     def handle_self_state_command(self, chat_id: int, user_id: Optional[int]) -> bool:
-        if user_id != OWNER_USER_ID:
-            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
-            return True
-        self.safe_send_text(chat_id, self.state.get_self_model_context("enterprise"))
-        return True
+        return self.owner_handlers.handle_self_state_command(self, chat_id, user_id)
 
     def handle_world_state_command(self, chat_id: int, user_id: Optional[int]) -> bool:
-        if user_id != OWNER_USER_ID:
-            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
-            return True
-        payload = self.refresh_world_state_registry("manual_world_state", chat_id=chat_id)
-        self.state.record_autobiographical_event(
-            category="owner",
-            event_type="world_state_check",
-            chat_id=chat_id,
-            user_id=user_id,
-            route_kind="owner_command",
-            title="owner requested world state",
-            details=f"world_state keys={sorted(payload.keys())}",
-            status="ok",
-            importance=40,
-            open_state="closed",
-            tags="owner,world-state",
-            observed_payload=payload,
-        )
-        self.safe_send_text(chat_id, self.state.get_world_state_context(limit=12) or "World state пока пуст.")
-        return True
+        return self.owner_handlers.handle_world_state_command(self, chat_id, user_id)
 
     def handle_drives_command(self, chat_id: int, user_id: Optional[int]) -> bool:
-        if user_id != OWNER_USER_ID:
-            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
-            return True
-        scores = self.recompute_drive_scores()
-        self.state.record_autobiographical_event(
-            category="owner",
-            event_type="drive_check",
-            chat_id=chat_id,
-            user_id=user_id,
-            route_kind="owner_command",
-            title="owner requested drive pressures",
-            details=", ".join(f"{key}={value:.1f}" for key, value in sorted(scores.items())),
-            status="ok",
-            importance=40,
-            open_state="closed",
-            tags="owner,drives",
-        )
-        self.safe_send_text(chat_id, self.state.get_drive_context() or "Drive pressures пока не рассчитаны.")
-        return True
+        return self.owner_handlers.handle_drives_command(self, chat_id, user_id)
 
     def handle_autobio_command(self, chat_id: int, user_id: Optional[int], query: str) -> bool:
-        if user_id != OWNER_USER_ID:
-            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
-            return True
-        context = self.state.get_autobiographical_context(chat_id, query=query or "", limit=8)
-        self.safe_send_text(chat_id, context or "Autobiographical memory пока пуста.")
-        return True
+        return self.owner_handlers.handle_autobio_command(self, chat_id, user_id, query)
 
     def handle_skills_command(self, chat_id: int, user_id: Optional[int], query: str) -> bool:
-        if user_id != OWNER_USER_ID:
-            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
-            return True
-        context = self.state.get_skill_memory_context(query or "owner operations", route_kind="", limit=6)
-        self.safe_send_text(chat_id, context or "Skill memory пока пуста.")
-        return True
+        return self.owner_handlers.handle_skills_command(self, chat_id, user_id, query)
 
     def handle_reflections_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
-        if user_id != OWNER_USER_ID:
-            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
-            return True
-        limit = 6
-        cleaned = (payload or "").strip()
-        if cleaned:
-            try:
-                limit = max(1, min(20, int(cleaned)))
-            except ValueError:
-                self.safe_send_text(chat_id, REFLECTIONS_USAGE_TEXT)
-                return True
-        context = self.state.get_reflection_context(limit=limit)
-        self.safe_send_text(chat_id, context or "Reflections пока пусты.")
-        return True
+        return self.owner_handlers.handle_reflections_command(self, chat_id, user_id, payload)
 
     def handle_chat_digest_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
-        if not is_owner_private_chat(user_id, chat_id):
-            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
-            return True
-        cleaned = (payload or "").strip()
-        if not cleaned:
-            self.safe_send_text(chat_id, CHAT_DIGEST_USAGE_TEXT)
-            return True
-        parts = cleaned.split(maxsplit=1)
-        try:
-            target_chat_id = int(parts[0])
-        except ValueError:
-            self.safe_send_text(chat_id, CHAT_DIGEST_USAGE_TEXT)
-            return True
-        day = parts[1].strip() if len(parts) > 1 else ""
-        self.safe_send_text(chat_id, self.render_chat_digest_text(target_chat_id, day))
-        return True
+        return self.owner_handlers.handle_chat_digest_command(self, chat_id, user_id, payload)
 
     def render_chat_digest_text(self, target_chat_id: int, day: str) -> str:
-        target_day, rows = self.state.get_daily_summary_context(target_chat_id, day)
-        if not rows:
-            return f"За {target_day} событий не найдено."
-        user_rows = [row for row in rows if row[5] == "user"]
-        assistant_rows = [row for row in rows if row[5] == "assistant"]
-        type_counts: Dict[str, int] = {}
-        user_counts: Dict[str, int] = {}
-        highlights: List[str] = []
-        for created_at, user_id, username, first_name, last_name, role, message_type, content in rows:
-            type_counts[message_type] = type_counts.get(message_type, 0) + 1
-            if role == "user":
-                actor = build_actor_name(user_id, username or "", first_name or "", last_name or "", role)
-                user_counts[actor] = user_counts.get(actor, 0) + 1
-                if len(highlights) < 6 and message_type in {"text", "caption", "edited_text", "photo", "voice", "document"}:
-                    stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
-                    highlights.append(f"[{stamp}] {actor}: {truncate_text(content, 120)}")
-        top_users = sorted(user_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
-        top_types = sorted(type_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
-        lines = [
-            f"Digest за {target_day}",
-            f"Чат: {target_chat_id}",
-            f"Всего событий: {len(rows)}",
-            f"Сообщений пользователей: {len(user_rows)}",
-            f"Ответов/сервисных действий бота: {len(assistant_rows)}",
-        ]
-        if top_users:
-            lines.append("")
-            lines.append("Топ активности:")
-            lines.extend(f"- {name}: {count}" for name, count in top_users)
-        if top_types:
-            lines.append("")
-            lines.append("Типы событий:")
-            lines.extend(f"- {name}: {count}" for name, count in top_types)
-        if highlights:
-            lines.append("")
-            lines.append("Ключевые куски дня:")
-            lines.extend(f"- {item}" for item in highlights)
-        return "\n".join(lines)
+        return self.owner_handlers.render_chat_digest_text(self, target_chat_id, day)
 
     def handle_owner_report_command(self, chat_id: int, user_id: Optional[int]) -> bool:
-        if not is_owner_private_chat(user_id, chat_id):
-            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
-            return True
-        payload = self.refresh_world_state_registry("owner_report", chat_id=chat_id)
-        scores = self.recompute_drive_scores(payload)
-        self.state.record_autobiographical_event(
-            category="owner",
-            event_type="owner_report",
-            chat_id=chat_id,
-            user_id=user_id,
-            route_kind="owner_command",
-            title="owner requested operational report",
-            details=f"errors={payload.get('recent_errors_count', 0)}; git_dirty={payload.get('git_dirty_count', 0)}; runtime_risk={scores.get('runtime_risk_pressure', 0):.1f}",
-            status="ok",
-            importance=55,
-            open_state="closed",
-            tags="owner,report,runtime",
-            observed_payload=payload,
-        )
-        self.safe_send_text(chat_id, self.render_owner_report_text(chat_id))
-        return True
+        return self.owner_handlers.handle_owner_report_command(self, chat_id, user_id)
+
+    def handle_repair_status_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        return self.owner_handlers.handle_repair_status_command(self, chat_id, user_id)
 
     def render_owner_report_text(self, chat_id: int) -> str:
-        status_snapshot = self.state.get_status_snapshot(chat_id)
-        last_backup_raw = self.state.get_meta("last_backup_ts", "0")
-        try:
-            last_backup_value = float(last_backup_raw or "0")
-        except ValueError:
-            last_backup_value = 0.0
-        backup_text = datetime.utcfromtimestamp(last_backup_value).strftime("%Y-%m-%d %H:%M:%S UTC") if last_backup_value > 0 else "ещё не было"
-        runtime_snapshot = inspect_runtime_log(self.log_path)
-        recent_errors = read_recent_log_highlights(self.log_path, limit=8)
-        recent_routes = self.state.get_recent_request_diagnostics(limit=5)
-        lines = [
-            "OWNER REPORT",
-            f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
-            f"Режим чата: {self.state.get_mode(chat_id)}",
-            f"События в этом чате: {status_snapshot['events_count']}",
-            f"Факты в этом чате: {status_snapshot['facts_count']}",
-            f"История в этом чате: {status_snapshot['history_count']}",
-            f"User memory profiles в этом чате: {status_snapshot['user_memory_profiles']}",
-            f"Relation memory в этом чате: {status_snapshot['relation_memory_rows']}",
-            f"Summary snapshots в этом чате: {status_snapshot['summary_snapshots']}",
-            f"Autobiographical events: {status_snapshot['autobiographical_rows']}",
-            f"Reflections: {status_snapshot['reflections_rows']}",
-            f"World-state rows: {status_snapshot['world_state_rows']}",
-            f"Всего событий в БД: {status_snapshot['total_events']}",
-            f"Route decisions в БД: {status_snapshot['total_route_decisions']}",
-            f"Upgrade активен: {'да' if self.state.global_upgrade_active else 'нет'}",
-            f"Heartbeat: {self.config.heartbeat_path}",
-            f"Heartbeat timeout: {self.config.heartbeat_timeout_seconds}s",
-            f"Последний backup: {backup_text}",
-            "",
-            "Ресурсы:",
-            render_resource_summary(),
-            "",
-            render_bridge_runtime_watch(),
-        ]
-        world_state_context = self.state.get_world_state_context(limit=6)
-        drive_context = self.state.get_drive_context()
-        if world_state_context:
-            lines.extend(["", world_state_context])
-        if drive_context:
-            lines.extend(["", drive_context])
-        if recent_routes:
-            lines.extend(["", "Последние route decisions:", render_route_diagnostics_rows(recent_routes)])
-        if recent_errors:
-            lines.extend(["", "Недавние ошибки/сбои:", *[f"- {item}" for item in recent_errors]])
-        else:
-            lines.extend(["", "Недавние ошибки/сбои:", "- Явных ошибок в хвосте лога не найдено."])
-        if int(runtime_snapshot.get("warning_count", 0)):
-            lines.extend(["", "Недавние recoverable warnings:", *[f"- {item}" for item in runtime_snapshot.get("recent_warning_lines", [])[-5:]]])
-        return "\n".join(lines)
+        return self.owner_handlers.render_owner_report_text(self, chat_id)
 
     def handle_export_command(self, chat_id: int, scope: str) -> bool:
         scope_clean = (scope or "chat").strip() or "chat"
@@ -7502,7 +6906,11 @@ class TelegramBridge:
 
         if route_decision.persona == "enterprise" and route_decision.intent == "runtime_status" and route_decision.use_workspace:
             direct_answer = render_enterprise_runtime_report()
-            report = apply_self_check_contract(direct_answer, route_decision)
+            report = enrich_self_check_report(
+                apply_self_check_contract(direct_answer, route_decision),
+                route_decision=route_decision,
+                notes="runtime route requires direct local probe",
+            )
             self.state.update_self_model_state(last_outcome=report.outcome)
             self.run_post_task_reflection(
                 chat_id=chat_id,
@@ -7529,7 +6937,11 @@ class TelegramBridge:
             with HeartbeatGuard(self):
                 live_answer = self.try_handle_live_data_query(user_text, route_decision)
             if live_answer:
-                report = apply_self_check_contract(postprocess_answer(live_answer), route_decision)
+                report = enrich_self_check_report(
+                    apply_self_check_contract(postprocess_answer(live_answer), route_decision),
+                    route_decision=route_decision,
+                    notes="live route requires explicit provider and freshness grounding",
+                )
                 self.state.update_self_model_state(last_outcome=report.outcome)
                 self.run_post_task_reflection(
                     chat_id=chat_id,
@@ -7571,7 +6983,11 @@ class TelegramBridge:
                 summarized_web_answer = self.summarize_web_context(user_text, web_context)
             if not summarized_web_answer:
                 summarized_web_answer = self.build_web_route_fallback_answer(user_text, web_context)
-            report = apply_self_check_contract(summarized_web_answer, route_decision)
+            report = enrich_self_check_report(
+                apply_self_check_contract(summarized_web_answer, route_decision),
+                route_decision=route_decision,
+                notes="external web route used because dedicated live/runtime/project routes did not apply",
+            )
             self.state.update_self_model_state(last_outcome=report.outcome)
             self.run_post_task_reflection(
                 chat_id=chat_id,
@@ -7597,7 +7013,11 @@ class TelegramBridge:
         if route_decision.use_web and (route_decision.use_events or route_decision.use_database) and not route_decision.use_workspace:
             observed_mixed_answer = self.build_observed_mixed_answer(chat_id, user_text, user_id=user_id)
             if observed_mixed_answer:
-                report = apply_self_check_contract(observed_mixed_answer, route_decision)
+                report = enrich_self_check_report(
+                    apply_self_check_contract(observed_mixed_answer, route_decision),
+                    route_decision=route_decision,
+                    notes="mixed route used local state first, then bounded external context",
+                )
                 self.state.update_self_model_state(last_outcome=report.outcome)
                 self.run_post_task_reflection(
                     chat_id=chat_id,
@@ -7732,7 +7152,11 @@ class TelegramBridge:
         }:
             raw_answer = self.build_web_route_fallback_answer(user_text, context_bundle.web_context)
 
-        report = apply_self_check_contract(raw_answer, route_decision)
+        report = enrich_self_check_report(
+            apply_self_check_contract(raw_answer, route_decision),
+            route_decision=route_decision,
+            context_bundle=context_bundle,
+        )
         self.state.update_self_model_state(last_outcome=report.outcome)
         self.run_post_task_reflection(
             chat_id=chat_id,
@@ -7795,25 +7219,13 @@ class TelegramBridge:
         user_id: Optional[int],
         active_group_followup: bool = False,
     ) -> str:
-        active_thread = self.get_active_group_discussion(chat_id, message=message, raw_text=(message or {}).get("text") or "")
-        discussion_context = _build_current_discussion_context(
-            state=self.state,
-            chat_id=chat_id,
+        return self.context_pipeline.build_current_discussion_context(
+            self,
+            chat_id,
             message=message,
             user_id=user_id,
-            query_text=(message or {}).get("text") or "",
             active_group_followup=active_group_followup,
-            active_thread=active_thread,
-            build_actor_name_func=build_actor_name,
-            build_service_actor_name_func=build_service_actor_name,
-            truncate_text_func=truncate_text,
         )
-        discussion_state_hint = self.get_group_discussion_state_hint(chat_id)
-        if discussion_state_hint:
-            if discussion_context:
-                return f"{discussion_context}\n\n{discussion_state_hint}"
-            return discussion_state_hint
-        return discussion_context
 
     def build_text_context_bundle(
         self,
@@ -7826,9 +7238,8 @@ class TelegramBridge:
         reply_context: str,
         active_group_followup: bool = False,
     ) -> ContextBundle:
-        return _build_text_context_bundle(
-            context_bundle_factory=ContextBundle,
-            state=self.state,
+        return self.context_pipeline.build_text_context_bundle(
+            self,
             chat_id=chat_id,
             user_text=user_text,
             route_decision=route_decision,
@@ -7836,14 +7247,6 @@ class TelegramBridge:
             message=message,
             reply_context=reply_context,
             active_group_followup=active_group_followup,
-            detect_local_chat_query_func=detect_local_chat_query,
-            should_include_database_context_func=should_include_database_context,
-            is_owner_private_chat_func=is_owner_private_chat,
-            build_current_discussion_context_func=self.build_current_discussion_context,
-            build_external_research_context_func=self.build_external_research_context,
-            build_route_summary_text_func=build_route_summary_text,
-            build_guardrail_note_func=build_guardrail_note,
-            should_include_entity_context_func=_should_include_entity_context,
         )
 
     def build_attachment_context_bundle(
@@ -7854,15 +7257,12 @@ class TelegramBridge:
         message: Optional[dict],
         reply_context: str,
     ) -> ContextBundle:
-        return _build_attachment_context_bundle(
-            context_bundle_factory=ContextBundle,
-            state=self.state,
+        return self.context_pipeline.build_attachment_context_bundle(
+            self,
             chat_id=chat_id,
             prompt_text=prompt_text,
             message=message,
             reply_context=reply_context,
-            should_include_event_context_func=should_include_event_context,
-            should_include_database_context_func=should_include_database_context,
         )
 
     def record_route_diagnostic(
@@ -7875,6 +7275,11 @@ class TelegramBridge:
         started_at: float,
         query_text: str,
     ) -> None:
+        persisted_report = build_persisted_self_check_report(
+            report,
+            route_decision=route_decision,
+            live_records=self.live_gateway.consume_records(),
+        )
         self.state.record_request_diagnostic(
             chat_id=chat_id,
             user_id=user_id,
@@ -7883,6 +7288,7 @@ class TelegramBridge:
             intent=route_decision.intent,
             route_kind=route_decision.route_kind,
             source_label=route_decision.source_label,
+            request_kind=route_decision.request_kind,
             used_live=route_decision.use_live,
             used_web=route_decision.use_web,
             used_events=route_decision.use_events,
@@ -7890,7 +7296,14 @@ class TelegramBridge:
             used_reply=route_decision.use_reply,
             used_workspace=route_decision.use_workspace,
             guardrails=", ".join(route_decision.guardrails),
-            outcome=report.outcome,
+            outcome=persisted_report.outcome,
+            response_mode=persisted_report.mode,
+            sources=", ".join(persisted_report.sources),
+            tools_used=", ".join(persisted_report.tools_used),
+            memory_used=", ".join(persisted_report.memory_used),
+            confidence=persisted_report.confidence,
+            freshness=persisted_report.freshness,
+            notes=persisted_report.notes,
             latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
             query_text=query_text,
         )
@@ -7965,300 +7378,36 @@ class TelegramBridge:
         return json.loads(text or "{}")
 
     def fetch_weather_answer(self, location_query: str) -> str:
-        normalized_location = normalize_location_query(location_query)
-        if not normalized_location:
-            return ""
-        query_variants = build_location_query_variants(normalized_location)
-        try:
-            results: List[dict] = []
-            matched_location = normalized_location
-            for candidate_location in query_variants:
-                geo_payload = self.request_json_with_retry(
-                    "get",
-                    "https://geocoding-api.open-meteo.com/v1/search",
-                    params={
-                        "name": candidate_location,
-                        "count": 1,
-                        "language": "ru",
-                        "format": "json",
-                    },
-                    timeout=20,
-                )
-                results = geo_payload.get("results") or []
-                if results:
-                    matched_location = candidate_location
-                    break
-            if not results:
-                return f"Не нашёл локацию: {normalized_location}."
-            place = results[0]
-            latitude = place.get("latitude")
-            longitude = place.get("longitude")
-            if latitude is None or longitude is None:
-                return f"Не удалось определить координаты для: {matched_location}."
-            place_name = place.get("name") or matched_location
-            admin_name = place.get("admin1") or place.get("country") or ""
-            display_name = f"{place_name}, {admin_name}".strip(", ")
-            payload = self.request_json_with_retry(
-                "get",
-                "https://api.open-meteo.com/v1/forecast",
-                params={
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation",
-                    "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-                    "timezone": "auto",
-                    "forecast_days": 1,
-                },
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"weather lookup failed query={shorten_for_log(normalized_location)} error={error}")
-            return "Не удалось получить актуальную погоду из внешнего источника."
-        current = payload.get("current") or {}
-        daily = payload.get("daily") or {}
-        temperature = current.get("temperature_2m")
-        apparent = current.get("apparent_temperature")
-        weather_code = current.get("weather_code")
-        wind_speed = current.get("wind_speed_10m")
-        precipitation = current.get("precipitation")
-        max_list = daily.get("temperature_2m_max") or []
-        min_list = daily.get("temperature_2m_min") or []
-        precip_prob_list = daily.get("precipitation_probability_max") or []
-        weather_label = WEATHER_CODE_LABELS.get(int(weather_code), "условия уточняются") if weather_code is not None else "условия уточняются"
-        details = [
-            f"Погода сейчас в {display_name}: {format_signed_value(temperature)}°C, {weather_label}.",
-        ]
-        if apparent is not None:
-            details.append(f"Ощущается как {format_signed_value(apparent)}°C.")
-        if max_list and min_list:
-            details.append(f"За сегодня: от {format_signed_value(min_list[0])}°C до {format_signed_value(max_list[0])}°C.")
-        if wind_speed is not None:
-            details.append(f"Ветер: {float(wind_speed):.1f} м/с.")
-        if precip_prob_list:
-            details.append(f"Вероятность осадков: {int(precip_prob_list[0])}%.")
-        elif precipitation is not None:
-            details.append(f"Осадки сейчас: {float(precipitation):.1f} мм.")
-        time_value = current.get("time")
-        if time_value:
-            details.append(f"Источник: Open-Meteo, обновление {time_value}.")
-        return " ".join(details)
+        answer, _records = self.live_gateway.fetch_weather_answer(location_query)
+        return answer
 
     def fetch_exchange_rate_answer(self, base_currency: str, quote_currency: str) -> str:
-        base = (base_currency or "").upper()
-        quote = (quote_currency or "").upper()
-        if not base or not quote or base == quote:
-            return ""
-        try:
-            payload = self.request_json_with_retry(
-                "get",
-                "https://api.frankfurter.app/latest",
-                params={"from": base, "to": quote},
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"exchange lookup failed pair={base}/{quote} error={error}")
-            return self.fetch_exchange_rate_answer_yahoo(base, quote)
-        rates = payload.get("rates") or {}
-        value = rates.get(quote)
-        if value is None:
-            return self.fetch_exchange_rate_answer_yahoo(base, quote)
-        date_value = payload.get("date") or ""
-        return f"Курс {base}/{quote}: 1 {base} = {float(value):.4f} {quote}. Дата источника: {date_value}."
+        answer, _records = self.live_gateway.fetch_exchange_rate_answer(base_currency, quote_currency)
+        return answer
 
     def fetch_exchange_rate_answer_yahoo(self, base_currency: str, quote_currency: str) -> str:
-        symbol = f"{(base_currency or '').upper()}{(quote_currency or '').upper()}=X"
-        try:
-            payload = self.request_json_with_retry(
-                "get",
-                "https://query1.finance.yahoo.com/v7/finance/quote",
-                params={"symbols": symbol},
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"exchange yahoo lookup failed pair={base_currency}/{quote_currency} error={error}")
-            return self.fetch_exchange_rate_answer_open_er(base_currency, quote_currency)
-        results = ((payload.get("quoteResponse") or {}).get("result") or [])
-        if not results:
-            return self.fetch_exchange_rate_answer_open_er(base_currency, quote_currency)
-        item = results[0]
-        price = item.get("regularMarketPrice")
-        market_time = item.get("regularMarketTime")
-        if price is None:
-            return self.fetch_exchange_rate_answer_open_er(base_currency, quote_currency)
-        answer = f"Курс {base_currency}/{quote_currency}: 1 {base_currency} = {float(price):.4f} {quote_currency}."
-        if market_time:
-            answer += f" Источник: Yahoo Finance, обновление {datetime.utcfromtimestamp(int(market_time)).strftime('%Y-%m-%d %H:%M:%S')} UTC."
-        else:
-            answer += " Источник: Yahoo Finance."
+        answer, _records = self.live_gateway.fetch_exchange_rate_answer_yahoo(base_currency, quote_currency)
         return answer
 
     def fetch_exchange_rate_answer_open_er(self, base_currency: str, quote_currency: str) -> str:
-        base = (base_currency or "").upper()
-        quote = (quote_currency or "").upper()
-        try:
-            payload = self.request_json_with_retry(
-                "get",
-                f"https://open.er-api.com/v6/latest/{base}",
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"exchange open.er lookup failed pair={base}/{quote} error={error}")
-            return "Не удалось получить актуальный курс из внешнего источника."
-        rates = payload.get("rates") or {}
-        value = rates.get(quote)
-        if value is None:
-            return f"Не удалось получить курс {base}/{quote}."
-        updated_at = normalize_whitespace(str(payload.get("time_last_update_utc") or ""))
-        answer = f"Курс {base}/{quote}: 1 {base} = {float(value):.4f} {quote}."
-        if updated_at:
-            answer += f" Источник: open.er-api, обновление {updated_at}."
-        else:
-            answer += " Источник: open.er-api."
+        answer, _records = self.live_gateway.fetch_exchange_rate_answer_open_er(base_currency, quote_currency)
         return answer
 
     def fetch_crypto_price_answer(self, crypto_id: str) -> str:
-        try:
-            payload = self.request_json_with_retry(
-                "get",
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": crypto_id, "vs_currencies": "usd,rub", "include_last_updated_at": "true"},
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"crypto lookup failed asset={crypto_id} error={error}")
-            return "Не удалось получить актуальную цену криптовалюты."
-        item = payload.get(crypto_id) or {}
-        usd = item.get("usd")
-        rub = item.get("rub")
-        updated_at = item.get("last_updated_at")
-        if usd is None and rub is None:
-            return f"Не удалось получить цену для {crypto_id}."
-        parts = [f"Цена {crypto_id}:"]
-        if usd is not None:
-            parts.append(f"${float(usd):,.4f}".replace(",", " "))
-        if rub is not None:
-            parts.append(f"{float(rub):,.2f} RUB".replace(",", " "))
-        answer = " ".join(parts) + "."
-        if updated_at:
-            answer += f" Источник: CoinGecko, обновление {datetime.utcfromtimestamp(int(updated_at)).strftime('%Y-%m-%d %H:%M:%S')} UTC."
+        answer, _records = self.live_gateway.fetch_crypto_price_answer(crypto_id)
         return answer
 
     def fetch_stock_price_answer(self, stock_symbol: str) -> str:
-        try:
-            payload = self.request_json_with_retry(
-                "get",
-                "https://query1.finance.yahoo.com/v7/finance/quote",
-                params={"symbols": stock_symbol},
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"stock lookup failed symbol={stock_symbol} error={error}")
-            return "Не удалось получить актуальную цену инструмента."
-        results = ((payload.get("quoteResponse") or {}).get("result") or [])
-        if not results:
-            return f"Не удалось получить котировку {stock_symbol}."
-        item = results[0]
-        price = item.get("regularMarketPrice")
-        currency = item.get("currency") or "USD"
-        market_state = item.get("marketState") or ""
-        change_percent = item.get("regularMarketChangePercent")
-        short_name = item.get("shortName") or stock_symbol
-        if price is None:
-            return f"Не удалось получить котировку {stock_symbol}."
-        answer = f"{short_name} ({stock_symbol}): {float(price):,.4f} {currency}".replace(",", " ")
-        if change_percent is not None:
-            answer += f", изменение {format_signed_value(change_percent)}%"
-        if market_state:
-            answer += f", статус рынка: {market_state}"
-        answer += ". Источник: Yahoo Finance."
+        answer, _records = self.live_gateway.fetch_stock_price_answer(stock_symbol)
         return answer
 
     def fetch_news_answer(self, query: str, limit: int = 3) -> str:
-        normalized_query = normalize_whitespace(query)
-        rss_query = normalized_query
-        if any(marker in normalized_query.lower() for marker in ("за последний день", "за день", "за сутки", "сегодня", "последние", "свежие")):
-            rss_query = f"{normalized_query} when:1d"
-        try:
-            response_text = self.request_text_with_retry(
-                "get",
-                "https://news.google.com/rss/search",
-                params={"q": rss_query, "hl": "ru", "gl": "RU", "ceid": "RU:ru"},
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"news lookup failed query={shorten_for_log(normalized_query)} error={error}")
-            return "Не удалось получить свежие новости по этому запросу."
-        try:
-            root = ET.fromstring(response_text)
-        except ET.ParseError as error:
-            log(f"news parse failed query={shorten_for_log(normalized_query)} error={error}")
-            return "Источник новостей ответил в неожиданном формате."
-        items = root.findall("./channel/item")
-        if not items:
-            return f"По запросу «{normalized_query}» свежих новостей не нашёл."
-        lines = [f"Свежие новости по запросу «{normalized_query}»:"] 
-        for item in items[:limit]:
-            title = normalize_whitespace("".join(item.findtext("title", default="")).replace(" - ", " — "))
-            link = normalize_whitespace(item.findtext("link", default=""))
-            pub_date = normalize_whitespace(item.findtext("pubDate", default=""))
-            if not title or not link:
-                continue
-            line = f"• {truncate_text(title, 180)}"
-            if pub_date:
-                line += f"\n  {truncate_text(pub_date, 64)}"
-            line += f"\n  {truncate_text(link, 280)}"
-            lines.append(line)
-        if len(lines) == 1:
-            return f"По запросу «{normalized_query}» новости получить не удалось."
-        return "\n".join(lines)
+        answer, _records = self.live_gateway.fetch_news_answer(query, limit=limit)
+        return answer
 
     def fetch_current_fact_answer(self, query: str, limit: int = 3) -> str:
-        normalized_query = normalize_whitespace(query)
-        if not normalized_query:
-            return ""
-        try:
-            response_text = self.request_text_with_retry(
-                "post",
-                "https://html.duckduckgo.com/html/",
-                data={"q": normalized_query},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"current fact lookup failed query={shorten_for_log(normalized_query)} error={error}")
-            return "Не удалось проверить актуальный факт по внешним источникам."
-        pattern = re.compile(
-            r'<a[^>]*class="result__a"[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
-            r'(?:<a[^>]*class="result__snippet"[^>]*>(?P<snippet_a>.*?)</a>|'
-            r'<div[^>]*class="result__snippet"[^>]*>(?P<snippet_div>.*?)</div>)',
-            re.S,
-        )
-        items: List[Tuple[str, str, str]] = []
-        for match in pattern.finditer(response_text):
-            title = normalize_whitespace(html.unescape(re.sub(r"<.*?>", " ", match.group("title") or "")))
-            snippet_raw = match.group("snippet_a") or match.group("snippet_div") or ""
-            snippet = normalize_whitespace(html.unescape(re.sub(r"<.*?>", " ", snippet_raw)))
-            url = normalize_whitespace(html.unescape(match.group("url") or ""))
-            if not title or not url:
-                continue
-            items.append((title, snippet, url))
-            if len(items) >= limit:
-                break
-        if not items:
-            return f"По запросу «{normalized_query}» не нашёл надёжных внешних результатов."
-        synthesized = self.summarize_current_fact_results(normalized_query, items)
-        lines = []
-        if synthesized:
-            lines.append(synthesized)
-            lines.append("")
-        lines.append(f"Источники по запросу «{normalized_query}»:")
-        for title, snippet, url in items:
-            line = f"• {truncate_text(title, 180)}"
-            if snippet:
-                line += f"\n  {truncate_text(snippet, 240)}"
-            line += f"\n  {truncate_text(url, 280)}"
-            lines.append(line)
-        return "\n".join(lines)
+        answer, _records = self.live_gateway.fetch_current_fact_answer(query, limit=limit)
+        return answer
 
     def summarize_current_fact_results(self, query: str, items: List[Tuple[str, str, str]]) -> str:
         source_lines = []
@@ -8390,28 +7539,11 @@ class TelegramBridge:
         normalized_query = normalize_whitespace(query)
         if not normalized_query:
             return []
-        sections: List[Tuple[str, str]] = []
-        for task in plan_external_research_tasks(normalized_query):
-            if task.kind == "news":
-                result = self.fetch_news_answer(task.payload, limit=3)
-            elif task.kind == "current_fact":
-                result = self.fetch_current_fact_answer(task.payload, limit=3)
-            elif task.kind == "weather":
-                result = self.fetch_weather_answer(task.payload)
-            elif task.kind == "fx":
-                base, quote = (task.payload.split("/", 1) + [""])[:2]
-                result = self.fetch_exchange_rate_answer(base, quote)
-            elif task.kind == "crypto":
-                result = self.fetch_crypto_price_answer(task.payload)
-            elif task.kind == "web_search":
-                result = self.build_web_search_context(task.payload)
-            else:
-                result = ""
-            cleaned_result = normalize_whitespace(result)
-            if not cleaned_result:
-                continue
-            sections.append((task.label, cleaned_result))
-        return sections
+        return self.live_gateway.collect_external_research_sections(
+            normalized_query,
+            plan_external_research_tasks(normalized_query),
+            self.build_web_search_context,
+        )
 
     def build_external_research_context(self, query: str) -> str:
         rendered_sections: List[str] = []
@@ -8570,11 +7702,26 @@ class TelegramBridge:
             message=message,
             reply_context=reply_context,
         )
+        attachment_bundle = build_attachment_bundle(
+            attachment_type="image",
+            extracted_text=caption or "",
+            structured_features=f"path={image_path.name}; has_caption={'yes' if caption else 'no'}",
+            source_message_link=f"chat:{chat_id}",
+            relevance_score=0.92,
+            used_in_response=True,
+            normalize_whitespace_func=normalize_whitespace,
+            truncate_text_func=truncate_text,
+        )
         prompt = build_prompt(
             mode=self.state.get_mode(chat_id),
             history=list(self.state.get_history(chat_id)),
             user_text=prompt_text,
-            attachment_note="Пользователь прислал изображение. Анализируй само изображение и подпись вместе.",
+            attachment_note=(
+                "Пользователь прислал изображение. Анализируй само изображение и подпись вместе.\n"
+                f"AttachmentBundle: type={attachment_bundle.attachment_type}; "
+                f"features={attachment_bundle.structured_features}; "
+                f"relevance={attachment_bundle.relevance_score:.2f}"
+            ),
             summary_text=context_bundle.summary_text,
             facts_text=context_bundle.facts_text,
             event_context=context_bundle.event_context,
@@ -8612,11 +7759,25 @@ class TelegramBridge:
             message=message,
             reply_context=reply_context,
         )
+        attachment_bundle = build_attachment_bundle(
+            attachment_type="document",
+            extracted_text=file_excerpt,
+            structured_features=(
+                f"file_name={file_name}; mime={mime_type}; "
+                f"size={format_file_size(int(file_size)) if file_size else 'unknown'}"
+            ),
+            source_message_link=f"chat:{chat_id}",
+            relevance_score=0.95 if file_excerpt else 0.72,
+            used_in_response=True,
+            normalize_whitespace_func=normalize_whitespace,
+            truncate_text_func=truncate_text,
+        )
         attachment_lines = [
             "Пользователь прислал документ.",
             f"Имя файла: {file_name}",
             f"MIME: {mime_type}",
             f"Размер: {format_file_size(int(file_size)) if file_size else 'неизвестно'}",
+            f"AttachmentBundle: type={attachment_bundle.attachment_type}; features={attachment_bundle.structured_features}; relevance={attachment_bundle.relevance_score:.2f}",
         ]
         if file_excerpt:
             attachment_lines.append("Текстовый фрагмент файла:")
@@ -9333,196 +8494,10 @@ class TelegramBridge:
                 self.memory_refresh_in_progress = False
 
     def refresh_world_state_registry(self, source: str = "runtime_tick", chat_id: Optional[int] = None) -> Dict[str, object]:
-        repo_path = self.script_path.parent
-        try:
-            git_status = subprocess.run(
-                ["git", "-C", str(repo_path), "status", "--porcelain"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            dirty_lines = [line.strip() for line in git_status.stdout.splitlines() if line.strip()]
-        except Exception as error:
-            log_exception("world-state git status failed", error, limit=6)
-            dirty_lines = []
-        runtime_snapshot = inspect_runtime_log(self.log_path)
-        recent_errors = read_recent_log_highlights(self.log_path, limit=12)
-        recent_events = read_recent_operational_highlights(self.log_path, limit=12, category="all")
-        memory_due = len(self.state.get_chats_due_for_memory_refresh(limit=20))
-        docs_drift_lines = [
-            line for line in dirty_lines
-            if any(marker in line for marker in DOC_RUNTIME_DRIFT_MARKERS)
-        ]
-        with self.state.db_lock:
-            live_failures = self.state.db.execute(
-                """SELECT COUNT(*) FROM request_diagnostics
-                WHERE created_at >= strftime('%s','now') - 86400
-                  AND used_live = 1
-                  AND outcome IN ('error', 'uncertain')"""
-            ).fetchone()[0]
-            web_failures = self.state.db.execute(
-                """SELECT COUNT(*) FROM request_diagnostics
-                WHERE created_at >= strftime('%s','now') - 86400
-                  AND used_web = 1
-                  AND outcome IN ('error', 'uncertain')"""
-            ).fetchone()[0]
-            unresolved_tasks = self.state.db.execute(
-                """SELECT COUNT(*) FROM autobiographical_memory
-                WHERE open_state != 'closed'"""
-            ).fetchone()[0]
-        last_backup_raw = self.state.get_meta("last_backup_ts", "0")
-        try:
-            last_backup_value = float(last_backup_raw or "0")
-        except ValueError:
-            last_backup_value = 0.0
-        backup_age_hours = ((time.time() - last_backup_value) / 3600.0) if last_backup_value > 0 else -1.0
-        now_ts = int(time.time())
-        severe_errors_count = int(runtime_snapshot.get("severe_error_count", 0))
-        warning_count = int(runtime_snapshot.get("warning_count", 0))
-        restart_count = int(runtime_snapshot.get("restart_count", 0))
-        heartbeat_kill_count = int(runtime_snapshot.get("heartbeat_kill_count", 0))
-        last_severe_error_at = int(runtime_snapshot.get("last_severe_error_at", 0) or 0)
-        last_heartbeat_kill_at = int(runtime_snapshot.get("last_heartbeat_kill_at", 0) or 0)
-        severe_error_age_seconds = max(0, now_ts - last_severe_error_at) if last_severe_error_at else -1
-        heartbeat_kill_age_seconds = max(0, now_ts - last_heartbeat_kill_at) if last_heartbeat_kill_at else -1
-        state_payload = {
-            "git_dirty_count": len(dirty_lines),
-            "recent_errors_count": severe_errors_count,
-            "recent_warning_count": warning_count,
-            "recent_events_count": len(recent_events),
-            "live_failures_count": int(live_failures or 0),
-            "web_failures_count": int(web_failures or 0),
-            "memory_due_count": memory_due,
-            "docs_drift_count": len(docs_drift_lines),
-            "unresolved_tasks_count": int(unresolved_tasks or 0),
-            "backup_age_hours": round(backup_age_hours, 1) if backup_age_hours >= 0 else -1.0,
-            "upgrade_active": 1 if self.state.global_upgrade_active else 0,
-            "chat_tasks_active": len(self.state.chat_tasks_in_progress),
-            "restart_count": restart_count,
-            "heartbeat_kill_count": heartbeat_kill_count,
-            "severe_error_age_seconds": severe_error_age_seconds,
-            "heartbeat_kill_age_seconds": heartbeat_kill_age_seconds,
-        }
-        if (
-            (severe_errors_count and 0 <= severe_error_age_seconds <= 7200)
-            or (heartbeat_kill_count and 0 <= heartbeat_kill_age_seconds <= 7200)
-        ):
-            runtime_status = "risk"
-        elif restart_count or warning_count or self.state.global_upgrade_active:
-            runtime_status = "attention"
-        else:
-            runtime_status = "ok"
-        git_status_text = "dirty" if dirty_lines else "clean"
-        self.state.upsert_world_state_entry(
-            "runtime_health",
-            category="runtime",
-            status=runtime_status,
-            value_text=(
-                f"errors={severe_errors_count}; warnings={warning_count}; restarts={restart_count}; "
-                f"heartbeat_kills={heartbeat_kill_count}; events={len(recent_events)}; memory_due={memory_due}; "
-                f"last_error_age_s={severe_error_age_seconds if severe_error_age_seconds >= 0 else 'n/a'}; "
-                f"upgrade_active={'yes' if self.state.global_upgrade_active else 'no'}"
-            ),
-            value_number=float(severe_errors_count),
-            source=source,
-        )
-        self.state.upsert_world_state_entry(
-            "git_state",
-            category="project",
-            status=git_status_text,
-            value_text="\n".join(dirty_lines[:8]) if dirty_lines else "worktree clean",
-            value_number=float(len(dirty_lines)),
-            source=source,
-        )
-        self.state.upsert_world_state_entry(
-            "live_source_health",
-            category="live",
-            status="attention" if int(live_failures or 0) else "ok",
-            value_text=f"recent_live_failures={int(live_failures or 0)}; recent_web_failures={int(web_failures or 0)}",
-            value_number=float(int(live_failures or 0)),
-            source=source,
-        )
-        self.state.upsert_world_state_entry(
-            "doc_runtime_drift",
-            category="sync",
-            status="attention" if docs_drift_lines else "ok",
-            value_text="\n".join(docs_drift_lines[:6]) if docs_drift_lines else "docs/runtime backfills synced",
-            value_number=float(len(docs_drift_lines)),
-            source=source,
-        )
-        self.state.upsert_world_state_entry(
-            "owner_priority_state",
-            category="owner",
-            status="attention" if int(unresolved_tasks or 0) else "ok",
-            value_text=f"open_tasks={int(unresolved_tasks or 0)}; backup_age_hours={round(backup_age_hours, 1) if backup_age_hours >= 0 else 'n/a'}",
-            value_number=float(int(unresolved_tasks or 0)),
-            source=source,
-        )
-        if source in {"startup", "owner_report", "reflection", "upgrade", "runtime_error"} or recent_errors or docs_drift_lines:
-            summary = (
-                f"runtime={runtime_status}; git={git_status_text}; live_failures={int(live_failures or 0)}; web_failures={int(web_failures or 0)}; "
-                f"open_tasks={int(unresolved_tasks or 0)}; docs_drift={len(docs_drift_lines)}"
-            )
-            self.state.add_world_state_snapshot(source, summary, state_payload)
-        return state_payload
+        return self.runtime_service.refresh_world_state_registry(self, source, chat_id)
 
     def recompute_drive_scores(self, operational_state: Optional[Dict[str, object]] = None) -> Dict[str, float]:
-        state_payload = operational_state or self.refresh_world_state_registry("drive_recompute")
-        with self.state.db_lock:
-            uncertain_rows = self.state.db.execute(
-                """SELECT COUNT(*) FROM request_diagnostics
-                WHERE created_at >= strftime('%s','now') - 86400
-                  AND outcome IN ('uncertain', 'error')"""
-            ).fetchone()[0]
-        uncertainty_score = min(100.0, float(int(uncertain_rows or 0) * 12))
-        inconsistency_score = min(100.0, float(int(state_payload.get("git_dirty_count", 0)) * 10))
-        stale_memory_score = min(100.0, float(int(state_payload.get("memory_due_count", 0)) * 18))
-        unresolved_task_score = min(100.0, float(int(state_payload.get("unresolved_tasks_count", 0)) * 20 + len(self.state.chat_tasks_in_progress) * 12))
-        doc_sync_score = min(100.0, float(int(state_payload.get("docs_drift_count", 0)) * 25))
-        severe_error_age_seconds = int(state_payload.get("severe_error_age_seconds", -1) or -1)
-        heartbeat_kill_age_seconds = int(state_payload.get("heartbeat_kill_age_seconds", -1) or -1)
-        fresh_runtime_penalty = 0.0
-        if 0 <= severe_error_age_seconds <= 7200:
-            fresh_runtime_penalty += 30.0
-        if 0 <= heartbeat_kill_age_seconds <= 7200:
-            fresh_runtime_penalty += 30.0
-        runtime_risk_score = min(
-            100.0,
-            float(
-                int(state_payload.get("recent_errors_count", 0)) * 3
-                + int(state_payload.get("recent_warning_count", 0)) * 2
-                + int(state_payload.get("live_failures_count", 0)) * 10
-                + int(state_payload.get("heartbeat_kill_count", 0)) * 6
-                + int(state_payload.get("upgrade_active", 0)) * 12
-                + fresh_runtime_penalty
-            ),
-        )
-        scores = {
-            "uncertainty_pressure": uncertainty_score,
-            "inconsistency_pressure": inconsistency_score,
-            "stale_memory_pressure": stale_memory_score,
-            "unresolved_task_pressure": unresolved_task_score,
-            "doc_sync_pressure": doc_sync_score,
-            "runtime_risk_pressure": runtime_risk_score,
-        }
-        reasons = {
-            "uncertainty_pressure": f"recent uncertain/error routes={int(uncertain_rows or 0)}",
-            "inconsistency_pressure": f"git dirty entries={int(state_payload.get('git_dirty_count', 0))}",
-            "stale_memory_pressure": f"chats due for refresh={int(state_payload.get('memory_due_count', 0))}",
-            "unresolved_task_pressure": f"open tasks={int(state_payload.get('unresolved_tasks_count', 0))}; active_chat_tasks={len(self.state.chat_tasks_in_progress)}",
-            "doc_sync_pressure": f"docs/runtime drift entries={int(state_payload.get('docs_drift_count', 0))}",
-            "runtime_risk_pressure": (
-                f"errors={int(state_payload.get('recent_errors_count', 0))}; "
-                f"warnings={int(state_payload.get('recent_warning_count', 0))}; "
-                f"live_failures={int(state_payload.get('live_failures_count', 0))}; "
-                f"heartbeat_kills={int(state_payload.get('heartbeat_kill_count', 0))}; "
-                f"upgrade_active={int(state_payload.get('upgrade_active', 0))}"
-            ),
-        }
-        for drive_name, score in scores.items():
-            self.state.set_drive_score(drive_name, score, reasons[drive_name])
-        return scores
+        return self.runtime_service.recompute_drive_scores(self, operational_state)
 
     def apply_persistent_pressures_to_route(self, route_decision: RouteDecision, user_text: str) -> RouteDecision:
         drive_map = {row["drive_name"]: float(row["score"] or 0) for row in self.state.get_drive_scores()}
@@ -9615,44 +8590,10 @@ class TelegramBridge:
         )
 
     def refresh_ai_chat_summary(self, chat_id: int) -> bool:
-        rows = self.state.get_recent_chat_rows(chat_id, limit=40)
-        if len(rows) < 12:
-            return False
-        current_summary = self.state.get_summary(chat_id)
-        facts = self.state.get_facts(chat_id, limit=6)
-        prompt = build_ai_chat_memory_prompt(chat_id, rows, current_summary, facts)
-        ai_summary = self.run_codex_short(prompt, timeout_seconds=30)
-        cleaned = normalize_whitespace(ai_summary)
-        if not cleaned:
-            return False
-        self.state.add_summary_snapshot(chat_id, "ai_rollup", cleaned)
-        return True
+        return self.memory_service.refresh_ai_chat_summary(self, chat_id)
 
     def refresh_ai_user_memory(self, chat_id: int) -> bool:
-        rows = self.state.get_recent_chat_rows(chat_id, limit=80)
-        counts: Dict[int, int] = {}
-        labels: Dict[int, Tuple[str, str, str]] = {}
-        for created_at, user_id, username, first_name, last_name, role, message_type, text in rows:
-            if role != "user" or user_id is None:
-                continue
-            counts[user_id] = counts.get(user_id, 0) + 1
-            labels[user_id] = (username or "", first_name or "", last_name or "")
-        refreshed = False
-        for user_id, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:2]:
-            user_rows = self.state.get_recent_user_rows(chat_id, user_id, limit=18)
-            if len(user_rows) < 6:
-                continue
-            username, first_name, last_name = labels.get(user_id, ("", "", ""))
-            profile_label = build_actor_name(user_id, username, first_name, last_name, "user")
-            heuristic_context = self.state.get_user_memory_context(chat_id, user_id=user_id)
-            prompt = build_ai_user_memory_prompt(profile_label, user_rows, heuristic_context)
-            ai_summary = self.run_codex_short(prompt, timeout_seconds=25)
-            cleaned = normalize_whitespace(ai_summary)
-            if not cleaned:
-                continue
-            self.state.set_user_memory_ai_summary(chat_id, user_id, cleaned)
-            refreshed = True
-        return refreshed
+        return self.memory_service.refresh_ai_user_memory(self, chat_id)
 
     def maybe_send_daily_owner_digest(self, now: datetime) -> None:
         if now.hour < self.config.owner_daily_digest_hour_utc:
@@ -11347,402 +10288,9 @@ def build_ai_user_memory_prompt(
     return _build_ai_user_memory_prompt(profile_label, rows, heuristic_context, truncate_text)
 
 
-def detect_local_chat_query(user_text: str) -> bool:
-    lowered = normalize_whitespace(user_text).lower()
-    if not lowered:
-        return False
-    chat_markers = (
-        "этот чат",
-        "наш чат",
-        "в чате",
-        "в группе",
-        "здесь",
-        "тут",
-        "переписк",
-        "контекст чата",
-        "локальный контекст",
-        "что тут происходит",
-        "что происходит в чате",
-        "кто тут",
-        "кто здесь",
-        "по нашему чату",
-        "по этой переписке",
-        "изучи чат",
-        "изучи этот чат",
-        "разбери чат",
-        "роль в чате",
-        "динамика",
-        "участник",
-        "участники",
-    )
-    return any(marker in lowered for marker in chat_markers)
-
-
-def is_local_project_meta_request(user_text: str) -> bool:
-    lowered = normalize_whitespace(user_text).lower()
-    if not lowered:
-        return False
-    primary_scope_markers = (
-        "этот чат",
-        "наш чат",
-        "в чате",
-        "по базе",
-        "из базы",
-        "локальный",
-        "в проекте",
-        "по проекту",
-        "этот проект",
-        "весь проект",
-        "код",
-        "логика",
-        "роут",
-        "маршрут",
-        "контекст",
-        "reply",
-        "chat_id",
-    )
-    service_scope_markers = ("jarvis", "enterprise", "бот")
-    local_evidence_markers = (
-        "предупреждение",
-        "warn",
-        "санкц",
-        "модера",
-        "удалил сообщение",
-        "сообщение удалено",
-        "reply",
-        "роут",
-        "маршрут",
-        "контекст",
-        "логика",
-        "chat_id",
-        "по базе",
-        "из базы",
-        "проект",
-        "код",
-        "id=",
-    )
-    action_markers = (
-        "изучи",
-        "разбери",
-        "проанализируй",
-        "исправ",
-        "почини",
-        "улучши",
-        "посмотри",
-        "проверь",
-        "делай",
-    )
-    if any(marker in lowered for marker in primary_scope_markers) and any(marker in lowered for marker in action_markers):
-        return True
-    return (
-        any(marker in lowered for marker in service_scope_markers)
-        and any(marker in lowered for marker in local_evidence_markers)
-        and any(marker in lowered for marker in action_markers)
-    )
-
-
-def has_external_research_signal(text: str) -> bool:
-    lowered = normalize_whitespace(text).lower()
-    if not lowered:
-        return False
-    if is_local_project_meta_request(lowered):
-        return False
-    triggers = (
-        "найди",
-        "поищи",
-        "поиск",
-        "в интернете",
-        "интернет",
-        "изучи",
-        "исследуй",
-        "что пишут",
-        "свеж",
-        "новост",
-        "latest",
-        "today",
-        "сегодня",
-        "проверь",
-        "погода",
-        "температур",
-        "прогноз",
-        "курс",
-        "доллар",
-        "евро",
-        "битко",
-        "bitcoin",
-        "продаваем",
-    )
-    return any(trigger in lowered for trigger in triggers)
-
-
-def is_product_selection_help_request(text: str) -> bool:
-    lowered = normalize_whitespace(text).lower()
-    if not lowered:
-        return False
-    product_markers = (
-        "смартфон",
-        "телефон",
-        "ноутбук",
-        "планшет",
-        "камера",
-        "наушник",
-        "монитор",
-        "роутер",
-        "товар",
-    )
-    selection_markers = (
-        "помоги выбрать",
-        "помогите выбрать",
-        "что выбрать",
-        "что лучше взять",
-        "лучше взять",
-        "выбор",
-        "бюджет",
-        "до ",
-    )
-    return any(marker in lowered for marker in product_markers) and any(marker in lowered for marker in selection_markers)
-
-
-def is_purchase_advice_request(text: str) -> bool:
-    lowered = normalize_whitespace(text).lower()
-    if not lowered:
-        return False
-    product_markers = (
-        "смартфон",
-        "телефон",
-        "ноутбук",
-        "планшет",
-        "камера",
-        "наушник",
-        "монитор",
-        "роутер",
-        "флагман",
-        "айфон",
-        "iphone",
-        "samsung",
-        "xiaomi",
-        "realme",
-        "oppo",
-        "poco",
-        "pixel",
-        "honor",
-        "vivo",
-        "iqoo",
-    )
-    purchase_markers = (
-        "что купить",
-        "что лучше купить",
-        "что выбрать",
-        "помоги выбрать",
-        "помогите выбрать",
-        "лучше взять",
-        "стоит ли брать",
-        "сравни",
-        "сравнить",
-        "что круче",
-        "круче",
-        "лучше",
-        "бюджет",
-        "до ",
-        "для игр",
-        "для фото",
-        "для фотосъем",
-        "для камеры",
-        "автономност",
-        "производительност",
-    )
-    return any(marker in lowered for marker in product_markers) and any(marker in lowered for marker in purchase_markers)
-
-
-def is_comparison_request(text: str) -> bool:
-    lowered = normalize_whitespace(text).lower()
-    if not lowered:
-        return False
-    comparison_markers = (
-        "сравни",
-        "сравнить",
-        "что лучше",
-        "что круче",
-        "чем отличается",
-        "vs",
-        "versus",
-        "или",
-        "против",
-    )
-    object_markers = (
-        "смартфон",
-        "телефон",
-        "ноутбук",
-        "планшет",
-        "камера",
-        "наушник",
-        "монитор",
-        "роутер",
-        "процессор",
-        "видеокарта",
-        "iphone",
-        "samsung",
-        "xiaomi",
-        "realme",
-        "oppo",
-        "vivo",
-        "honor",
-        "poco",
-        "pixel",
-        "iqoo",
-    )
-    has_compare_marker = any(marker in lowered for marker in comparison_markers)
-    has_object_marker = any(marker in lowered for marker in object_markers)
-    has_pair_shape = " или " in lowered or " vs " in lowered or " versus " in lowered
-    return has_compare_marker and (has_object_marker or has_pair_shape)
-
-
-def is_recommendation_request(text: str) -> bool:
-    lowered = normalize_whitespace(text).lower()
-    if not lowered:
-        return False
-    recommendation_markers = (
-        "посоветуй",
-        "посоветуйте",
-        "порекомендуй",
-        "порекомендуйте",
-        "что взять",
-        "какой взять",
-        "какую взять",
-        "что выбрать",
-        "что посоветуешь",
-        "что порекомендуешь",
-    )
-    topic_markers = (
-        "смартфон",
-        "телефон",
-        "ноутбук",
-        "планшет",
-        "камера",
-        "монитор",
-        "роутер",
-        "игр",
-        "фильм",
-        "сериал",
-        "книга",
-        "наушник",
-        "мыш",
-        "клавиатур",
-        "процессор",
-        "видеокарт",
-    )
-    return any(marker in lowered for marker in recommendation_markers) and (
-        any(marker in lowered for marker in topic_markers) or len(lowered.split()) >= 4
-    )
-
-
-def is_opinion_request(text: str) -> bool:
-    lowered = normalize_whitespace(text).lower()
-    if not lowered:
-        return False
-    markers = (
-        "как думаешь",
-        "как считaешь",
-        "как считаешь",
-        "твое мнение",
-        "твоё мнение",
-        "что скажешь",
-        "нормально ли",
-        "есть смысл",
-        "стоит ли",
-    )
-    return any(marker in lowered for marker in markers)
-
-
-def should_include_event_context(user_text: str) -> bool:
-    text = user_text.lower()
-    markers = [
-        "помнишь", "напомни", "что писал", "что писали", "кто писал", "кто написал",
-        "история", "лог", "перескажи", "вспомни", "что было", "из базы", "по базе",
-        "архив", "раньше", "ранее", "до этого", "в чате", "в группе"
-    ]
-    return detect_local_chat_query(text) or any(marker in text for marker in markers)
-
-
-def detect_runtime_query(user_text: str) -> bool:
-    lowered = normalize_whitespace(user_text).lower()
-    if not lowered:
-        return False
-    token_markers = {"ram", "mem", "cpu"}
-    text_tokens = set(re.findall(r"[a-zа-яё0-9_+-]+", lowered, flags=re.IGNORECASE))
-    for marker in RUNTIME_QUERY_MARKERS:
-        if marker in token_markers:
-            if marker in text_tokens:
-                return True
-            continue
-        if marker in lowered:
-            return True
-    return False
-
-
-def detect_intent(user_text: str) -> str:
-    text = user_text.lower()
-    if detect_runtime_query(text):
-        return "runtime_status"
-    if is_comparison_request(text):
-        return "comparison_request"
-    if is_purchase_advice_request(text):
-        return "purchase_advice"
-    if is_recommendation_request(text):
-        return "recommendation_request"
-    if detect_local_chat_query(text) and not has_external_research_signal(text):
-        return "chat_dynamics"
-    if is_explicit_help_request(text):
-        return "troubleshooting_help"
-    if is_opinion_request(text):
-        return "opinion_request"
-    if any(token in text for token in ["error", "ошибка", "traceback", "exception", "не работает", "сломалось"]):
-        return "error_analysis"
-    if any(token in text for token in ["код", "python", "js", "ts", "bash", "sql", "script", "скрипт", "функц", "класс"]):
-        return "coding"
-    if any(token in text for token in ["сделай", "напиши", "создай", "план", "как лучше", "что делать"]):
-        return "task_solving"
-    if len(text.split()) <= 4:
-        return "short_question"
-    return "general_dialog"
-
-
-def is_explicit_help_request(text: str) -> bool:
-    lowered = normalize_whitespace(text).lower()
-    if not lowered or len(lowered) < 12:
-        return False
-    help_markers = (
-        "помоги",
-        "помогите",
-        "подскажи",
-        "подскажите",
-        "кто знает",
-        "что делать",
-        "как исправить",
-        "как решить",
-        "можно ли",
-        "есть ли",
-        "не работает",
-        "не получается",
-        "не могу",
-        "почему",
-        "как исправить",
-        "как решить",
-        "как выбрать",
-        "как настроить",
-        "зачем",
-        "ошибка",
-        "сломалось",
-        "в чем проблема",
-        "что выбрать",
-        "как лучше",
-    )
-    if not any(marker in lowered for marker in help_markers):
-        return False
-    if "?" in lowered:
-        return True
-    question_words = ("как", "почему", "зачем", "где", "кто", "что", "можно ли", "есть ли")
-    return any(lowered.startswith(word + " ") or f" {word} " in lowered for word in question_words)
+# Router logic migrated to `router/request_router.py`.
+# Compatibility wrappers below remain as the bridge-facing API until all call sites
+# are switched to direct module imports.
 
 
 def compute_group_spontaneous_reply_score(user_text: str) -> int:
@@ -11873,6 +10421,111 @@ ALLOWED_ROUTE_KINDS = {
 }
 
 
+def validate_route_decision(decision: RouteDecision) -> None:
+    return _validate_route_decision(decision, ALLOWED_ROUTE_KINDS)
+
+
+def _build_router_runtime_deps() -> RouterRuntimeDeps:
+    return RouterRuntimeDeps(
+        owner_user_id=OWNER_USER_ID,
+        normalize_whitespace_func=normalize_whitespace,
+        detect_news_query_func=detect_news_query,
+        detect_current_fact_query_func=detect_current_fact_query,
+        detect_weather_location_func=detect_weather_location,
+        detect_currency_pair_func=detect_currency_pair,
+        detect_crypto_asset_func=detect_crypto_asset,
+        detect_stock_symbol_func=detect_stock_symbol,
+        can_owner_use_workspace_mode_func=can_owner_use_workspace_mode,
+        is_dangerous_request_func=is_dangerous_request,
+        validate_route_decision_func=_validate_route_decision,
+    )
+
+
+def detect_local_chat_query(user_text: str) -> bool:
+    return _detect_local_chat_query_module(user_text, normalize_whitespace_func=normalize_whitespace)
+
+
+def is_local_project_meta_request(user_text: str) -> bool:
+    return _is_local_project_meta_request_module(user_text, normalize_whitespace_func=normalize_whitespace)
+
+
+def detect_owner_admin_request(user_text: str, user_id: Optional[int]) -> bool:
+    return _detect_owner_admin_request_module(
+        user_text,
+        user_id,
+        owner_user_id=OWNER_USER_ID,
+        normalize_whitespace_func=normalize_whitespace,
+    )
+
+
+def should_include_database_context(user_text: str) -> bool:
+    return _should_include_database_context_module(user_text)
+
+
+def has_external_research_signal(text: str) -> bool:
+    return _has_external_research_signal_module(text, normalize_whitespace_func=normalize_whitespace)
+
+
+def is_product_selection_help_request(text: str) -> bool:
+    return _is_product_selection_help_request_module(text, normalize_whitespace_func=normalize_whitespace)
+
+
+def is_purchase_advice_request(text: str) -> bool:
+    return _is_purchase_advice_request_module(text, normalize_whitespace_func=normalize_whitespace)
+
+
+def is_comparison_request(text: str) -> bool:
+    return _is_comparison_request_module(text, normalize_whitespace_func=normalize_whitespace)
+
+
+def is_recommendation_request(text: str) -> bool:
+    return _is_recommendation_request_module(text, normalize_whitespace_func=normalize_whitespace)
+
+
+def is_opinion_request(text: str) -> bool:
+    return _is_opinion_request_module(text, normalize_whitespace_func=normalize_whitespace)
+
+
+def should_include_event_context(user_text: str) -> bool:
+    return _should_include_event_context_module(user_text, normalize_whitespace_func=normalize_whitespace)
+
+
+def detect_runtime_query(user_text: str) -> bool:
+    return _detect_runtime_query_module(user_text, normalize_whitespace_func=normalize_whitespace)
+
+
+def detect_intent(user_text: str) -> str:
+    return _detect_intent_module(user_text, normalize_whitespace_func=normalize_whitespace)
+
+
+def is_explicit_help_request(text: str) -> bool:
+    return _is_explicit_help_request_module(text, normalize_whitespace_func=normalize_whitespace)
+
+
+def response_shape_hint(intent: str) -> str:
+    return _response_shape_hint_module(intent)
+
+
+def should_use_web_research(text: str) -> bool:
+    return _should_use_web_research_module(text, normalize_whitespace_func=normalize_whitespace)
+
+
+def classify_request_kind(
+    user_text: str,
+    *,
+    user_id: Optional[int],
+    assistant_persona: str,
+    reply_context: str,
+) -> str:
+    return _classify_request_kind_module(
+        user_text,
+        user_id=user_id,
+        assistant_persona=assistant_persona,
+        reply_context=reply_context,
+        deps=_build_router_runtime_deps(),
+    )
+
+
 def analyze_request_route(
     user_text: str,
     assistant_persona: str,
@@ -11880,64 +10533,14 @@ def analyze_request_route(
     user_id: Optional[int] = None,
     reply_context: str = "",
 ) -> RouteDecision:
-    normalized_text = normalize_whitespace(user_text)
-    local_project_meta_request = is_local_project_meta_request(normalized_text)
-    intent = detect_intent(normalized_text)
-    runtime_query = detect_runtime_query(normalized_text)
-    workspace_allowed = can_owner_use_workspace_mode(user_id, chat_type, assistant_persona)
-    route_kind = "codex_workspace" if workspace_allowed else "codex_chat"
-    source_label = "Enterprise runtime" if runtime_query and workspace_allowed else "Enterprise"
-    live_hits: List[Tuple[str, str]] = []
-    if not local_project_meta_request:
-        for candidate_kind, (candidate_source, detector) in ROUTE_KIND_LIVE_MAP.items():
-            detected_value = detector(normalized_text)
-            if detected_value:
-                live_hits.append((candidate_kind, candidate_source))
-    if live_hits:
-        route_kind, source_label = live_hits[0]
-    use_live = route_kind.startswith("live_")
-    use_web = should_use_web_research(normalized_text) and not use_live and not runtime_query
-    use_events = should_include_event_context(normalized_text) and not runtime_query
-    use_database = should_include_database_context(normalized_text) and not runtime_query
-    use_reply = bool(reply_context.strip())
-    use_workspace = route_kind == "codex_workspace"
-    guardrails: List[str] = []
-    guardrails.extend(ROUTER_POLICY_LESSONS)
-    if use_live:
-        guardrails.append("freshness")
-        guardrails.append("cite-source")
-    if use_web:
-        guardrails.append("external-web")
-    if use_events or use_database or use_reply:
-        guardrails.append("ground-in-chat-state")
-    if intent in {"coding", "error_analysis"}:
-        guardrails.append("be-explicit-about-assumptions")
-    if runtime_query:
-        guardrails.append("runtime-verification")
-    if assistant_persona == "enterprise":
-        guardrails.append("respect-enterprise-mode")
-    if is_dangerous_request(normalized_text):
-        guardrails.append("no-system-actions")
-    decision = RouteDecision(
-        persona=assistant_persona or "jarvis",
-        intent=intent,
-        chat_type=chat_type,
-        route_kind=route_kind,
-        source_label=source_label,
-        use_live=use_live,
-        use_web=use_web,
-        use_events=use_events,
-        use_database=use_database,
-        use_reply=use_reply,
-        use_workspace=use_workspace,
-        guardrails=tuple(guardrails),
+    return _analyze_request_route_module(
+        user_text,
+        assistant_persona,
+        chat_type,
+        user_id=user_id,
+        reply_context=reply_context,
+        deps=_build_router_runtime_deps(),
     )
-    validate_route_decision(decision)
-    return decision
-
-
-def validate_route_decision(decision: RouteDecision) -> None:
-    return _validate_route_decision(decision, ALLOWED_ROUTE_KINDS)
 
 
 def build_route_summary_text(route_info: RouteDecision) -> str:
