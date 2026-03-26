@@ -423,6 +423,8 @@ REPAIR_STATUS_USAGE_TEXT = "Используй: /repairstatus"
 QUALITY_REPORT_USAGE_TEXT = "Используй: /qualityreport"
 SELF_HEAL_STATUS_USAGE_TEXT = "Используй: /selfhealstatus"
 SELF_HEAL_RUN_USAGE_TEXT = "Используй: /selfhealrun <playbook|incident_id> [dry-run|execute]"
+SELF_HEAL_APPROVE_USAGE_TEXT = "Используй: /selfhealapprove <incident_id>"
+SELF_HEAL_DENY_USAGE_TEXT = "Используй: /selfhealdeny <incident_id>"
 ROUTES_USAGE_TEXT = "Используй: /routes [количество]"
 MEMORY_CHAT_USAGE_TEXT = "Используй: /memorychat [запрос]"
 MEMORY_USER_USAGE_TEXT = "Используй: /memoryuser @username, /memoryuser user_id или reply на сообщение участника"
@@ -3689,6 +3691,17 @@ class BridgeState:
                 (effective_limit,),
             ).fetchall()
 
+    def get_self_heal_incident(self, incident_id: int) -> Optional[sqlite3.Row]:
+        with self.db_lock:
+            row = self.db.execute(
+                """SELECT id, problem_type, signal_code, state, severity, summary, evidence, risk_level,
+                          autonomy_level, source, confidence, suggested_playbook, verification_status, lesson_text, created_at, updated_at
+                   FROM self_heal_incidents
+                   WHERE id = ?""",
+                (incident_id,),
+            ).fetchone()
+        return row
+
     def get_world_state_rows(self, category: str = "", limit: int = 10) -> List[sqlite3.Row]:
         effective_limit = max(1, min(30, int(limit)))
         with self.db_lock:
@@ -6424,6 +6437,12 @@ class TelegramBridge:
 
     def handle_self_heal_run_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
         return self.owner_handlers.handle_self_heal_run_command(self, chat_id, user_id, payload)
+
+    def handle_self_heal_approve_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_self_heal_approve_command(self, chat_id, user_id, payload)
+
+    def handle_self_heal_deny_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_self_heal_deny_command(self, chat_id, user_id, payload)
 
     def render_owner_report_text(self, chat_id: int) -> str:
         return self.owner_handlers.render_owner_report_text(self, chat_id)

@@ -84,6 +84,14 @@ def parse_self_heal_run_command(text: str) -> Optional[str]:
     return _parse_payload_command(text, "/selfhealrun", "")
 
 
+def parse_self_heal_approve_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/selfhealapprove", "")
+
+
+def parse_self_heal_deny_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/selfhealdeny", "")
+
+
 def parse_routes_command(text: str) -> Optional[str]:
     return _parse_payload_command(text, "/routes", "")
 

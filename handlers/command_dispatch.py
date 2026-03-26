@@ -29,6 +29,8 @@ from handlers.command_parsers import (
     parse_self_state_command,
     parse_self_heal_run_command,
     parse_self_heal_status_command,
+    parse_self_heal_approve_command,
+    parse_self_heal_deny_command,
     parse_skills_command,
     parse_upgrade_command,
     parse_warn_command,
@@ -118,6 +120,12 @@ class CommandDispatcher:
         self_heal_run_value = parse_self_heal_run_command(text)
         if self_heal_run_value is not None:
             return bridge.handle_self_heal_run_command(chat_id, user_id, self_heal_run_value)
+        self_heal_approve_value = parse_self_heal_approve_command(text)
+        if self_heal_approve_value is not None:
+            return bridge.handle_self_heal_approve_command(chat_id, user_id, self_heal_approve_value)
+        self_heal_deny_value = parse_self_heal_deny_command(text)
+        if self_heal_deny_value is not None:
+            return bridge.handle_self_heal_deny_command(chat_id, user_id, self_heal_deny_value)
         if text == "/qualityreport":
             return bridge.handle_quality_report_command(chat_id, user_id)
         if text == "/rating" and user_id is not None:

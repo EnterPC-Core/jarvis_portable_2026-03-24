@@ -210,6 +210,10 @@ class ControlPanelRenderer:
                 "• /net — сетевые интерфейсы и трафик\n"
                 "• /restart — перезапуск bridge через supervisor\n"
                 "• /ownerautofix on|off|status — автоисправление текста владельца"
+                "\n• /selfhealstatus — последние self-heal incidents и state machine"
+                "\n• /selfhealrun <playbook|incident_id> [dry-run|execute] — bounded self-heal запуск"
+                "\n• /selfhealapprove <incident_id> — owner approval queued incident"
+                "\n• /selfhealdeny <incident_id> — deny/manual follow-up"
             )
             markup = {
                 "inline_keyboard": [

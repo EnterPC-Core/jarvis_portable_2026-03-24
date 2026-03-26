@@ -19,6 +19,8 @@ ADMIN_COMMAND_SPECS: Tuple[AdminCommandSpec, ...] = (
     AdminCommandSpec("/qualityreport", "/qualityreport", "owner_private", "diagnostics", "request_diagnostics+world_state", "Агрегированная сводка по verified/inferred/insufficient и деградациям."),
     AdminCommandSpec("/selfhealstatus", "/selfhealstatus", "owner_private", "diagnostics", "self_heal_incidents", "Статус self-healing state machine и последние incidents."),
     AdminCommandSpec("/selfhealrun", "/selfhealrun <playbook|incident_id> [dry-run|execute]", "owner_private", "diagnostics", "self_heal_policy+playbooks", "Dry-run или bounded execute для self-healing playbook."),
+    AdminCommandSpec("/selfhealapprove", "/selfhealapprove <incident_id>", "owner_private", "diagnostics", "self_heal_incidents+policy", "Owner approval для queued self-heal incident."),
+    AdminCommandSpec("/selfhealdeny", "/selfhealdeny <incident_id>", "owner_private", "diagnostics", "self_heal_incidents+policy", "Owner deny/manual follow-up для queued self-heal incident."),
     AdminCommandSpec("/errors", "/errors [количество]", "owner_private", "diagnostics", "runtime_log", "Последние реальные ошибки из логов."),
     AdminCommandSpec("/events", "/events [restart|access|system|all] [количество]", "owner_private", "diagnostics", "runtime_log", "Последние operational-события."),
     AdminCommandSpec("/routes", "/routes [количество]", "owner_private", "route_audit", "request_diagnostics", "Последние route/self-check telemetry записи."),

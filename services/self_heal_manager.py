@@ -2,6 +2,7 @@ from typing import Iterable, List
 
 from services.failure_detectors import detect_failure_signals
 from services.repair_contracts import (
+    AUTONOMY_FORBIDDEN,
     SELF_HEAL_STATE_AWAITING_APPROVAL,
     SELF_HEAL_STATE_CLASSIFIED,
     SELF_HEAL_STATE_DEGRADED_MANUAL_FOLLOWUP,
@@ -189,6 +190,7 @@ def run_self_heal_playbook(
     *,
     selector: str,
     execute: bool,
+    approved_by_owner: bool = False,
 ) -> str:
     cleaned = (selector or "").strip()
     if not cleaned:
@@ -214,6 +216,14 @@ def run_self_heal_playbook(
             confidence=0.8,
             suggested_playbook=playbook.playbook_id,
         )
+    if policy.forbidden:
+        return (
+            "SELF-HEAL RUN\n\n"
+            f"selector={cleaned}\nplaybook={playbook.playbook_id}\nmode=blocked\n"
+            f"autonomy={policy.autonomy_level}\nrisk={policy.risk_level}\nreason={policy.rationale}"
+        )
+    require_owner_approval = policy.require_owner_approval and not approved_by_owner
+    allow_execute = policy.allow_auto_repair or approved_by_owner
     plan = SelfHealingPlan(
         incident_id=incident_id,
         problem_type=playbook.target_problem_type or "failing_health_checks",
@@ -223,8 +233,8 @@ def run_self_heal_playbook(
         actions=playbook.actions,
         verification_steps=playbook.verification_steps,
         rollback_steps=playbook.rollback_steps,
-        require_owner_approval=policy.require_owner_approval,
-        dry_run=(not execute) or policy.dry_run_only or not policy.allow_auto_repair,
+        require_owner_approval=require_owner_approval,
+        dry_run=(not execute) or require_owner_approval or (policy.dry_run_only and not approved_by_owner) or not allow_execute,
     )
     if plan.dry_run:
         return (
@@ -276,6 +286,42 @@ def run_self_heal_playbook(
         f"execution={execution.status}\nverified={'yes' if verification.verified else 'no'}\n"
         f"remaining_issues={', '.join(verification.remaining_issues) or '-'}\n"
         f"regressions={', '.join(verification.regressions_detected) or '-'}"
+    )
+
+
+def approve_self_heal_incident(bridge: "TelegramBridge", *, incident_id: int) -> str:
+    row = bridge.state.get_self_heal_incident(incident_id)
+    if row is None:
+        return f"SELF-HEAL APPROVE\n\nincident={incident_id} не найден"
+    playbook_id = str(row["suggested_playbook"] or "")
+    if not playbook_id:
+        return f"SELF-HEAL APPROVE\n\nincident={incident_id} не содержит suggested_playbook"
+    bridge.state.update_self_heal_incident_state(
+        incident_id,
+        new_state=SELF_HEAL_STATE_REPAIR_PLANNED,
+        note="owner approved self-heal incident",
+    )
+    result = run_self_heal_playbook(
+        bridge,
+        selector=str(incident_id),
+        execute=True,
+        approved_by_owner=True,
+    )
+    return f"SELF-HEAL APPROVE\n\nincident={incident_id}\nplaybook={playbook_id}\n\n{result}"
+
+
+def deny_self_heal_incident(bridge: "TelegramBridge", *, incident_id: int) -> str:
+    row = bridge.state.get_self_heal_incident(incident_id)
+    if row is None:
+        return f"SELF-HEAL DENY\n\nincident={incident_id} не найден"
+    bridge.state.update_self_heal_incident_state(
+        incident_id,
+        new_state=SELF_HEAL_STATE_DEGRADED_MANUAL_FOLLOWUP,
+        note="owner denied self-heal execution",
+    )
+    return (
+        "SELF-HEAL DENY\n\n"
+        f"incident={incident_id}\nproblem={row['problem_type']}\nstate=degraded_manual_followup"
     )
 
 

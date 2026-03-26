@@ -4,7 +4,12 @@ from typing import Callable, Dict, Optional
 from services.diagnostics_metrics import collect_diagnostics_metrics, render_diagnostics_metrics
 from services.failure_detectors import detect_failure_signals, render_failure_signals
 from services.repair_playbooks import render_playbook_summary, select_playbooks_for_signals
-from services.self_heal_manager import render_self_heal_status, run_self_heal_playbook
+from services.self_heal_manager import (
+    approve_self_heal_incident,
+    deny_self_heal_incident,
+    render_self_heal_status,
+    run_self_heal_playbook,
+)
 from utils.text_utils import normalize_whitespace, truncate_text
 
 
@@ -337,6 +342,28 @@ class OwnerCommandService:
         mode = parts[1].strip().lower() if len(parts) > 1 else "dry-run"
         execute = mode == "execute"
         bridge.safe_send_text(chat_id, run_self_heal_playbook(bridge, selector=selector, execute=execute))
+        return True
+
+    def handle_self_heal_approve_command(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        if not self.is_owner_private_chat_func(user_id, chat_id):
+            bridge.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        cleaned = (payload or "").strip()
+        if not cleaned.isdigit():
+            bridge.safe_send_text(chat_id, "Используй: /selfhealapprove <incident_id>")
+            return True
+        bridge.safe_send_text(chat_id, approve_self_heal_incident(bridge, incident_id=int(cleaned)))
+        return True
+
+    def handle_self_heal_deny_command(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        if not self.is_owner_private_chat_func(user_id, chat_id):
+            bridge.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        cleaned = (payload or "").strip()
+        if not cleaned.isdigit():
+            bridge.safe_send_text(chat_id, "Используй: /selfhealdeny <incident_id>")
+            return True
+        bridge.safe_send_text(chat_id, deny_self_heal_incident(bridge, incident_id=int(cleaned)))
         return True
 
     def render_owner_report_text(self, bridge: "TelegramBridge", chat_id: int) -> str:

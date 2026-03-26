@@ -298,6 +298,36 @@ def main() -> int:
                     raise RuntimeError("self-heal status command was not handled")
                 if not bot.handle_self_heal_run_command(bridge.OWNER_USER_ID, bridge.OWNER_USER_ID, "refresh_runtime_state"):
                     raise RuntimeError("self-heal run command was not handled")
+                incident_id = bot.state.record_self_heal_incident(
+                    problem_type="runtime_degraded",
+                    signal_code="manual:refresh_runtime_state",
+                    state="awaiting_approval",
+                    severity="medium",
+                    summary="manual approval smoke incident",
+                    evidence="smoke",
+                    risk_level="medium",
+                    autonomy_level="REQUIRE_OWNER_APPROVAL",
+                    source="smoke_check",
+                    confidence=0.7,
+                    suggested_playbook="refresh_runtime_state",
+                )
+                if not bot.handle_self_heal_deny_command(bridge.OWNER_USER_ID, bridge.OWNER_USER_ID, str(incident_id)):
+                    raise RuntimeError("self-heal deny command was not handled")
+                incident_id_approve = bot.state.record_self_heal_incident(
+                    problem_type="runtime_degraded",
+                    signal_code="manual:refresh_runtime_state",
+                    state="awaiting_approval",
+                    severity="medium",
+                    summary="manual approval execute smoke incident",
+                    evidence="smoke",
+                    risk_level="medium",
+                    autonomy_level="REQUIRE_OWNER_APPROVAL",
+                    source="smoke_check",
+                    confidence=0.7,
+                    suggested_playbook="refresh_runtime_state",
+                )
+                if not bot.handle_self_heal_approve_command(bridge.OWNER_USER_ID, bridge.OWNER_USER_ID, str(incident_id_approve)):
+                    raise RuntimeError("self-heal approve command was not handled")
             finally:
                 bot.safe_send_text = original_safe_send_text
             if not any("QUALITY REPORT" in item for item in sent_messages):
@@ -306,6 +336,10 @@ def main() -> int:
                 raise RuntimeError("self-heal status command renderer regressed")
             if not any("mode=dry-run" in item for item in sent_messages):
                 raise RuntimeError("self-heal run dry-run renderer regressed")
+            if not any("SELF-HEAL DENY" in item for item in sent_messages):
+                raise RuntimeError("self-heal deny renderer regressed")
+            if not any("SELF-HEAL APPROVE" in item for item in sent_messages):
+                raise RuntimeError("self-heal approve renderer regressed")
             if not bot.should_process_group_message(
                 {
                     "text": "Jarvis?",

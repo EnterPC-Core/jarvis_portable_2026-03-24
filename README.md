@@ -279,6 +279,7 @@ sh tools/refresh_repo_state.sh
 - у владельца есть `/ownerreport` для быстрой сводки по runtime и ошибкам: CPU/RAM/disk, heartbeat, bot/supervisor process, рестарты за 24ч, backup и хвосты `tg_codex_bridge.log` / `supervisor_boot.log`
 - у владельца есть `/qualityreport` для отдельного среза по `verified/inferred/insufficient`, degraded routes, stale live и memory/tool usage
 - у владельца есть `/selfhealstatus` и `/selfhealrun` для bounded self-healing: status/history и dry-run/guarded playbook execution
+- у владельца есть `/selfhealapprove` и `/selfhealdeny` для approval gate по queued self-heal incidents
 - ежедневный digest и еженедельный owner-report могут отправляться автоматически владельцу по UTC-расписанию
 - есть отдельные owner-команды `/gitstatus`, `/gitlast`, `/errors`, `/events`, `/routes`, `/chatdigest`
 - есть отдельные owner memory-inspection команды `/memorychat`, `/memoryuser`, `/memorysummary`

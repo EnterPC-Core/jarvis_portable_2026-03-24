@@ -270,6 +270,8 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/qualityreport` — приватный diagnostics-срез по `verified/inferred/insufficient`, stale live и degraded routes
 - `/selfhealstatus` — приватный статус self-healing incidents/state machine
 - `/selfhealrun <playbook|incident_id> [dry-run|execute]` — bounded dry-run/guarded execute для self-healing playbook
+- `/selfhealapprove <incident_id>` — owner approval для incident, который ждёт разрешения
+- `/selfhealdeny <incident_id>` — перевести incident в manual follow-up / deny
 - `/gitstatus` — текущее состояние git-ветки и worktree
 - `/gitlast [N]` — последние коммиты
 - `/errors [N]` — только реальные ошибки и поломки из `tg_codex_bridge.log`

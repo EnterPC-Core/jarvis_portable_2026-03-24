@@ -55,6 +55,8 @@
 - `/qualityreport`
 - `/selfhealstatus`
 - `/selfhealrun <playbook|incident_id> [dry-run|execute]`
+- `/selfhealapprove <incident_id>`
+- `/selfhealdeny <incident_id>`
 - `/resources`
 - `/topproc`
 - `/disk`
