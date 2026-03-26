@@ -11,8 +11,8 @@ if str(ROOT) not in sys.path:
 
 def main() -> int:
     os.environ.setdefault("BOT_TOKEN", "smoke-check-token")
-
     import tg_codex_bridge as bridge
+    from handlers.ui_handlers import PANEL_TEXT_SAFE_LIMIT, fit_panel_text
     from services.auto_moderation import detect_auto_moderation_decision, get_group_rules_text
     from services.diagnostics_metrics import collect_diagnostics_metrics, render_diagnostics_metrics
     from services.failure_detectors import detect_failure_signals
@@ -163,16 +163,25 @@ def main() -> int:
             raise RuntimeError("start text does not mention beta mode")
         signals = detect_failure_signals(
             runtime_snapshot={"restart_count": 4, "last_restart_at": 1, "heartbeat_kill_count": 0, "warning_count": 0, "severe_error_count": 0},
-            recent_errors=[],
+            recent_errors=["sqlite3.OperationalError: database is locked"],
             recent_routes=[],
             heartbeat_timeout_seconds=90,
+            heartbeat_exists=False,
             now_ts=100,
         )
         playbooks = select_playbooks_for_signals(signals)
         if not any(signal.signal_code == "restart_loop" for signal in signals):
             raise RuntimeError("failure detector did not emit restart_loop signal")
+        if not any(signal.signal_code == "sqlite_lock" for signal in signals):
+            raise RuntimeError("failure detector did not emit sqlite_lock signal")
+        if not any(signal.signal_code == "missing_runtime_artifact" for signal in signals):
+            raise RuntimeError("failure detector did not emit missing_runtime_artifact signal")
         if not any(playbook.playbook_id == "restart_runtime" for playbook in playbooks):
             raise RuntimeError("repair playbook selector did not return restart_runtime")
+        if not any(playbook.playbook_id == "recover_sqlite_lock" for playbook in playbooks):
+            raise RuntimeError("repair playbook selector did not return recover_sqlite_lock")
+        if not any(playbook.playbook_id == "reinitialize_missing_runtime_artifact" for playbook in playbooks):
+            raise RuntimeError("repair playbook selector did not return reinitialize_missing_runtime_artifact")
         if "не абсолютная истина" not in bridge.PUBLIC_HOME_TEXT.lower():
             raise RuntimeError("public home text does not mention beta caution")
         all_pedals_rules = get_group_rules_text("Все педали!")
@@ -270,6 +279,8 @@ def main() -> int:
         try:
             if "Failure classifier" not in run_self_heal_cycle(bot, source="smoke_check", auto_execute=False):
                 raise RuntimeError("self-heal cycle renderer regressed")
+            if "AUTO SELF-HEAL" not in bot.run_auto_repair_loop("smoke_check"):
+                raise RuntimeError("auto self-heal loop renderer regressed")
             if "JARVIS" not in bot.build_help_panel_text("public"):
                 raise RuntimeError("bridge help panel adapter regressed")
             if "inline_keyboard" not in bot.build_help_panel_markup("public"):
@@ -278,11 +289,16 @@ def main() -> int:
             if "JARVIS" not in public_panel_text or "inline_keyboard" not in public_panel_markup:
                 raise RuntimeError("public control panel renderer regressed")
             owner_panel_text, owner_panel_markup = bot.build_control_panel(bridge.OWNER_USER_ID, "owner_root")
-            if "OWNER PANEL" not in owner_panel_text or "inline_keyboard" not in owner_panel_markup:
+            if "ПАНЕЛЬ ВЛАДЕЛЬЦА" not in owner_panel_text or "inline_keyboard" not in owner_panel_markup:
                 raise RuntimeError("owner control panel renderer regressed")
             self_heal_panel_text, self_heal_panel_markup = bot.build_control_panel(bridge.OWNER_USER_ID, "owner_selfheal")
-            if "OWNER SELF-HEAL" not in self_heal_panel_text or "inline_keyboard" not in self_heal_panel_markup:
+            if "АВТОВОССТАНОВЛЕНИЕ" not in self_heal_panel_text or "inline_keyboard" not in self_heal_panel_markup:
                 raise RuntimeError("owner self-heal panel renderer regressed")
+            owner_commands_text, owner_commands_markup = bot.build_control_panel(bridge.OWNER_USER_ID, "owner_commands")
+            if "inline_keyboard" not in owner_commands_markup:
+                raise RuntimeError("owner commands panel markup regressed")
+            if len(fit_panel_text(owner_commands_text)) > PANEL_TEXT_SAFE_LIMIT:
+                raise RuntimeError("owner commands panel length guard regressed")
             owner_report_text = bot.render_owner_report_text(bridge.OWNER_USER_ID)
             if "Quality diagnostics" not in owner_report_text:
                 raise RuntimeError("owner report diagnostics section regressed")

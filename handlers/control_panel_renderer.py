@@ -30,6 +30,19 @@ class ControlPanelRenderer:
         self.render_git_last_commits = render_git_last_commits_func
         self.render_admin_command_catalog = render_admin_command_catalog_func
 
+    def _build_owner_commands_text(self) -> str:
+        catalog_text = self.render_admin_command_catalog(
+            owner_user_id=self.owner_user_id,
+            owner_username=self.owner_username,
+        )
+        legacy_preview = self.truncate_text(self.commands_list_text.strip(), 1800)
+        return (
+            f"{catalog_text}\n\n"
+            "Legacy-команды, краткий просмотр:\n\n"
+            f"{legacy_preview}\n\n"
+            "Если нужен полный список без сокращений, используй /help, /commands или открой COMMANDS.md."
+        )
+
     def build_public_control_panel(self, bridge: "TelegramBridge", user_id: int, section: str, payload: str = "") -> Tuple[str, dict]:
         if section == "profile":
             return (
@@ -105,7 +118,7 @@ class ControlPanelRenderer:
         if not has_full_access:
             return self.build_public_control_panel(bridge, user_id, section, payload)
         if section == "admin_warns" and user_id == self.owner_user_id:
-            warn_lines = ["JARVIS • WARN SYSTEM", ""]
+            warn_lines = ["JARVIS • НАСТРОЙКИ ПРЕДУПРЕЖДЕНИЙ", ""]
             with bridge.state.db_lock:
                 rows = bridge.state.db.execute(
                     "SELECT chat_id, warn_limit, warn_mode, warn_expire_seconds FROM warn_settings ORDER BY chat_id DESC LIMIT 8"
@@ -161,14 +174,14 @@ class ControlPanelRenderer:
                         lines.append(f"  {self.truncate_text(row[4], 90)}")
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Warn settings", "callback_data": "ui:adm:warns"}, {"text": "Очередь апелляций", "callback_data": "ui:adm:queue"}],
+                    [{"text": "Настройки предупреждений", "callback_data": "ui:adm:warns"}, {"text": "Очередь апелляций", "callback_data": "ui:adm:queue"}],
                     [{"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
             return "\n".join(lines), markup
         if section == "owner_root" and user_id == self.owner_user_id:
             text = (
-                "JARVIS • OWNER PANEL\n\n"
+                "JARVIS • ПАНЕЛЬ ВЛАДЕЛЬЦА\n\n"
                 "Это центральная админ-панель проекта.\n"
                 "Здесь собраны все owner-команды, runtime-сводки, git/logs сценарии, работа с памятью чатов, файлами и live-data.\n\n"
                 "Как пользоваться:\n"
@@ -177,20 +190,20 @@ class ControlPanelRenderer:
                 "• команды с параметрами здесь описаны с примерами и usage-шаблонами\n"
                 "• если нужен полный справочник без сокращений, открывай раздел «Все команды»\n\n"
                 "Разделы:\n"
-                "• Runtime: здоровье процесса, ресурсы, рестарт, owner report\n"
-                "• Git и логи: branch, commits, ошибки, upgrade\n"
+                "• Среда и runtime: здоровье процесса, ресурсы, перезапуск, owner report\n"
+                "• Git и логи: ветка, коммиты, ошибки, upgrade\n"
                 "• Память и чаты: history, digest, recall, portraits, export\n"
                 "• Файлы и медиа: sdcard-команды, файлы, документы, media-context\n"
-                "• Live-data: погода, курсы, новости, current-facts\n"
-                "• Self-heal: incidents, approval gate, bounded repair playbooks\n"
-                "• Модерация: sanctions, warns, welcome, appeals\n"
+                "• Live-данные: погода, курсы, новости, current-facts\n"
+                "• Автовосстановление: инциденты, approval gate, безопасные repair playbooks\n"
+                "• Модерация: санкции, предупреждения, welcome, appeals\n"
                 "• Все команды: полный текстовый реестр проекта"
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Git и логи", "callback_data": "ui:panel:owner_git"}],
+                    [{"text": "Среда и runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Git и логи", "callback_data": "ui:panel:owner_git"}],
                     [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}],
-                    [{"text": "Live-data", "callback_data": "ui:panel:owner_live"}, {"text": "Self-heal", "callback_data": "ui:panel:owner_selfheal"}],
+                    [{"text": "Live-данные", "callback_data": "ui:panel:owner_live"}, {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
                     [{"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
                     [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
                     [{"text": "Главная", "callback_data": "ui:home"}],
@@ -199,7 +212,7 @@ class ControlPanelRenderer:
             return text, markup
         if section == "owner_runtime" and user_id == self.owner_user_id:
             text = (
-                "JARVIS • OWNER RUNTIME\n\n"
+                "JARVIS • СРЕДА И RUNTIME\n\n"
                 "Раздел для проверки живости бота и текущего runtime.\n"
                 "Сюда имеет смысл идти, если бот тупит, не отвечает, медленно работает или нужно понять общее состояние среды.\n\n"
                 f"{bridge.render_owner_report_text(user_id)}\n\n"
@@ -219,7 +232,7 @@ class ControlPanelRenderer:
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Git и логи", "callback_data": "ui:panel:owner_git"}, {"text": "Self-heal", "callback_data": "ui:panel:owner_selfheal"}],
+                    [{"text": "Git и логи", "callback_data": "ui:panel:owner_git"}, {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
                     [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}],
                     [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
                     [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
@@ -228,7 +241,7 @@ class ControlPanelRenderer:
             return text, markup
         if section == "owner_git" and user_id == self.owner_user_id:
             text = (
-                "JARVIS • OWNER GIT / LOGS\n\n"
+                "JARVIS • GIT И ЛОГИ\n\n"
                 "Раздел для проектных изменений, истории коммитов и ошибок runtime.\n"
                 "Если нужно понять, что поменялось, в каком состоянии git и что сломалось в хвосте логов, смотреть сюда.\n\n"
                 f"{self.render_git_status_summary(bridge.script_path.parent)}\n\n"
@@ -254,14 +267,14 @@ class ControlPanelRenderer:
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Ошибки / логи", "callback_data": "ui:panel:owner_commands"}],
+                    [{"text": "Среда и runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Ошибки / логи", "callback_data": "ui:panel:owner_commands"}],
                     [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
             return text, markup
         if section == "owner_memory" and user_id == self.owner_user_id:
             text = (
-                "JARVIS • OWNER MEMORY / CHAT\n\n"
+                "JARVIS • ПАМЯТЬ И ЧАТЫ\n\n"
                 "Раздел для памяти, поиска по событиям и анализа конкретных чатов/участников.\n"
                 "Подходит, когда нужно поднять историю, найти автора фразы, собрать digest или посмотреть профиль участника.\n\n"
                 "Команды раздела:\n"
@@ -285,14 +298,14 @@ class ControlPanelRenderer:
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}, {"text": "Live-data", "callback_data": "ui:panel:owner_live"}],
+                    [{"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}, {"text": "Live-данные", "callback_data": "ui:panel:owner_live"}],
                     [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
             return text, markup
         if section == "owner_files" and user_id == self.owner_user_id:
             text = (
-                "JARVIS • OWNER FILES / MEDIA\n\n"
+                "JARVIS • ФАЙЛЫ И МЕДИА\n\n"
                 "Раздел для файловых сценариев и media-aware поведения.\n"
                 "Если нужно лазить по /sdcard, переслать файл, сохранить вложение или понять, как bot разбирает документы и фото, это здесь.\n\n"
                 "Команды раздела:\n"
@@ -310,14 +323,14 @@ class ControlPanelRenderer:
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Live-data", "callback_data": "ui:panel:owner_live"}],
+                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Live-данные", "callback_data": "ui:panel:owner_live"}],
                     [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
             return text, markup
         if section == "owner_live" and user_id == self.owner_user_id:
             text = (
-                "JARVIS • OWNER LIVE DATA\n\n"
+                "JARVIS • LIVE-ДАННЫЕ\n\n"
                 "Раздел для всех live-data маршрутов.\n"
                 "Сюда относятся запросы, где важна свежесть данных: погода, курсы, рынок, новости, current facts.\n\n"
                 "Live-маршруты:\n"
@@ -354,8 +367,8 @@ class ControlPanelRenderer:
                 incident = None
             if incident is not None:
                 text = (
-                    "JARVIS • OWNER SELF-HEAL\n\n"
-                    f"Incident #{int(incident['id'])}\n"
+                    "JARVIS • АВТОВОССТАНОВЛЕНИЕ\n\n"
+                    f"Инцидент #{int(incident['id'])}\n"
                     f"problem={incident['problem_type']}\n"
                     f"signal={incident['signal_code']}\n"
                     f"state={incident['state']}\n"
@@ -364,22 +377,29 @@ class ControlPanelRenderer:
                     f"autonomy={incident['autonomy_level']}\n"
                     f"playbook={incident['suggested_playbook'] or '-'}\n"
                     f"verification={incident['verification_status'] or '-'}\n\n"
-                    f"summary:\n{incident['summary'] or '-'}\n\n"
-                    f"evidence:\n{self.truncate_text(incident['evidence'] or '-', 500)}"
+                    f"что случилось:\n{incident['summary'] or '-'}\n\n"
+                    f"подтверждение:\n{self.truncate_text(incident['evidence'] or '-', 500)}"
                 )
                 keyboard = []
                 if str(incident["state"] or "") in {"awaiting_approval", "repair_planned"}:
                     keyboard.append(
                         [
-                            {"text": "Approve", "callback_data": f"ui:selfheal:approve:{int(incident['id'])}"},
-                            {"text": "Deny", "callback_data": f"ui:selfheal:deny:{int(incident['id'])}"},
+                            {"text": "Одобрить", "callback_data": f"ui:selfheal:approve:{int(incident['id'])}"},
+                            {"text": "Отклонить", "callback_data": f"ui:selfheal:deny:{int(incident['id'])}"},
                         ]
                     )
                 keyboard.append([{"text": "К списку", "callback_data": "ui:panel:owner_selfheal"}])
+                keyboard.append([{"text": "Очередь согласования", "callback_data": "ui:panel:owner_selfheal_queue"}])
                 keyboard.append([{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}])
                 return text, {"inline_keyboard": keyboard}
             lines = [
-                "JARVIS • OWNER SELF-HEAL",
+                "JARVIS • АВТОВОССТАНОВЛЕНИЕ",
+                "",
+                "Здесь собраны автоматические инциденты, безопасные repair-playbook'и и ручные owner-решения.",
+                "Когда использовать:",
+                "• если бот сам что-то чинит",
+                "• если нужен dry-run или ручной approve/deny",
+                "• если нужно понять, что именно сломалось и что уже проверено",
                 "",
                 "Команды:",
                 "• /selfhealstatus",
@@ -387,7 +407,7 @@ class ControlPanelRenderer:
                 "• /selfhealapprove <incident_id>",
                 "• /selfhealdeny <incident_id>",
                 "",
-                "Последние incidents:",
+                "Последние инциденты:",
             ]
             keyboard = []
             if not incidents:
@@ -398,14 +418,46 @@ class ControlPanelRenderer:
                         f"• #{int(row['id'])} {row['problem_type']} [{row['state']}] playbook={row['suggested_playbook'] or '-'}"
                     )
                     keyboard.append(
-                        [{"text": f"Incident #{int(row['id'])}", "callback_data": f"ui:selfheal:view:{int(row['id'])}"}]
+                        [{"text": f"Инцидент #{int(row['id'])}", "callback_data": f"ui:selfheal:view:{int(row['id'])}"}]
                     )
-            keyboard.append([{"text": "Runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Все команды", "callback_data": "ui:panel:owner_commands"}])
+            keyboard.append([{"text": "Очередь согласования", "callback_data": "ui:panel:owner_selfheal_queue"}])
+            keyboard.append([{"text": "Среда и runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Все команды", "callback_data": "ui:panel:owner_commands"}])
             keyboard.append([{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}])
+            return "\n".join(lines), {"inline_keyboard": keyboard}
+        if section == "owner_selfheal_queue" and user_id == self.owner_user_id:
+            incidents = [
+                row for row in bridge.state.get_recent_self_heal_incidents(limit=20)
+                if str(row["state"] or "") in {"awaiting_approval", "repair_planned"}
+            ]
+            lines = [
+                "JARVIS • ОЧЕРЕДЬ СОГЛАСОВАНИЯ АВТОВОССТАНОВЛЕНИЯ",
+                "",
+                "Здесь только те инциденты, которые ждут решения владельца.",
+                "Если одобряешь, бот выполнит только разрешённый bounded playbook и потом сам себя проверит.",
+                "",
+                "Инциденты в очереди:",
+            ]
+            keyboard = []
+            if not incidents:
+                lines.append("Очередь пуста.")
+            else:
+                for row in incidents[:8]:
+                    lines.append(
+                        f"• #{int(row['id'])} {row['problem_type']} [{row['state']}] playbook={row['suggested_playbook'] or '-'}"
+                    )
+                    keyboard.append(
+                        [
+                            {"text": f"Открыть #{int(row['id'])}", "callback_data": f"ui:selfheal:view:{int(row['id'])}"},
+                            {"text": "Одобрить", "callback_data": f"ui:selfheal:approve:{int(row['id'])}"},
+                            {"text": "Отклонить", "callback_data": f"ui:selfheal:deny:{int(row['id'])}"},
+                        ]
+                    )
+            keyboard.append([{"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}, {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}])
+            keyboard.append([{"text": "Главная", "callback_data": "ui:home"}])
             return "\n".join(lines), {"inline_keyboard": keyboard}
         if section == "owner_moderation" and user_id == self.owner_user_id:
             text = (
-                "JARVIS • OWNER MODERATION\n\n"
+                "JARVIS • МОДЕРАЦИЯ И АПЕЛЛЯЦИИ\n\n"
                 "Раздел для администрирования групп: санкции, auto-moderation, warns, welcome и appeals.\n"
                 "Здесь собраны команды и правила, которые сейчас реально действуют в runtime.\n\n"
                 "Auto-moderation сейчас:\n"
@@ -448,17 +500,11 @@ class ControlPanelRenderer:
             }
             return text, markup
         if section == "owner_commands" and user_id == self.owner_user_id:
-            text = (
-                self.render_admin_command_catalog(
-                    owner_user_id=self.owner_user_id,
-                    owner_username=self.owner_username,
-                )
-                + "\n\nПолный legacy-список команд:\n\n"
-                + self.commands_list_text
-            )
+            text = "JARVIS • СПРАВОЧНИК OWNER/ADMIN КОМАНД\n\n" + self._build_owner_commands_text()
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Owner panel", "callback_data": "ui:panel:owner_root"}],
+                    [{"text": "Среда и runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
+                    [{"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
                     [{"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }

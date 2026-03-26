@@ -15,12 +15,12 @@ class AdminCommandSpec:
 ADMIN_COMMAND_SPECS: Tuple[AdminCommandSpec, ...] = (
     AdminCommandSpec("/status", "/status", "access", "runtime_audit", "sqlite_snapshot", "Локальный снимок состояния runtime и памяти."),
     AdminCommandSpec("/restart", "/restart", "owner_private", "runtime_audit", "supervisor", "Перезапуск bridge через supervisor."),
-    AdminCommandSpec("/ownerreport", "/ownerreport", "owner_private", "runtime_audit", "runtime_probe+world_state", "Подробный operational report."),
+    AdminCommandSpec("/ownerreport", "/ownerreport", "owner_private", "runtime_audit", "runtime_probe+world_state", "Подробный отчёт по состоянию среды, памяти, world-state и route diagnostics."),
     AdminCommandSpec("/qualityreport", "/qualityreport", "owner_private", "diagnostics", "request_diagnostics+world_state", "Агрегированная сводка по verified/inferred/insufficient и деградациям."),
-    AdminCommandSpec("/selfhealstatus", "/selfhealstatus", "owner_private", "diagnostics", "self_heal_incidents", "Статус self-healing state machine и последние incidents."),
-    AdminCommandSpec("/selfhealrun", "/selfhealrun <playbook|incident_id> [dry-run|execute]", "owner_private", "diagnostics", "self_heal_policy+playbooks", "Dry-run или bounded execute для self-healing playbook."),
-    AdminCommandSpec("/selfhealapprove", "/selfhealapprove <incident_id>", "owner_private", "diagnostics", "self_heal_incidents+policy", "Owner approval для queued self-heal incident."),
-    AdminCommandSpec("/selfhealdeny", "/selfhealdeny <incident_id>", "owner_private", "diagnostics", "self_heal_incidents+policy", "Owner deny/manual follow-up для queued self-heal incident."),
+    AdminCommandSpec("/selfhealstatus", "/selfhealstatus", "owner_private", "diagnostics", "self_heal_incidents", "Статус автоматики восстановления, последние инциденты и их состояния."),
+    AdminCommandSpec("/selfhealrun", "/selfhealrun <playbook|incident_id> [dry-run|execute]", "owner_private", "diagnostics", "self_heal_policy+playbooks", "Dry-run или ограниченный запуск playbook по правилам безопасности."),
+    AdminCommandSpec("/selfhealapprove", "/selfhealapprove <incident_id>", "owner_private", "diagnostics", "self_heal_incidents+policy", "Одобрение отложенного инцидента, который ждёт решения владельца."),
+    AdminCommandSpec("/selfhealdeny", "/selfhealdeny <incident_id>", "owner_private", "diagnostics", "self_heal_incidents+policy", "Отклонение авто-ремонта и перевод кейса в ручное сопровождение."),
     AdminCommandSpec("/errors", "/errors [количество]", "owner_private", "diagnostics", "runtime_log", "Последние реальные ошибки из логов."),
     AdminCommandSpec("/events", "/events [restart|access|system|all] [количество]", "owner_private", "diagnostics", "runtime_log", "Последние operational-события."),
     AdminCommandSpec("/routes", "/routes [количество]", "owner_private", "route_audit", "request_diagnostics", "Последние route/self-check telemetry записи."),
@@ -63,17 +63,17 @@ def iter_admin_commands() -> Tuple[AdminCommandSpec, ...]:
 
 def render_admin_command_catalog(*, owner_user_id: int, owner_username: str) -> str:
     sections = (
-        ("runtime_audit", "Runtime audit"),
-        ("diagnostics", "Diagnostics"),
-        ("route_audit", "Route audit"),
-        ("memory_audit", "Memory audit"),
-        ("moderation_audit", "Moderation audit"),
+        ("runtime_audit", "Среда и runtime"),
+        ("diagnostics", "Диагностика и автовосстановление"),
+        ("route_audit", "Маршрутизация"),
+        ("memory_audit", "Память и контекст"),
+        ("moderation_audit", "Модерация"),
     )
     lines = [
-        "JARVIS • OWNER/ADMIN COMMAND REGISTRY",
+        "JARVIS • РЕЕСТР OWNER/ADMIN КОМАНД",
         "",
-        "Ниже команды, сгруппированные по operational-доменам.",
-        "Это registry для owner/admin surface, а не просто плоский help-текст.",
+        "Ниже команды, сгруппированные по рабочим доменам.",
+        "Это не просто help-текст, а реестр owner/admin surface с привязкой к источникам данных.",
         f"Owner: {owner_username} ({owner_user_id})",
         "",
     ]
@@ -84,16 +84,16 @@ def render_admin_command_catalog(*, owner_user_id: int, owner_username: str) -> 
         lines.append(f"{domain_label}:")
         for spec in domain_specs:
             lines.append(f"- {spec.usage}")
-            lines.append(f"  scope={spec.scope}; evidence={spec.evidence}; note={spec.description}")
+            lines.append(f"  доступ={spec.scope}; источник={spec.evidence}; зачем={spec.description}")
         lines.append("")
     access_specs = [spec for spec in ADMIN_COMMAND_SPECS if spec.scope == "access"]
     if access_specs:
-        lines.append("Shared access commands:")
+        lines.append("Команды общего доступа:")
         for spec in access_specs:
             lines.append(f"- {spec.usage}")
-            lines.append(f"  domain={spec.domain}; evidence={spec.evidence}; note={spec.description}")
+            lines.append(f"  домен={spec.domain}; источник={spec.evidence}; зачем={spec.description}")
         lines.append("")
-    lines.append("Правило:")
-    lines.append("- owner_only и owner_private команды не должны выполняться без owner permission.")
-    lines.append("- каждый admin/output должен опираться на свой evidence-domain, а не на свободный chat reply.")
+    lines.append("Правила работы:")
+    lines.append("- owner_only и owner_private команды нельзя выполнять без прав владельца.")
+    lines.append("- каждый admin/output должен опираться на свой источник данных, а не на свободный chat reply.")
     return "\n".join(lines)

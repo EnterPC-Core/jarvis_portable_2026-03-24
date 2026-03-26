@@ -276,6 +276,10 @@ DEFAULT_BACKUP_INTERVAL_DAYS = 7
 DEFAULT_BACKUP_PART_SIZE_MB = 45
 DEFAULT_OWNER_AUTOFIX = True
 DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90
+DEFAULT_AUTO_SELF_HEAL_INTERVAL_SECONDS = 300
+DEFAULT_AUTO_SELF_HEAL_COOLDOWN_SECONDS = 900
+DEFAULT_AUTO_SELF_HEAL_REPORT_COOLDOWN_SECONDS = 1800
+DEFAULT_AUTO_SELF_HEAL_MAX_RETRIES = 2
 DEFAULT_ENTERPRISE_TASK_TIMEOUT = 240
 DEFAULT_OWNER_DAILY_DIGEST_HOUR_UTC = 7
 DEFAULT_OWNER_WEEKLY_DIGEST_WEEKDAY_UTC = 0
@@ -760,6 +764,7 @@ CONTROL_PANEL_SECTIONS = (
     "owner_live",
     "owner_moderation",
     "owner_selfheal",
+    "owner_selfheal_queue",
     "owner_commands",
 )
 UI_PENDING_APPEAL = "await_appeal_text"
@@ -971,6 +976,30 @@ class BotConfig:
         self.backup_part_size_mb = read_int_env("BACKUP_PART_SIZE_MB", DEFAULT_BACKUP_PART_SIZE_MB, minimum=5, maximum=49)
         self.backup_chat_id = int(os.getenv("BACKUP_CHAT_ID", str(OWNER_USER_ID)).strip() or str(OWNER_USER_ID))
         self.owner_autofix = read_bool_env("OWNER_AUTOFIX", DEFAULT_OWNER_AUTOFIX)
+        self.auto_self_heal_interval_seconds = read_int_env(
+            "AUTO_SELF_HEAL_INTERVAL_SECONDS",
+            DEFAULT_AUTO_SELF_HEAL_INTERVAL_SECONDS,
+            minimum=60,
+            maximum=3600,
+        )
+        self.auto_self_heal_cooldown_seconds = read_int_env(
+            "AUTO_SELF_HEAL_COOLDOWN_SECONDS",
+            DEFAULT_AUTO_SELF_HEAL_COOLDOWN_SECONDS,
+            minimum=60,
+            maximum=86400,
+        )
+        self.auto_self_heal_report_cooldown_seconds = read_int_env(
+            "AUTO_SELF_HEAL_REPORT_COOLDOWN_SECONDS",
+            DEFAULT_AUTO_SELF_HEAL_REPORT_COOLDOWN_SECONDS,
+            minimum=60,
+            maximum=86400,
+        )
+        self.auto_self_heal_max_retries = read_int_env(
+            "AUTO_SELF_HEAL_MAX_RETRIES",
+            DEFAULT_AUTO_SELF_HEAL_MAX_RETRIES,
+            minimum=1,
+            maximum=2,
+        )
         self.legacy_jarvis_db_path = os.getenv("LEGACY_JARVIS_DB_PATH", DEFAULT_LEGACY_JARVIS_DB_PATH).strip() or DEFAULT_LEGACY_JARVIS_DB_PATH
         self.enterprise_task_timeout = read_int_env("ENTERPRISE_TASK_TIMEOUT", DEFAULT_ENTERPRISE_TASK_TIMEOUT, minimum=60, maximum=1200)
         self.owner_daily_digest_hour_utc = read_int_env("OWNER_DAILY_DIGEST_HOUR_UTC", DEFAULT_OWNER_DAILY_DIGEST_HOUR_UTC, minimum=0, maximum=23)
@@ -3631,6 +3660,38 @@ class BridgeState:
             self.db.commit()
         return int(cursor.lastrowid or 0)
 
+    def update_self_heal_attempt(
+        self,
+        attempt_id: int,
+        *,
+        state: str = "",
+        status: str = "",
+        execution_summary: str = "",
+        notes: str = "",
+    ) -> None:
+        with self.db_lock:
+            current = self.db.execute(
+                """SELECT state, status, execution_summary, notes
+                   FROM self_heal_attempts
+                   WHERE id = ?""",
+                (attempt_id,),
+            ).fetchone()
+            if current is None:
+                return
+            self.db.execute(
+                """UPDATE self_heal_attempts
+                   SET state = ?, status = ?, execution_summary = ?, notes = ?
+                   WHERE id = ?""",
+                (
+                    truncate_text(state or str(current["state"] or ""), 40),
+                    truncate_text(status or str(current["status"] or ""), 40),
+                    truncate_text(normalize_whitespace(execution_summary or str(current["execution_summary"] or "")), 400),
+                    truncate_text(normalize_whitespace(notes or str(current["notes"] or "")), 800),
+                    attempt_id,
+                ),
+            )
+            self.db.commit()
+
     def record_self_heal_verification(
         self,
         *,
@@ -3702,6 +3763,28 @@ class BridgeState:
                 (incident_id,),
             ).fetchone()
         return row
+
+    def find_recent_self_heal_incident(self, problem_type: str, signal_code: str, window_seconds: int = 3600) -> Optional[sqlite3.Row]:
+        with self.db_lock:
+            row = self.db.execute(
+                """SELECT id, problem_type, signal_code, state, severity, summary, evidence, risk_level,
+                          autonomy_level, source, confidence, suggested_playbook, verification_status, lesson_text, created_at, updated_at
+                   FROM self_heal_incidents
+                   WHERE problem_type = ? AND signal_code = ?
+                     AND updated_at >= strftime('%s','now') - ?
+                   ORDER BY id DESC
+                   LIMIT 1""",
+                (problem_type, signal_code, max(60, int(window_seconds))),
+            ).fetchone()
+        return row
+
+    def count_self_heal_attempts(self, incident_id: int) -> int:
+        with self.db_lock:
+            row = self.db.execute(
+                "SELECT COUNT(*) FROM self_heal_attempts WHERE incident_id = ?",
+                (incident_id,),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
 
     def get_world_state_rows(self, category: str = "", limit: int = 10) -> List[sqlite3.Row]:
         effective_limit = max(1, min(30, int(limit)))
@@ -4182,6 +4265,7 @@ class TelegramBridge:
         self.next_report_check_ts = 0.0
         self.next_moderation_check_ts = 0.0
         self.next_memory_refresh_check_ts = 0.0
+        self.next_auto_self_heal_check_ts = 0.0
         self.memory_refresh_lock = Lock()
         self.memory_refresh_in_progress = False
         self.heartbeat_path = Path(config.heartbeat_path)
@@ -4380,7 +4464,11 @@ class TelegramBridge:
         self.load_bot_identity()
         self.refresh_world_state_registry("startup")
         self.recompute_drive_scores()
-        self.run_self_heal_cycle("startup", auto_execute=self.owner_autofix_enabled())
+        self.finalize_pending_auto_restart()
+        if self.owner_autofix_enabled():
+            self.run_auto_repair_loop("startup")
+        else:
+            self.run_self_heal_cycle("startup", auto_execute=False)
         self.state.record_autobiographical_event(
             category="runtime",
             event_type="startup",
@@ -4400,6 +4488,7 @@ class TelegramBridge:
                 self.maybe_start_weekly_backup()
                 self.maybe_start_scheduled_reports()
                 self.maybe_start_memory_refresh()
+                self.maybe_run_auto_repair_loop()
                 self.process_due_moderation_actions()
                 updates = self.get_updates(self.state.last_update_id)
                 if not updates.get("ok"):
@@ -4418,7 +4507,10 @@ class TelegramBridge:
                 log(f"network error in main loop: {error}")
                 self.refresh_world_state_registry("runtime_error")
                 self.recompute_drive_scores()
-                self.run_self_heal_cycle("runtime_error", auto_execute=self.owner_autofix_enabled())
+                if self.owner_autofix_enabled():
+                    self.run_auto_repair_loop("runtime_error")
+                else:
+                    self.run_self_heal_cycle("runtime_error", auto_execute=False)
                 self.state.record_autobiographical_event(
                     category="runtime",
                     event_type="network_error",
@@ -4434,7 +4526,10 @@ class TelegramBridge:
                 log_exception("unexpected main loop error", error, limit=12)
                 self.refresh_world_state_registry("runtime_error")
                 self.recompute_drive_scores()
-                self.run_self_heal_cycle("runtime_error", auto_execute=self.owner_autofix_enabled())
+                if self.owner_autofix_enabled():
+                    self.run_auto_repair_loop("runtime_error")
+                else:
+                    self.run_self_heal_cycle("runtime_error", auto_execute=False)
                 self.state.record_autobiographical_event(
                     category="runtime",
                     event_type="unexpected_error",
@@ -8327,6 +8422,20 @@ class TelegramBridge:
             with self.memory_refresh_lock:
                 self.memory_refresh_in_progress = False
 
+    def maybe_run_auto_repair_loop(self) -> None:
+        if not self.owner_autofix_enabled():
+            return
+        now = time.time()
+        if now < self.next_auto_self_heal_check_ts:
+            return
+        self.next_auto_self_heal_check_ts = now + self.config.auto_self_heal_interval_seconds
+        try:
+            self.run_auto_repair_loop("periodic")
+        except SystemExit:
+            raise
+        except Exception as error:
+            log_exception("auto self-heal loop failed", error, limit=10)
+
     def refresh_world_state_registry(self, source: str = "runtime_tick", chat_id: Optional[int] = None) -> Dict[str, object]:
         return self.runtime_service.refresh_world_state_registry(self, source, chat_id)
 
@@ -8337,6 +8446,16 @@ class TelegramBridge:
         from services.self_heal_manager import run_self_heal_cycle
 
         return run_self_heal_cycle(self, source=source, auto_execute=auto_execute)
+
+    def run_auto_repair_loop(self, source: str) -> str:
+        from services.auto_repair_loop import run_auto_repair_loop
+
+        return run_auto_repair_loop(self, source=source)
+
+    def finalize_pending_auto_restart(self) -> str:
+        from services.auto_repair_loop import finalize_pending_auto_restart
+
+        return finalize_pending_auto_restart(self)
 
     def apply_persistent_pressures_to_route(self, route_decision: RouteDecision, user_text: str) -> RouteDecision:
         drive_map = {row["drive_name"]: float(row["score"] or 0) for row in self.state.get_drive_scores()}

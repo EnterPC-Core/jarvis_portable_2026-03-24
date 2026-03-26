@@ -37,6 +37,7 @@ def run_self_heal_cycle(
         recent_errors=recent_errors,
         recent_routes=recent_routes,
         heartbeat_timeout_seconds=bridge.config.heartbeat_timeout_seconds,
+        heartbeat_exists=bridge.heartbeat_path.exists(),
     )
     classifications = classify_failures(signals=signals, owner_autofix_enabled=auto_execute)
     if not classifications:

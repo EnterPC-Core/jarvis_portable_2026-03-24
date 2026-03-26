@@ -10,6 +10,7 @@ def detect_failure_signals(
     recent_errors: Iterable[str],
     recent_routes: Iterable[Mapping[str, object]],
     heartbeat_timeout_seconds: int,
+    heartbeat_exists: Optional[bool] = None,
     now_ts: Optional[int] = None,
 ) -> List[FailureSignal]:
     now = int(now_ts or time.time())
@@ -65,6 +66,21 @@ def detect_failure_signals(
                 auto_repairable=False,
             )
         )
+    if any("database is locked" in line.lower() or "database table is locked" in line.lower() for line in error_lines):
+        signals.append(
+            FailureSignal(
+                signal_code="sqlite_lock",
+                severity="medium",
+                summary="Обнаружена временная SQLite lock-ошибка.",
+                evidence=next((line for line in error_lines if "locked" in line.lower()), error_lines[0] if error_lines else ""),
+                confidence=0.86,
+                source="runtime_log",
+                suggested_playbook="recover_sqlite_lock",
+                problem_type="sqlite_error",
+                detection_method="sqlite_lock_error_log",
+                auto_repairable=True,
+            )
+        )
     if warning_count >= 3 and any("lookup failed" in line.lower() for line in error_lines):
         signals.append(
             FailureSignal(
@@ -77,6 +93,21 @@ def detect_failure_signals(
                 suggested_playbook="recover_failed_live_provider_config",
                 problem_type="live_provider_failed",
                 detection_method="provider_warning_burst",
+                auto_repairable=True,
+            )
+        )
+    if heartbeat_exists is False:
+        signals.append(
+            FailureSignal(
+                signal_code="missing_runtime_artifact",
+                severity="medium",
+                summary="Не найден обязательный runtime artifact heartbeat.",
+                evidence="heartbeat file missing",
+                confidence=0.9,
+                source="filesystem_probe",
+                suggested_playbook="reinitialize_missing_runtime_artifact",
+                problem_type="runtime_degraded",
+                detection_method="heartbeat_file_exists_probe",
                 auto_repairable=True,
             )
         )

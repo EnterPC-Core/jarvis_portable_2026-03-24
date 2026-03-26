@@ -26,7 +26,7 @@ SELF_HEAL_POLICY_MATRIX: Dict[str, ProblemPolicy] = {
     "broken_dependency": ProblemPolicy("broken_dependency", "high", AUTONOMY_REQUIRE_OWNER_APPROVAL, False, "install/upgrade dependency changes local environment", ("repair_import_path",)),
     "import_error": ProblemPolicy("import_error", "high", AUTONOMY_REQUIRE_OWNER_APPROVAL, False, "import fixes may require code/config changes", ("repair_import_path", "recheck_health")),
     "config_error": ProblemPolicy("config_error", "high", AUTONOMY_REQUIRE_OWNER_APPROVAL, False, "config drift can break auth/runtime semantics", ("recheck_health",)),
-    "sqlite_error": ProblemPolicy("sqlite_error", "high", AUTONOMY_REQUIRE_OWNER_APPROVAL, False, "sqlite repair must preserve data and backups", ("recover_sqlite_lock", "repair_sqlite_schema")),
+    "sqlite_error": ProblemPolicy("sqlite_error", "medium", AUTONOMY_SAFE_AUTO, True, "temporary sqlite lock recovery is bounded; schema/data repair still requires owner judgement", ("recover_sqlite_lock", "repair_sqlite_schema")),
     "state_drift": ProblemPolicy("state_drift", "medium", AUTONOMY_AUTO_WITH_VERIFICATION, True, "state refresh and consistency verification are bounded", ("refresh_runtime_state", "resync_project_state")),
     "route_drift": ProblemPolicy("route_drift", "medium", AUTONOMY_AUTO_WITH_VERIFICATION, True, "route regressions can be checked with smoke/behavioral verification", ("audit_route_regression", "recheck_health")),
     "prompt_contract_break": ProblemPolicy("prompt_contract_break", "medium", AUTONOMY_REQUIRE_OWNER_APPROVAL, False, "prompt/contract changes affect semantics broadly", ("audit_route_regression",)),

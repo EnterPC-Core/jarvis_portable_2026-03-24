@@ -149,7 +149,8 @@ sh tools/refresh_repo_state.sh
 - запуск `Enterprise Core` из локальной среды
 - у владельца есть project-ops команды: `git status`, последние коммиты, хвост ошибок, digest по конкретной группе
 - у владельца разделены `errors` и `events`: реальные поломки отдельно от рестартов и блокировок, у `events` есть фильтр по категориям
-- для владельца есть `Owner Panel` в inline UI: все команды проекта разложены по категориям в админ-панели
+- для владельца есть `Панель владельца` в inline UI: все команды проекта разложены по категориям в админ-панели и описаны по-русски
+- есть bounded auto self-healing loop: detect -> classify -> safe repair -> verify -> Telegram report владельцу
 
 ### Live-данные
 
@@ -163,6 +164,38 @@ sh tools/refresh_repo_state.sh
 - быстрые current-fact запросы вроде “кто сейчас CEO / президент / глава” через отдельный live-route по внешним источникам
 
 Это нужно для того, чтобы вопросы вида “погода”, “курс доллара”, “цена BTC”, “последние новости”, “кто сейчас президент/CEO” не шли через слабый HTML-поиск.
+
+### Автовосстановление
+
+Сейчас в проекте уже есть ограниченный safe self-healing слой:
+
+- используются существующие `failure_detectors`, `repair_playbooks`, `runtime diagnostics` и owner-команды
+- auto-loop запускается внутри runtime по интервалу и на runtime-error hooks
+- автоматически выполняются только allowlisted сценарии
+- после каждого repair идёт обязательная before/after verification
+- владельцу уходит Telegram ЛС-отчёт по результату
+- есть защита от циклов:
+  - cooldown
+  - max retries = 2
+  - dedup одинаковых incident/report
+  - stop-after-failure
+
+Текущие safe auto-repair сценарии:
+
+- refresh runtime/world-state
+- bounded health recheck
+- recovery degraded live providers
+- recovery temporary SQLite lock
+- reinitialize missing runtime heartbeat artifact
+- auto-restart как escalation path только с post-restart verification на новом startup
+
+Что сознательно не чинится автоматически:
+
+- destructive SQLite/schema repair
+- config drift
+- dependency install/upgrade
+- environment rewrite
+- любые shell-действия вне allowlist
 
 ## Архитектура
 
@@ -204,6 +237,26 @@ sh tools/refresh_repo_state.sh
 - запросы про `этот чат`, `тут`, `в чате`, `контекст`, `участников` не должны улетать в live/news; им нужен локальный route через chat memory, relation memory, events и participant registry
 - явный вызов `Enterprise` должен удерживать инженерный режим ответа и не сваливаться в общий `Jarvis`-тон
 - bot не должен заявлять о выполненных действиях без route/tool-подтверждения
+
+### Owner / Admin UI
+
+Текущая inline-панель владельца разбита на русские разделы:
+
+- `Среда и runtime`
+- `Git и логи`
+- `Память и чаты`
+- `Файлы и медиа`
+- `Live-данные`
+- `Автовосстановление`
+- `Модерация`
+- `Все команды`
+
+Внутри `Автовосстановления` есть:
+
+- список последних инцидентов
+- экран инцидента с причинами и evidence
+- очередь согласования
+- inline-кнопки `Одобрить` / `Отклонить`
 
 ### Persistent Entity Layer
 

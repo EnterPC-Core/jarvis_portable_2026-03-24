@@ -292,7 +292,7 @@ class OwnerCommandService:
                     lines.append(f"  {truncate_text(row['summary'], 200)}")
         incidents = bridge.state.get_recent_self_heal_incidents(limit=6)
         if incidents:
-            lines.extend(["", "Self-heal incidents"])
+            lines.extend(["", "Инциденты автовосстановления"])
             for row in incidents:
                 stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
                 lines.append(
@@ -383,12 +383,13 @@ class OwnerCommandService:
             recent_errors=recent_errors,
             recent_routes=recent_routes,
             heartbeat_timeout_seconds=bridge.config.heartbeat_timeout_seconds,
+            heartbeat_exists=bridge.heartbeat_path.exists(),
         )
         repair_playbooks = select_playbooks_for_signals(failure_signals)
         repair_journal = bridge.state.get_recent_repair_journal(limit=4)
         self_heal_incidents = bridge.state.get_recent_self_heal_incidents(limit=4)
         lines = [
-            "OWNER REPORT",
+            "ОТЧЁТ ВЛАДЕЛЬЦА",
             f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
             f"Режим чата: {bridge.state.get_mode(chat_id)}",
             f"События в этом чате: {status_snapshot['events_count']}",
@@ -432,7 +433,7 @@ class OwnerCommandService:
                 )
         if self_heal_incidents:
             lines.append("")
-            lines.append("Последние self-heal incidents:")
+            lines.append("Последние инциденты автовосстановления:")
             for row in self_heal_incidents:
                 stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
                 lines.append(

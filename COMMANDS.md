@@ -48,7 +48,7 @@
 - `/memoryuser [@username|user_id]`
 - `/memorysummary`
 
-## Owner / Runtime
+## Владелец / Среда И Runtime
 
 - `/status`
 - `/ownerreport`
@@ -64,7 +64,7 @@
 - `/restart` — одно сообщение: сначала `Enterprise Core перезапускается...`, потом оно же обновляется в подтверждение перезапуска
 - `/ownerautofix on|off|status`
 
-## Owner / Git И Логи
+## Владелец / Git И Логи
 
 - `/gitstatus`
 - `/gitlast [количество]`
@@ -73,13 +73,13 @@
 - `/routes [количество]`
 - `/chatdigest <chat_id> [YYYY-MM-DD]`
 
-## Owner / Файлы
+## Владелец / Файлы
 
 - `/sdls [/sdcard/путь]`
 - `/sdsend /sdcard/путь/к/файлу`
 - `/sdsave /sdcard/папка/или/файл`
 
-## Owner / Изменения Кода
+## Владелец / Изменения Кода
 
 - `/upgrade <что изменить>`
 
@@ -136,14 +136,42 @@
 
 ## Что Есть В Панели
 
-В `Owner Panel` внутри inline UI команды разложены по разделам:
+В `Панели владельца` внутри inline UI команды разложены по разделам:
 
-- `Runtime`
+- `Среда и runtime`
 - `Git и логи`
 - `Память и чаты`
 - `Файлы и медиа`
-- `Live-data`
+- `Live-данные`
+- `Автовосстановление`
 - `Модерация`
 - `Все команды`
 
 Команды без параметров вынесены в живые экраны панели. Команды с параметрами описаны там как готовые шаблоны использования.
+
+## Автовосстановление
+
+Что уже есть в проекте:
+
+- bounded auto self-healing loop
+- cooldown по типу ошибки
+- максимум `2` попытки на один incident
+- dedup одинаковых auto-report
+- post-repair verification до claim-а об успехе
+- owner ЛС-отчёт после каждого auto-repair
+
+Безопасные сценарии auto-repair:
+
+- `refresh_runtime_state`
+- `recheck_health`
+- `recover_failed_live_provider_config`
+- `recover_sqlite_lock`
+- `reinitialize_missing_runtime_artifact`
+- `restart_runtime` только как проверяемая escalation-ветка с post-restart verification
+
+Команды owner для self-heal:
+
+- `/selfhealstatus` — список последних self-heal incidents
+- `/selfhealrun <playbook|incident_id> [dry-run|execute]` — ручной dry-run или bounded execute
+- `/selfhealapprove <incident_id>` — одобрить ожидающий incident
+- `/selfhealdeny <incident_id>` — отклонить auto-repair и перевести кейс в manual follow-up
