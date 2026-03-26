@@ -83,12 +83,7 @@ from utils.runtime_utils import (
     should_include_code_backup_file as _should_include_code_backup_file,
     split_file_parts as _split_file_parts,
 )
-from utils.chat_text import (
-    contains_voice_trigger_name as _contains_voice_trigger_name,
-    extract_assistant_persona as _extract_assistant_persona,
-    normalize_incoming_text as _normalize_incoming_text,
-    should_process_group_message as _should_process_group_message,
-)
+from utils.chat_text import extract_assistant_persona as _extract_assistant_persona
 from utils.file_utils import (
     ensure_sdcard_save_target_writable as _ensure_sdcard_save_target_writable,
     extract_message_media_file as _extract_message_media_file,
@@ -121,10 +116,22 @@ from utils.report_utils import (
     render_timeline_rows as _render_timeline_rows,
     render_top_processes as _render_top_processes,
 )
-from utils.help_utils import (
-    build_help_panel_markup as _build_help_panel_markup,
-    build_help_panel_text as _build_help_panel_text,
-    build_voice_transcription_help as _build_voice_transcription_help,
+from utils.help_utils import build_voice_transcription_help as _build_voice_transcription_help
+from services.bridge_runtime_text import (
+    build_help_panel_markup as _bridge_build_help_panel_markup,
+    build_help_panel_text as _bridge_build_help_panel_text,
+    build_user_autofix_label as _bridge_build_user_autofix_label,
+    build_welcome_text as _bridge_build_welcome_text,
+    can_owner_use_workspace_mode as _bridge_can_owner_use_workspace_mode,
+    contains_profanity as _bridge_contains_profanity,
+    contains_voice_trigger_name as _bridge_contains_voice_trigger_name,
+    has_chat_access as _bridge_has_chat_access,
+    has_public_callback_access as _bridge_has_public_callback_access,
+    has_public_command_access as _bridge_has_public_command_access,
+    is_owner_private_chat as _bridge_is_owner_private_chat,
+    normalize_incoming_text as _bridge_normalize_incoming_text,
+    should_attempt_owner_autofix as _bridge_should_attempt_owner_autofix,
+    should_process_group_message as _bridge_should_process_group_message,
 )
 from utils.message_utils import (
     build_service_actor_name as _build_service_actor_name,
@@ -9062,26 +9069,24 @@ def build_upgrade_prompt(task: str) -> str:
 
 
 def can_owner_use_workspace_mode(user_id: Optional[int], chat_type: str, assistant_persona: str = "") -> bool:
-    return (
-        user_id == OWNER_USER_ID
-        and chat_type in {"private", "group", "supergroup"}
-        and assistant_persona == "enterprise"
+    return _bridge_can_owner_use_workspace_mode(
+        user_id,
+        chat_type,
+        assistant_persona,
+        owner_user_id=OWNER_USER_ID,
     )
 
 
 def is_owner_private_chat(user_id: Optional[int], chat_id: int) -> bool:
-    return user_id == OWNER_USER_ID and chat_id > 0
+    return _bridge_is_owner_private_chat(user_id, chat_id, owner_user_id=OWNER_USER_ID)
 
 
 def has_chat_access(_authorized_user_ids: Set[int], user_id: Optional[int]) -> bool:
-    if user_id == OWNER_USER_ID:
-        return True
-    return False
+    return _bridge_has_chat_access(_authorized_user_ids, user_id, owner_user_id=OWNER_USER_ID)
 
 
 def has_public_command_access(text: str) -> bool:
-    cleaned = (text or "").strip()
-    return cleaned in PUBLIC_ALLOWED_COMMANDS
+    return _bridge_has_public_command_access(text, allowed_commands=PUBLIC_ALLOWED_COMMANDS)
 
 
 URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
@@ -9096,48 +9101,19 @@ def remove_urls_from_text(text: str) -> str:
 
 
 def has_public_callback_access(data: str) -> bool:
-    return (data or "").strip() in PUBLIC_ALLOWED_CALLBACKS
+    return _bridge_has_public_callback_access(data, allowed_callbacks=PUBLIC_ALLOWED_CALLBACKS)
 
 
 def is_group_chat(chat_type: str) -> bool:
     return chat_type in {"group", "supergroup"}
 
 
-PROFANITY_PATTERN = re.compile(
-    r"(?:^|[^а-яёa-z0-9_])("
-    r"ху(?:й|е|ё|и|я|ю|л|яц|ес)"
-    r"|пизд"
-    r"|еб(?:а|о|у|л|н|т|и|ё)"
-    r"|ёб(?:а|о|у|л|н|т|и)"
-    r"|бля(?:д|т)?"
-    r"|наху"
-    r"|уеб"
-    r"|муд[ао]"
-    r"|долбо[её]б"
-    r")[\w-]*",
-    re.IGNORECASE,
-)
-
-
 def contains_profanity(text: str) -> bool:
-    cleaned = (text or "").lower().replace("ё", "е")
-    cleaned = re.sub(r"[^0-9a-zа-я_ -]+", " ", cleaned)
-    return bool(PROFANITY_PATTERN.search(cleaned))
+    return _bridge_contains_profanity(text)
 
 
 def should_attempt_owner_autofix(text: str, message: dict) -> bool:
-    cleaned = (text or "").strip()
-    if not cleaned or cleaned.startswith("/"):
-        return False
-    if message.get("edit_date"):
-        return False
-    if len(cleaned) < 4:
-        return False
-    if cleaned.lower().startswith("jarvis") or "@test_aipc_bot" in cleaned.lower():
-        return False
-    if "http://" in cleaned.lower() or "https://" in cleaned.lower():
-        return False
-    return any(ch.isalpha() for ch in cleaned)
+    return _bridge_should_attempt_owner_autofix(text, message)
 
 
 def is_codex_unavailable_output(text: str) -> bool:
@@ -9195,7 +9171,7 @@ def is_codex_network_error_output(text: str) -> bool:
 
 
 def build_help_panel_text(section: str) -> str:
-    return _build_help_panel_text(
+    return _bridge_build_help_panel_text(
         section,
         owner_username=OWNER_USERNAME,
         owner_user_id=OWNER_USER_ID,
@@ -9206,39 +9182,15 @@ def build_help_panel_text(section: str) -> str:
 
 
 def build_help_panel_markup(section: str) -> dict:
-    return _build_help_panel_markup(section)
+    return _bridge_build_help_panel_markup(section)
 
 
 def build_welcome_text(template: str, user: dict, chat_title: str) -> str:
-    first_name = (user.get("first_name") or "").strip()
-    last_name = (user.get("last_name") or "").strip()
-    username = (user.get("username") or "").strip()
-    full_name = " ".join(part for part in [first_name, last_name] if part).strip() or username or "друг"
-    values = {
-        "first_name": first_name,
-        "last_name": last_name,
-        "full_name": full_name,
-        "username": f"@{username}" if username else "",
-        "chat_title": chat_title or "",
-    }
-    try:
-        return (template or WELCOME_DEFAULT_TEMPLATE).format(**values).strip()
-    except KeyError:
-        return (template or WELCOME_DEFAULT_TEMPLATE).strip()
+    return _bridge_build_welcome_text(template, user, chat_title, default_template=WELCOME_DEFAULT_TEMPLATE)
 
 
 def build_user_autofix_label(user: dict) -> str:
-    first_name = (user.get("first_name") or "").strip()
-    last_name = (user.get("last_name") or "").strip()
-    full_name = " ".join(part for part in [first_name, last_name] if part).strip() or "Пользователь"
-    username = (user.get("username") or "").strip().lstrip("@")
-    user_id = user.get("id")
-    escaped_name = html.escape(full_name)
-    if username:
-        return f"{escaped_name} (@{html.escape(username)})"
-    if user_id:
-        return f'<a href="tg://user?id={int(user_id)}">{escaped_name}</a>'
-    return escaped_name
+    return _bridge_build_user_autofix_label(user)
 
 
 def build_grammar_fix_prompt(text: str) -> str:
@@ -9435,36 +9387,27 @@ def is_term_only_voice_cleanup(original_text: str, fixed_text: str, context_term
 
 
 def should_process_group_message(message: dict, text: str, bot_username: str, trigger_name: str, bot_user_id: Optional[int] = None, allow_owner_reply: bool = False) -> bool:
-    stripped = (text or "").strip()
-    from_user = message.get("from") or {}
-    user_id = from_user.get("id")
-    owner_aliases = {"дмитрий", "дима", "dmitry", "dima"}
-    owner_username = OWNER_USERNAME.strip().lstrip("@").lower()
-    if owner_username:
-        owner_aliases.add(owner_username)
-    lowered = stripped.lower()
-    owner_prefixes: Tuple[str, ...] = tuple(
-        prefix
-        for alias in owner_aliases
-        for prefix in (f"{alias}:", f"{alias},", f"{alias} ", f"{alias}?", f"{alias}!", f"{alias}.")
-    )
-    if user_id == OWNER_USER_ID and lowered:
-        if lowered in owner_aliases or lowered.startswith(owner_prefixes):
-            return True
-    return _should_process_group_message(
+    return _bridge_should_process_group_message(
         message,
         text,
         bot_username,
         trigger_name,
-        extract_assistant_persona,
-        DEFAULT_TRIGGER_NAME,
+        owner_user_id=OWNER_USER_ID,
+        owner_username=OWNER_USERNAME,
+        extract_assistant_persona_func=extract_assistant_persona,
+        default_trigger_name=DEFAULT_TRIGGER_NAME,
         bot_user_id=bot_user_id,
         allow_owner_reply=allow_owner_reply,
     )
 
 
 def contains_voice_trigger_name(text: str, trigger_name: str, bot_username: str) -> bool:
-    return _contains_voice_trigger_name(text, trigger_name, bot_username, DEFAULT_TRIGGER_NAME)
+    return _bridge_contains_voice_trigger_name(
+        text,
+        trigger_name,
+        bot_username,
+        default_trigger_name=DEFAULT_TRIGGER_NAME,
+    )
 
 def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: bool) -> Path:
     return _resolve_sdcard_path(
@@ -9509,7 +9452,7 @@ def format_file_size(size: int) -> str:
 
 
 def normalize_incoming_text(text: str, bot_username: str) -> str:
-    return _normalize_incoming_text(text, bot_username)
+    return _bridge_normalize_incoming_text(text, bot_username)
 
 
 def format_reaction_payload(reactions: List[dict]) -> str:
