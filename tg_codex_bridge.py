@@ -84,15 +84,6 @@ from utils.runtime_utils import (
     split_file_parts as _split_file_parts,
 )
 from utils.chat_text import extract_assistant_persona as _extract_assistant_persona
-from utils.file_utils import (
-    ensure_sdcard_save_target_writable as _ensure_sdcard_save_target_writable,
-    extract_message_media_file as _extract_message_media_file,
-    format_file_size as _format_file_size,
-    normalize_sdcard_alias as _normalize_sdcard_alias,
-    read_document_excerpt as _read_document_excerpt,
-    resolve_sdcard_path as _resolve_sdcard_path,
-    resolve_sdcard_save_target as _resolve_sdcard_save_target,
-)
 from utils.ops_utils import (
     inspect_runtime_log as _inspect_runtime_log,
     is_error_log_line as _is_error_log_line,
@@ -132,6 +123,15 @@ from services.bridge_runtime_text import (
     normalize_incoming_text as _bridge_normalize_incoming_text,
     should_attempt_owner_autofix as _bridge_should_attempt_owner_autofix,
     should_process_group_message as _bridge_should_process_group_message,
+)
+from services.bridge_file_helpers import (
+    ensure_sdcard_save_target_writable as _bridge_ensure_sdcard_save_target_writable,
+    extract_message_media_file as _bridge_extract_message_media_file,
+    format_file_size as _bridge_format_file_size,
+    normalize_sdcard_alias as _bridge_normalize_sdcard_alias,
+    read_document_excerpt as _bridge_read_document_excerpt,
+    resolve_sdcard_path as _bridge_resolve_sdcard_path,
+    resolve_sdcard_save_target as _bridge_resolve_sdcard_save_target,
 )
 from utils.message_utils import (
     build_service_actor_name as _build_service_actor_name,
@@ -9410,7 +9410,7 @@ def contains_voice_trigger_name(text: str, trigger_name: str, bot_username: str)
     )
 
 def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: bool) -> Path:
-    return _resolve_sdcard_path(
+    return _bridge_resolve_sdcard_path(
         raw_path,
         allow_missing=allow_missing,
         default_to_root=default_to_root,
@@ -9419,7 +9419,7 @@ def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: 
 
 
 def resolve_sdcard_save_target(raw_target: str, suggested_name: str) -> Path:
-    return _resolve_sdcard_save_target(
+    return _bridge_resolve_sdcard_save_target(
         raw_target,
         suggested_name,
         default_sd_save_alias=DEFAULT_SD_SAVE_ALIAS,
@@ -9428,7 +9428,7 @@ def resolve_sdcard_save_target(raw_target: str, suggested_name: str) -> Path:
 
 
 def ensure_sdcard_save_target_writable(destination: Path) -> None:
-    _ensure_sdcard_save_target_writable(destination)
+    _bridge_ensure_sdcard_save_target_writable(destination)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -9440,15 +9440,15 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def normalize_sdcard_alias(raw_path: str) -> str:
-    return _normalize_sdcard_alias(raw_path)
+    return _bridge_normalize_sdcard_alias(raw_path)
 
 
 def extract_message_media_file(message: dict) -> Optional[Tuple[str, str]]:
-    return _extract_message_media_file(message)
+    return _bridge_extract_message_media_file(message)
 
 
 def format_file_size(size: int) -> str:
-    return _format_file_size(size)
+    return _bridge_format_file_size(size)
 
 
 def normalize_incoming_text(text: str, bot_username: str) -> str:
@@ -9508,7 +9508,7 @@ def render_git_last_commits(repo_path: Path, limit: int = 5) -> str:
 
 
 def read_document_excerpt(file_path: Path, mime_type: str, max_chars: int = 3500) -> str:
-    return _read_document_excerpt(file_path, mime_type, truncate_text, max_chars=max_chars)
+    return _bridge_read_document_excerpt(file_path, mime_type, truncate_text_func=truncate_text, max_chars=max_chars)
 
 
 def format_reaction_count_payload(reactions: List[dict]) -> str:
