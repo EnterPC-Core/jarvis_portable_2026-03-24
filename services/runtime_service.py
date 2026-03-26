@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from services.diagnostics_metrics import collect_diagnostics_metrics
 from utils.ops_utils import inspect_runtime_log, read_recent_log_highlights, read_recent_operational_highlights
 from utils.text_utils import normalize_whitespace, truncate_text
 
@@ -92,6 +93,18 @@ class RuntimeService:
             "severe_error_age_seconds": severe_error_age_seconds,
             "heartbeat_kill_age_seconds": heartbeat_kill_age_seconds,
         }
+        diagnostics_metrics = collect_diagnostics_metrics(bridge.state, window_seconds=86400)
+        state_payload.update(
+            {
+                "verified_count": diagnostics_metrics.verified_count,
+                "inferred_count": diagnostics_metrics.inferred_count,
+                "insufficient_count": diagnostics_metrics.insufficient_count,
+                "route_degraded_count": diagnostics_metrics.degraded_count,
+                "live_stale_count": diagnostics_metrics.live_stale_count,
+                "self_check_issue_count": diagnostics_metrics.self_check_issue_count,
+                "prevented_false_claim_count": diagnostics_metrics.prevented_false_claim_count,
+            }
+        )
         if (
             (severe_errors_count and 0 <= severe_error_age_seconds <= 7200)
             or (heartbeat_kill_count and 0 <= heartbeat_kill_age_seconds <= 7200)
@@ -142,6 +155,28 @@ class RuntimeService:
             ttl_seconds=900,
             verification_method="request_diagnostics_rollup",
             stale_flag=bool(int(live_failures or 0) >= 3),
+        )
+        response_quality_status = "ok"
+        if diagnostics_metrics.insufficient_count or diagnostics_metrics.degraded_count or diagnostics_metrics.live_stale_count:
+            response_quality_status = "attention"
+        if diagnostics_metrics.degraded_count >= 5 or diagnostics_metrics.live_failed_count >= 3:
+            response_quality_status = "risk"
+        bridge.state.upsert_world_state_entry(
+            "response_quality_health",
+            category="diagnostics",
+            status=response_quality_status,
+            value_text=(
+                f"verified={diagnostics_metrics.verified_count}; inferred={diagnostics_metrics.inferred_count}; "
+                f"insufficient={diagnostics_metrics.insufficient_count}; degraded={diagnostics_metrics.degraded_count}; "
+                f"live_stale={diagnostics_metrics.live_stale_count}; live_failed={diagnostics_metrics.live_failed_count}; "
+                f"self_check_issues={diagnostics_metrics.self_check_issue_count}; prevented_false_claims={diagnostics_metrics.prevented_false_claim_count}"
+            ),
+            value_number=float(diagnostics_metrics.degraded_count),
+            source=source,
+            confidence=0.9,
+            ttl_seconds=600,
+            verification_method="request_diagnostics_quality_rollup",
+            stale_flag=bool(diagnostics_metrics.live_stale_count or diagnostics_metrics.degraded_count >= 5),
         )
         bridge.state.upsert_world_state_entry(
             "doc_runtime_drift",

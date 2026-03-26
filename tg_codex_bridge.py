@@ -6099,6 +6099,21 @@ class TelegramBridge:
     def render_owner_report_text(self, chat_id: int) -> str:
         return self.owner_handlers.render_owner_report_text(self, chat_id)
 
+    def inspect_runtime_log(self, window_seconds: int = 86400) -> Dict[str, object]:
+        return inspect_runtime_log(self.log_path, window_seconds=window_seconds)
+
+    def read_recent_log_highlights(self, limit: int = 8) -> List[str]:
+        return read_recent_log_highlights(self.log_path, limit=limit)
+
+    def render_resource_summary(self) -> str:
+        return render_resource_summary()
+
+    def render_bridge_runtime_watch(self) -> str:
+        return render_bridge_runtime_watch()
+
+    def render_route_diagnostics_rows(self, rows: List[sqlite3.Row]) -> str:
+        return render_route_diagnostics_rows(rows)
+
     def handle_export_command(self, chat_id: int, scope: str) -> bool:
         scope_clean = (scope or "chat").strip() or "chat"
         valid_scope = scope_clean == "chat" or scope_clean == "today" or scope_clean.startswith("@")

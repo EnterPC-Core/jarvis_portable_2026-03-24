@@ -1,10 +1,9 @@
 from datetime import datetime
 from typing import Callable, Dict, Optional
 
+from services.diagnostics_metrics import collect_diagnostics_metrics, render_diagnostics_metrics
 from services.failure_detectors import detect_failure_signals, render_failure_signals
 from services.repair_playbooks import render_playbook_summary, select_playbooks_for_signals
-from utils.ops_utils import inspect_runtime_log, read_recent_log_highlights
-from utils.report_utils import render_bridge_runtime_watch, render_resource_summary, render_route_diagnostics_rows
 from utils.text_utils import normalize_whitespace, truncate_text
 
 
@@ -246,8 +245,8 @@ class OwnerCommandService:
         if not self.is_owner_private_chat_func(user_id, chat_id):
             bridge.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
             return True
-        runtime_snapshot = inspect_runtime_log(bridge.log_path)
-        recent_errors = read_recent_log_highlights(bridge.log_path, normalize_whitespace, truncate_text, limit=10)
+        runtime_snapshot = bridge.inspect_runtime_log()
+        recent_errors = bridge.read_recent_log_highlights(limit=10)
         recent_routes = bridge.state.get_recent_request_diagnostics(limit=8)
         signals = detect_failure_signals(
             runtime_snapshot=runtime_snapshot,
@@ -293,9 +292,10 @@ class OwnerCommandService:
         except ValueError:
             last_backup_value = 0.0
         backup_text = datetime.utcfromtimestamp(last_backup_value).strftime("%Y-%m-%d %H:%M:%S UTC") if last_backup_value > 0 else "ещё не было"
-        runtime_snapshot = inspect_runtime_log(bridge.log_path)
-        recent_errors = read_recent_log_highlights(bridge.log_path, normalize_whitespace, truncate_text, limit=8)
+        runtime_snapshot = bridge.inspect_runtime_log()
+        recent_errors = bridge.read_recent_log_highlights(limit=8)
         recent_routes = bridge.state.get_recent_request_diagnostics(limit=5)
+        diagnostics_metrics = collect_diagnostics_metrics(bridge.state, window_seconds=86400)
         failure_signals = detect_failure_signals(
             runtime_snapshot=runtime_snapshot,
             recent_errors=recent_errors,
@@ -325,9 +325,9 @@ class OwnerCommandService:
             f"Последний backup: {backup_text}",
             "",
             "Ресурсы:",
-            render_resource_summary(),
+            bridge.render_resource_summary(),
             "",
-            render_bridge_runtime_watch(),
+            bridge.render_bridge_runtime_watch(),
         ]
         world_state_context = bridge.state.get_world_state_context(limit=6)
         drive_context = bridge.state.get_drive_context()
@@ -335,8 +335,9 @@ class OwnerCommandService:
             lines.extend(["", world_state_context])
         if drive_context:
             lines.extend(["", drive_context])
+        lines.extend(["", render_diagnostics_metrics(diagnostics_metrics)])
         if recent_routes:
-            lines.extend(["", "Последние route decisions:", render_route_diagnostics_rows(recent_routes)])
+            lines.extend(["", "Последние route decisions:", bridge.render_route_diagnostics_rows(recent_routes)])
         lines.extend(["", render_failure_signals(failure_signals), "", render_playbook_summary(repair_playbooks)])
         if repair_journal:
             lines.append("")

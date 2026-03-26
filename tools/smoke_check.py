@@ -14,6 +14,7 @@ def main() -> int:
 
     import tg_codex_bridge as bridge
     from services.auto_moderation import detect_auto_moderation_decision, get_group_rules_text
+    from services.diagnostics_metrics import collect_diagnostics_metrics, render_diagnostics_metrics
     from services.failure_detectors import detect_failure_signals
     from services.repair_playbooks import select_playbooks_for_signals
     from pipeline.context_pipeline import ContextPipeline
@@ -25,6 +26,21 @@ def main() -> int:
     )
     try:
         snapshot = state.get_status_snapshot(bridge.OWNER_USER_ID)
+        metrics = collect_diagnostics_metrics(state, window_seconds=3600)
+        if "Quality diagnostics" not in render_diagnostics_metrics(metrics):
+            raise RuntimeError("diagnostics metrics renderer regressed")
+        metric_keys = {
+            "total_requests",
+            "verified_count",
+            "inferred_count",
+            "insufficient_count",
+            "degraded_count",
+            "live_stale_count",
+            "runtime_probe_count",
+            "prevented_false_claim_count",
+        }
+        if not metric_keys.issubset(metrics.__dict__.keys()):
+            raise RuntimeError("diagnostics metrics shape regressed")
         required_keys = {
             "events_count",
             "facts_count",
@@ -261,6 +277,9 @@ def main() -> int:
             owner_panel_text, owner_panel_markup = bot.build_control_panel(bridge.OWNER_USER_ID, "owner_root")
             if "OWNER PANEL" not in owner_panel_text or "inline_keyboard" not in owner_panel_markup:
                 raise RuntimeError("owner control panel renderer regressed")
+            owner_report_text = bot.render_owner_report_text(bridge.OWNER_USER_ID)
+            if "Quality diagnostics" not in owner_report_text:
+                raise RuntimeError("owner report diagnostics section regressed")
             if not bot.should_process_group_message(
                 {
                     "text": "Jarvis?",
