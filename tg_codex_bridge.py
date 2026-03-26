@@ -4315,9 +4315,6 @@ class TelegramBridge:
     def build_help_panel_markup(self, section: str) -> dict:
         return build_help_panel_markup(section)
 
-    def build_public_control_panel(self, user_id: int, section: str, payload: str = "") -> Tuple[str, dict]:
-        return self.control_panel_renderer.build_public_control_panel(self, user_id, section, payload)
-
     def build_control_panel(self, user_id: int, section: str, payload: str = "") -> Tuple[str, dict]:
         return self.control_panel_renderer.build_control_panel(self, user_id, section, payload)
 

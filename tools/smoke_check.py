@@ -255,6 +255,12 @@ def main() -> int:
                 raise RuntimeError("bridge help panel adapter regressed")
             if "inline_keyboard" not in bot.build_help_panel_markup("public"):
                 raise RuntimeError("bridge help panel markup adapter regressed")
+            public_panel_text, public_panel_markup = bot.build_control_panel(bridge.OWNER_USER_ID + 1, "home")
+            if "JARVIS" not in public_panel_text or "inline_keyboard" not in public_panel_markup:
+                raise RuntimeError("public control panel renderer regressed")
+            owner_panel_text, owner_panel_markup = bot.build_control_panel(bridge.OWNER_USER_ID, "owner_root")
+            if "OWNER PANEL" not in owner_panel_text or "inline_keyboard" not in owner_panel_markup:
+                raise RuntimeError("owner control panel renderer regressed")
             if not bot.should_process_group_message(
                 {
                     "text": "Jarvis?",
