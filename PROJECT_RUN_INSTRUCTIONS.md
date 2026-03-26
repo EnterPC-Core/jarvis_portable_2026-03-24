@@ -268,6 +268,8 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/chatdigest <chat_id> [YYYY-MM-DD]` — сводка по конкретной группе из owner-лички
 - `/ownerreport` — приватный runtime-отчёт для владельца: CPU/RAM/disk, heartbeat, bot/supervisor process, рестарты за 24ч, backup, хвост ошибок и `supervisor_boot.log`
 - `/qualityreport` — приватный diagnostics-срез по `verified/inferred/insufficient`, stale live и degraded routes
+- `/selfhealstatus` — приватный статус self-healing incidents/state machine
+- `/selfhealrun <playbook|incident_id> [dry-run|execute]` — bounded dry-run/guarded execute для self-healing playbook
 - `/gitstatus` — текущее состояние git-ветки и worktree
 - `/gitlast [N]` — последние коммиты
 - `/errors [N]` — только реальные ошибки и поломки из `tg_codex_bridge.log`

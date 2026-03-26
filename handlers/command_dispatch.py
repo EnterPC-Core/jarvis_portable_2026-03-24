@@ -27,6 +27,8 @@ from handlers.command_parsers import (
     parse_sd_send_command,
     parse_search_command,
     parse_self_state_command,
+    parse_self_heal_run_command,
+    parse_self_heal_status_command,
     parse_skills_command,
     parse_upgrade_command,
     parse_warn_command,
@@ -111,6 +113,11 @@ class CommandDispatcher:
             return bridge.handle_status_command(chat_id)
         if text == "/repairstatus":
             return bridge.handle_repair_status_command(chat_id, user_id)
+        if parse_self_heal_status_command(text):
+            return bridge.handle_self_heal_status_command(chat_id, user_id)
+        self_heal_run_value = parse_self_heal_run_command(text)
+        if self_heal_run_value is not None:
+            return bridge.handle_self_heal_run_command(chat_id, user_id, self_heal_run_value)
         if text == "/qualityreport":
             return bridge.handle_quality_report_command(chat_id, user_id)
         if text == "/rating" and user_id is not None:

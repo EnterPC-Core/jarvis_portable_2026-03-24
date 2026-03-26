@@ -76,6 +76,14 @@ def parse_owner_report_command(text: str) -> bool:
     return text.strip() == "/ownerreport"
 
 
+def parse_self_heal_status_command(text: str) -> bool:
+    return text.strip() == "/selfhealstatus"
+
+
+def parse_self_heal_run_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/selfhealrun", "")
+
+
 def parse_routes_command(text: str) -> Optional[str]:
     return _parse_payload_command(text, "/routes", "")
 

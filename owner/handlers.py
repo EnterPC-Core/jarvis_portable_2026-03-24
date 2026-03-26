@@ -4,6 +4,7 @@ from typing import Callable, Dict, Optional
 from services.diagnostics_metrics import collect_diagnostics_metrics, render_diagnostics_metrics
 from services.failure_detectors import detect_failure_signals, render_failure_signals
 from services.repair_playbooks import render_playbook_summary, select_playbooks_for_signals
+from services.self_heal_manager import render_self_heal_status, run_self_heal_playbook
 from utils.text_utils import normalize_whitespace, truncate_text
 
 
@@ -314,6 +315,28 @@ class OwnerCommandService:
         if recent_routes:
             lines.extend(["", "Последние route decisions:", bridge.render_route_diagnostics_rows(recent_routes)])
         bridge.safe_send_text(chat_id, "\n".join(lines))
+        return True
+
+    def handle_self_heal_status_command(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int]) -> bool:
+        if not self.is_owner_private_chat_func(user_id, chat_id):
+            bridge.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        bridge.safe_send_text(chat_id, render_self_heal_status(bridge, limit=10))
+        return True
+
+    def handle_self_heal_run_command(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        if not self.is_owner_private_chat_func(user_id, chat_id):
+            bridge.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        cleaned = (payload or "").strip()
+        if not cleaned:
+            bridge.safe_send_text(chat_id, "Используй: /selfhealrun <playbook|incident_id> [dry-run|execute]")
+            return True
+        parts = cleaned.split()
+        selector = parts[0]
+        mode = parts[1].strip().lower() if len(parts) > 1 else "dry-run"
+        execute = mode == "execute"
+        bridge.safe_send_text(chat_id, run_self_heal_playbook(bridge, selector=selector, execute=execute))
         return True
 
     def render_owner_report_text(self, bridge: "TelegramBridge", chat_id: int) -> str:

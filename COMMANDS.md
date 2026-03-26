@@ -53,6 +53,8 @@
 - `/status`
 - `/ownerreport`
 - `/qualityreport`
+- `/selfhealstatus`
+- `/selfhealrun <playbook|incident_id> [dry-run|execute]`
 - `/resources`
 - `/topproc`
 - `/disk`

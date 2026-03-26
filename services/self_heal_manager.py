@@ -15,7 +15,7 @@ from services.repair_contracts import (
     RepairLesson,
     SelfHealingPlan,
 )
-from services.repair_playbooks import render_playbook_summary, select_playbooks_for_classifications
+from services.repair_playbooks import REPAIR_PLAYBOOKS, render_playbook_summary, select_playbooks_for_classifications
 from services.self_heal_classifier import classify_failures, render_failure_classifications
 from services.self_heal_executor import execute_repair_plan
 from services.self_heal_policy import decide_repair_policy
@@ -169,9 +169,136 @@ def run_self_heal_cycle(
     return "\n".join(lines)
 
 
+def render_self_heal_status(bridge: "TelegramBridge", *, limit: int = 8) -> str:
+    incidents = bridge.state.get_recent_self_heal_incidents(limit=limit)
+    if not incidents:
+        return "SELF-HEAL STATUS\n\nИнциденты пока не зафиксированы."
+    lines = ["SELF-HEAL STATUS"]
+    for row in incidents:
+        lines.append(
+            f"- incident={int(row['id'])} problem={row['problem_type']} state={row['state']} "
+            f"autonomy={row['autonomy_level']} playbook={row['suggested_playbook'] or '-'}"
+        )
+        if row["summary"]:
+            lines.append(f"  {row['summary']}")
+    return "\n".join(lines)
+
+
+def run_self_heal_playbook(
+    bridge: "TelegramBridge",
+    *,
+    selector: str,
+    execute: bool,
+) -> str:
+    cleaned = (selector or "").strip()
+    if not cleaned:
+        return "SELF-HEAL RUN\n\nИспользуй: /selfhealrun <playbook|incident_id> [dry-run|execute]"
+    playbook = _resolve_playbook(bridge, cleaned)
+    if playbook is None:
+        return f"SELF-HEAL RUN\n\nНе найден playbook/incindent для selector={cleaned}"
+    policy = decide_repair_policy(playbook.target_problem_type or "failing_health_checks", owner_autofix_enabled=bridge.owner_autofix_enabled())
+    incident_id = 0
+    if cleaned.isdigit():
+        incident_id = int(cleaned)
+    else:
+        incident_id = bridge.state.record_self_heal_incident(
+            problem_type=playbook.target_problem_type or "failing_health_checks",
+            signal_code=f"manual:{playbook.playbook_id}",
+            state=SELF_HEAL_STATE_REPAIR_PLANNED,
+            severity=policy.risk_level,
+            summary=f"manual self-heal run requested for {playbook.playbook_id}",
+            evidence="owner command",
+            risk_level=policy.risk_level,
+            autonomy_level=policy.autonomy_level,
+            source="owner_command",
+            confidence=0.8,
+            suggested_playbook=playbook.playbook_id,
+        )
+    plan = SelfHealingPlan(
+        incident_id=incident_id,
+        problem_type=playbook.target_problem_type or "failing_health_checks",
+        playbook_id=playbook.playbook_id,
+        autonomy_level=policy.autonomy_level,
+        risk_level=policy.risk_level,
+        actions=playbook.actions,
+        verification_steps=playbook.verification_steps,
+        rollback_steps=playbook.rollback_steps,
+        require_owner_approval=policy.require_owner_approval,
+        dry_run=(not execute) or policy.dry_run_only or not policy.allow_auto_repair,
+    )
+    if plan.dry_run:
+        return (
+            "SELF-HEAL RUN\n\n"
+            f"selector={cleaned}\nplaybook={playbook.playbook_id}\nmode=dry-run\n"
+            f"autonomy={policy.autonomy_level}\nrisk={policy.risk_level}\n"
+            f"actions={', '.join(action.action_id for action in playbook.actions) or '-'}\n"
+            f"reason={policy.rationale}"
+        )
+    before_state = capture_health_state(bridge)
+    bridge.state.update_self_heal_incident_state(incident_id, new_state=SELF_HEAL_STATE_EXECUTING, note="manual execute")
+    execution = execute_repair_plan(bridge, plan=plan)
+    attempt_id = bridge.state.record_self_heal_attempt(
+        incident_id=incident_id,
+        playbook_id=playbook.playbook_id,
+        state=SELF_HEAL_STATE_EXECUTING,
+        status=execution.status,
+        execution_summary=f"manual run: {playbook.playbook_id}",
+        executed_steps=execution.executed_steps,
+        failed_step=execution.failed_step,
+        artifacts_changed=execution.artifacts_changed,
+        verification_required=execution.verification_required,
+        notes=execution.notes,
+        stdout_log=execution.stdout_log,
+        stderr_log=execution.stderr_log,
+    )
+    bridge.state.update_self_heal_incident_state(incident_id, new_state=SELF_HEAL_STATE_VERIFYING, note="manual verification")
+    verification = verify_repair(bridge, playbook=playbook, before_state=before_state, execution_status=execution.status)
+    bridge.state.record_self_heal_verification(
+        incident_id=incident_id,
+        attempt_id=attempt_id,
+        verified=verification.verified,
+        before_state=dict(verification.before_state),
+        after_state=dict(verification.after_state),
+        confidence=verification.confidence,
+        remaining_issues=verification.remaining_issues,
+        regressions_detected=verification.regressions_detected,
+        notes=verification.notes,
+    )
+    bridge.state.update_self_heal_incident_state(
+        incident_id,
+        new_state=SELF_HEAL_STATE_REPAIRED if verification.verified else SELF_HEAL_STATE_FAILED,
+        note="manual self-heal finished",
+        verification_status="verified" if verification.verified else "failed",
+    )
+    return (
+        "SELF-HEAL RUN\n\n"
+        f"selector={cleaned}\nplaybook={playbook.playbook_id}\nmode=execute\n"
+        f"execution={execution.status}\nverified={'yes' if verification.verified else 'no'}\n"
+        f"remaining_issues={', '.join(verification.remaining_issues) or '-'}\n"
+        f"regressions={', '.join(verification.regressions_detected) or '-'}"
+    )
+
+
 def _pick_playbook_for_classification(playbooks: Iterable["RepairPlaybook"], classification: FailureClassification):
     for playbook in playbooks:
         if playbook.playbook_id == classification.suggested_playbook or playbook.target_problem_type == classification.problem_type:
+            return playbook
+    return None
+
+
+def _resolve_playbook(bridge: "TelegramBridge", selector: str):
+    cleaned = selector.strip()
+    if cleaned.isdigit():
+        incidents = bridge.state.get_recent_self_heal_incidents(limit=20)
+        for row in incidents:
+            if int(row["id"]) == int(cleaned):
+                incident_playbook = str(row["suggested_playbook"] or "")
+                for playbook in REPAIR_PLAYBOOKS:
+                    if playbook.playbook_id == incident_playbook:
+                        return playbook
+                return None
+    for playbook in REPAIR_PLAYBOOKS:
+        if playbook.playbook_id == cleaned:
             return playbook
     return None
 

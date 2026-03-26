@@ -128,6 +128,8 @@ def build_help_panel_text(
             "• /status\n"
             "• /ownerreport\n"
             "• /qualityreport\n"
+            "• /selfhealstatus\n"
+            "• /selfhealrun <playbook|incident_id> [dry-run|execute]\n"
             "• /gitstatus\n"
             "• /gitlast [количество]\n"
             "• /errors [количество]\n"

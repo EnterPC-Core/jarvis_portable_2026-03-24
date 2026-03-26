@@ -294,10 +294,18 @@ def main() -> int:
             try:
                 if not bot.handle_quality_report_command(bridge.OWNER_USER_ID, bridge.OWNER_USER_ID):
                     raise RuntimeError("quality report command was not handled")
+                if not bot.handle_self_heal_status_command(bridge.OWNER_USER_ID, bridge.OWNER_USER_ID):
+                    raise RuntimeError("self-heal status command was not handled")
+                if not bot.handle_self_heal_run_command(bridge.OWNER_USER_ID, bridge.OWNER_USER_ID, "refresh_runtime_state"):
+                    raise RuntimeError("self-heal run command was not handled")
             finally:
                 bot.safe_send_text = original_safe_send_text
-            if not sent_messages or "QUALITY REPORT" not in sent_messages[-1]:
+            if not any("QUALITY REPORT" in item for item in sent_messages):
                 raise RuntimeError("quality report command renderer regressed")
+            if not any("SELF-HEAL STATUS" in item for item in sent_messages):
+                raise RuntimeError("self-heal status command renderer regressed")
+            if not any("mode=dry-run" in item for item in sent_messages):
+                raise RuntimeError("self-heal run dry-run renderer regressed")
             if not bot.should_process_group_message(
                 {
                     "text": "Jarvis?",
