@@ -280,6 +280,9 @@ def main() -> int:
             owner_panel_text, owner_panel_markup = bot.build_control_panel(bridge.OWNER_USER_ID, "owner_root")
             if "OWNER PANEL" not in owner_panel_text or "inline_keyboard" not in owner_panel_markup:
                 raise RuntimeError("owner control panel renderer regressed")
+            self_heal_panel_text, self_heal_panel_markup = bot.build_control_panel(bridge.OWNER_USER_ID, "owner_selfheal")
+            if "OWNER SELF-HEAL" not in self_heal_panel_text or "inline_keyboard" not in self_heal_panel_markup:
+                raise RuntimeError("owner self-heal panel renderer regressed")
             owner_report_text = bot.render_owner_report_text(bridge.OWNER_USER_ID)
             if "Quality diagnostics" not in owner_report_text:
                 raise RuntimeError("owner report diagnostics section regressed")

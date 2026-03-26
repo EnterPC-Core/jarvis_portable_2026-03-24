@@ -182,6 +182,7 @@ class ControlPanelRenderer:
                 "• Память и чаты: history, digest, recall, portraits, export\n"
                 "• Файлы и медиа: sdcard-команды, файлы, документы, media-context\n"
                 "• Live-data: погода, курсы, новости, current-facts\n"
+                "• Self-heal: incidents, approval gate, bounded repair playbooks\n"
                 "• Модерация: sanctions, warns, welcome, appeals\n"
                 "• Все команды: полный текстовый реестр проекта"
             )
@@ -189,7 +190,8 @@ class ControlPanelRenderer:
                 "inline_keyboard": [
                     [{"text": "Runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Git и логи", "callback_data": "ui:panel:owner_git"}],
                     [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}],
-                    [{"text": "Live-data", "callback_data": "ui:panel:owner_live"}, {"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
+                    [{"text": "Live-data", "callback_data": "ui:panel:owner_live"}, {"text": "Self-heal", "callback_data": "ui:panel:owner_selfheal"}],
+                    [{"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
                     [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
                     [{"text": "Главная", "callback_data": "ui:home"}],
                 ]
@@ -217,7 +219,8 @@ class ControlPanelRenderer:
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Git и логи", "callback_data": "ui:panel:owner_git"}, {"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}],
+                    [{"text": "Git и логи", "callback_data": "ui:panel:owner_git"}, {"text": "Self-heal", "callback_data": "ui:panel:owner_selfheal"}],
+                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}],
                     [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
                     [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
                 ]
@@ -343,6 +346,63 @@ class ControlPanelRenderer:
                 ]
             }
             return text, markup
+        if section == "owner_selfheal" and user_id == self.owner_user_id:
+            incidents = bridge.state.get_recent_self_heal_incidents(limit=10)
+            if payload.isdigit():
+                incident = bridge.state.get_self_heal_incident(int(payload))
+            else:
+                incident = None
+            if incident is not None:
+                text = (
+                    "JARVIS • OWNER SELF-HEAL\n\n"
+                    f"Incident #{int(incident['id'])}\n"
+                    f"problem={incident['problem_type']}\n"
+                    f"signal={incident['signal_code']}\n"
+                    f"state={incident['state']}\n"
+                    f"severity={incident['severity']}\n"
+                    f"risk={incident['risk_level']}\n"
+                    f"autonomy={incident['autonomy_level']}\n"
+                    f"playbook={incident['suggested_playbook'] or '-'}\n"
+                    f"verification={incident['verification_status'] or '-'}\n\n"
+                    f"summary:\n{incident['summary'] or '-'}\n\n"
+                    f"evidence:\n{self.truncate_text(incident['evidence'] or '-', 500)}"
+                )
+                keyboard = []
+                if str(incident["state"] or "") in {"awaiting_approval", "repair_planned"}:
+                    keyboard.append(
+                        [
+                            {"text": "Approve", "callback_data": f"ui:selfheal:approve:{int(incident['id'])}"},
+                            {"text": "Deny", "callback_data": f"ui:selfheal:deny:{int(incident['id'])}"},
+                        ]
+                    )
+                keyboard.append([{"text": "К списку", "callback_data": "ui:panel:owner_selfheal"}])
+                keyboard.append([{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}])
+                return text, {"inline_keyboard": keyboard}
+            lines = [
+                "JARVIS • OWNER SELF-HEAL",
+                "",
+                "Команды:",
+                "• /selfhealstatus",
+                "• /selfhealrun <playbook|incident_id> [dry-run|execute]",
+                "• /selfhealapprove <incident_id>",
+                "• /selfhealdeny <incident_id>",
+                "",
+                "Последние incidents:",
+            ]
+            keyboard = []
+            if not incidents:
+                lines.append("Пока пусто.")
+            else:
+                for row in incidents[:6]:
+                    lines.append(
+                        f"• #{int(row['id'])} {row['problem_type']} [{row['state']}] playbook={row['suggested_playbook'] or '-'}"
+                    )
+                    keyboard.append(
+                        [{"text": f"Incident #{int(row['id'])}", "callback_data": f"ui:selfheal:view:{int(row['id'])}"}]
+                    )
+            keyboard.append([{"text": "Runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Все команды", "callback_data": "ui:panel:owner_commands"}])
+            keyboard.append([{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}])
+            return "\n".join(lines), {"inline_keyboard": keyboard}
         if section == "owner_moderation" and user_id == self.owner_user_id:
             text = (
                 "JARVIS • OWNER MODERATION\n\n"

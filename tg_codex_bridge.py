@@ -759,6 +759,7 @@ CONTROL_PANEL_SECTIONS = (
     "owner_files",
     "owner_live",
     "owner_moderation",
+    "owner_selfheal",
     "owner_commands",
 )
 UI_PENDING_APPEAL = "await_appeal_text"

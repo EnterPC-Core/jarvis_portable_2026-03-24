@@ -138,6 +138,17 @@ class UIHandlers:
                     if target_section in self.control_panel_sections:
                         self.edit_control_panel(bridge, chat_id, user_id, int(message_id), target_section)
                         return
+                if user_id == self.owner_user_id and len(parts) == 4 and parts[1] == "selfheal" and parts[2] == "view":
+                    self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "owner_selfheal", parts[3])
+                    return
+                if user_id == self.owner_user_id and len(parts) == 4 and parts[1] == "selfheal" and parts[2] == "approve":
+                    bridge.handle_self_heal_approve_command(chat_id, user_id, parts[3])
+                    self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "owner_selfheal", parts[3])
+                    return
+                if user_id == self.owner_user_id and len(parts) == 4 and parts[1] == "selfheal" and parts[2] == "deny":
+                    bridge.handle_self_heal_deny_command(chat_id, user_id, parts[3])
+                    self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "owner_selfheal", parts[3])
+                    return
                 if data == "ui:profile":
                     self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "profile")
                     return
