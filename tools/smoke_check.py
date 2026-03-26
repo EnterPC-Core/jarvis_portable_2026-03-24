@@ -16,6 +16,7 @@ def main() -> int:
     from services.auto_moderation import detect_auto_moderation_decision, get_group_rules_text
     from services.failure_detectors import detect_failure_signals
     from services.repair_playbooks import select_playbooks_for_signals
+    from pipeline.context_pipeline import ContextPipeline
 
     state = bridge.BridgeState(
         bridge.DEFAULT_HISTORY_LIMIT,
@@ -44,6 +45,12 @@ def main() -> int:
             raise RuntimeError("owner access check failed")
         if bridge.has_chat_access(set(), bridge.OWNER_USER_ID + 1):
             raise RuntimeError("non-owner access check failed")
+        if bridge.parse_mode_command("/mode jarvis") != "jarvis":
+            raise RuntimeError("mode command adapter regressed")
+        if "JARVIS" not in bridge.build_help_panel_text("public"):
+            raise RuntimeError("help panel text wrapper regressed")
+        if "inline_keyboard" not in bridge.build_help_panel_markup("public"):
+            raise RuntimeError("help panel markup wrapper regressed")
         route = bridge.analyze_request_route(
             "Jarvis какая погода в Москве",
             assistant_persona="jarvis",
@@ -242,6 +249,47 @@ def main() -> int:
         duplicated = "Связь есть.\n\nСвязь есть."
         if bridge.collapse_duplicate_answer_blocks(duplicated) != "Связь есть.":
             raise RuntimeError("duplicate answer blocks were not collapsed")
+        bot = bridge.TelegramBridge(bridge.BotConfig())
+        try:
+            if "JARVIS" not in bot.build_help_panel_text("public"):
+                raise RuntimeError("bridge help panel adapter regressed")
+            if "inline_keyboard" not in bot.build_help_panel_markup("public"):
+                raise RuntimeError("bridge help panel markup adapter regressed")
+            if not bot.should_process_group_message(
+                {
+                    "text": "Jarvis?",
+                    "from": {"id": bridge.OWNER_USER_ID, "first_name": "Дмитрий"},
+                    "chat": {"id": -1003879607896, "type": "supergroup"},
+                },
+                "Jarvis?",
+            ):
+                raise RuntimeError("bridge group trigger adapter regressed")
+            pipeline = ContextPipeline()
+            bundle = pipeline.build_text_context_bundle(
+                bot,
+                chat_id=bridge.OWNER_USER_ID,
+                user_text="Привет",
+                route_decision=bridge.analyze_request_route(
+                    "Привет",
+                    assistant_persona="jarvis",
+                    chat_type="private",
+                    user_id=bridge.OWNER_USER_ID,
+                    reply_context="",
+                ),
+                user_id=bridge.OWNER_USER_ID,
+                message={
+                    "message_id": 1,
+                    "text": "Привет",
+                    "from": {"id": bridge.OWNER_USER_ID, "first_name": "Дмитрий"},
+                    "chat": {"id": bridge.OWNER_USER_ID, "type": "private"},
+                },
+                reply_context="",
+                active_group_followup=False,
+            )
+            if bundle is None or not hasattr(bundle, "summary_text"):
+                raise RuntimeError("context pipeline adapter regressed")
+        finally:
+            bot.state.db.close()
         followup_message = {
             "text": "А что лучше из этих двух?",
             "from": {"id": 7104783736, "username": "maksim_vlasov_71", "first_name": "Максим"},

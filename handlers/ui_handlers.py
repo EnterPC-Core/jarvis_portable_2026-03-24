@@ -1,7 +1,5 @@
 from typing import Optional
 
-from utils.help_utils import build_help_panel_markup, build_help_panel_text
-
 
 class UIHandlers:
     def __init__(
@@ -249,12 +247,21 @@ class UIHandlers:
             if section not in self.public_help_sections:
                 section = "public"
         try:
-            bridge.edit_inline_message(chat_id, int(message_id), build_help_panel_text(section), build_help_panel_markup(section))
+            bridge.edit_inline_message(
+                chat_id,
+                int(message_id),
+                bridge.build_help_panel_text(section),
+                bridge.build_help_panel_markup(section),
+            )
         except Exception as error:
             if bridge.is_message_not_modified_error(error):
                 return
             if bridge.is_message_edit_recoverable_error(error):
-                bridge.send_inline_message(chat_id, build_help_panel_text(section), build_help_panel_markup(section))
+                bridge.send_inline_message(
+                    chat_id,
+                    bridge.build_help_panel_text(section),
+                    bridge.build_help_panel_markup(section),
+                )
                 return
             bridge.log(f"failed to edit help panel chat={chat_id} message_id={message_id}: {error}")
 

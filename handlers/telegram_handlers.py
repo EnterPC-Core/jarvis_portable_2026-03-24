@@ -1,8 +1,6 @@
 from threading import Thread
 from typing import Optional
 
-from utils.chat_text import should_process_group_message
-
 
 class TelegramMessageHandlers:
     def __init__(self, *, owner_user_id: int, safe_mode_reply: str) -> None:
@@ -35,14 +33,7 @@ class TelegramMessageHandlers:
             active_group_followup = bridge.is_group_followup_message(chat_id, message, raw_text)
             active_group_discussion = bridge.is_group_discussion_continuation(chat_id, message, raw_text)
             participant_priority = bridge.get_group_participant_priority(chat_id, message)
-            should_handle_as_bot = should_process_group_message(
-                message,
-                raw_text,
-                bridge.bot_username,
-                bridge.config.trigger_name,
-                bot_user_id=bridge.bot_user_id,
-                allow_owner_reply=False,
-            )
+            should_handle_as_bot = bridge.should_process_group_message(message, raw_text)
             meaningful_group_request = bridge.is_meaningful_group_request(message, raw_text)
             ambient_group_chatter = bridge.is_ambient_group_chatter(message, raw_text)
             if ambient_group_chatter and not active_group_followup and not active_group_discussion and user_id != self.owner_user_id:
@@ -172,14 +163,7 @@ class TelegramMessageHandlers:
             bridge.handle_sd_save_command(chat_id, user_id, save_target, message)
             return
         if chat_type in {"group", "supergroup"}:
-            should_handle_as_bot = should_process_group_message(
-                message,
-                caption or file_name,
-                bridge.bot_username,
-                bridge.config.trigger_name,
-                bot_user_id=bridge.bot_user_id,
-                allow_owner_reply=False,
-            )
+            should_handle_as_bot = bridge.should_process_group_message(message, caption or file_name)
             if not should_handle_as_bot:
                 return
         if not bridge.state.try_start_chat_task(chat_id):
@@ -207,14 +191,7 @@ class TelegramMessageHandlers:
                 return
 
             if chat_type in {"group", "supergroup"}:
-                if not should_process_group_message(
-                    message,
-                    "",
-                    bridge.bot_username,
-                    bridge.config.trigger_name,
-                    bot_user_id=bridge.bot_user_id,
-                    allow_owner_reply=False,
-                ) and user_id != self.owner_user_id:
+                if not bridge.should_process_group_message(message, "") and user_id != self.owner_user_id:
                     bridge.log(f"voice trigger not found chat={chat_id} file_id={file_id}")
                     return
 

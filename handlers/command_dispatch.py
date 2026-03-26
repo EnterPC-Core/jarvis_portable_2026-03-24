@@ -15,7 +15,6 @@ from handlers.command_parsers import (
     parse_memory_chat_command,
     parse_memory_summary_command,
     parse_memory_user_command,
-    parse_mode_command,
     parse_moderation_command,
     parse_owner_autofix_command,
     parse_password_command,
@@ -240,7 +239,7 @@ class CommandDispatcher:
         if upgrade_task is not None:
             return bridge.handle_upgrade_command(chat_id, user_id, upgrade_task, is_private_chat=(chat_id > 0))
 
-        parsed_mode = parse_mode_command(text)
+        parsed_mode = bridge.parse_mode_command(text)
         if parsed_mode is None:
             return False
         if parsed_mode == "":

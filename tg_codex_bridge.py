@@ -3905,6 +3905,16 @@ class TelegramBridge:
     def has_chat_access(self, authorized_user_ids: set[int], user_id: Optional[int]) -> bool:
         return has_chat_access(authorized_user_ids, user_id)
 
+    def should_process_group_message(self, message: dict, text: str) -> bool:
+        return should_process_group_message(
+            message,
+            text,
+            self.bot_username,
+            self.config.trigger_name,
+            bot_user_id=self.bot_user_id,
+            allow_owner_reply=False,
+        )
+
     def contains_profanity(self, text: str) -> bool:
         return contains_profanity(text)
 
@@ -3937,6 +3947,9 @@ class TelegramBridge:
 
     def parse_welcome_command(self, text: str) -> Optional[Tuple[str, str]]:
         return parse_welcome_command(text)
+
+    def parse_mode_command(self, text: str) -> Optional[str]:
+        return parse_mode_command(text)
 
     def has_public_callback_access(self, data: str) -> bool:
         return has_public_callback_access(data)
@@ -4281,6 +4294,12 @@ class TelegramBridge:
 
     def edit_control_panel(self, chat_id: int, user_id: int, message_id: int, section: str = "home", payload: str = "") -> None:
         self.ui_handlers.edit_control_panel(self, chat_id, user_id, message_id, section, payload)
+
+    def build_help_panel_text(self, section: str) -> str:
+        return build_help_panel_text(section)
+
+    def build_help_panel_markup(self, section: str) -> dict:
+        return build_help_panel_markup(section)
 
     def build_public_control_panel(self, user_id: int, section: str, payload: str = "") -> Tuple[str, dict]:
         if section == "profile":

@@ -61,7 +61,9 @@ class ContextPipeline:
             detect_local_chat_query_func=bridge.detect_local_chat_query,
             should_include_database_context_func=bridge.should_include_database_context,
             is_owner_private_chat_func=bridge.is_owner_private_chat,
-            build_current_discussion_context_func=lambda **kwargs: self.build_current_discussion_context(bridge, **kwargs),
+            build_current_discussion_context_func=lambda *args, **kwargs: self.build_current_discussion_context(
+                bridge, *args, **kwargs
+            ),
             build_external_research_context_func=bridge.build_external_research_context,
             build_route_summary_text_func=bridge.build_route_summary_text,
             build_guardrail_note_func=bridge.build_guardrail_note,
