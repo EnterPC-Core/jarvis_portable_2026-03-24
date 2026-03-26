@@ -284,6 +284,27 @@ class OwnerCommandService:
         bridge.safe_send_text(chat_id, "\n".join(lines))
         return True
 
+    def handle_quality_report_command(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int]) -> bool:
+        if not self.is_owner_private_chat_func(user_id, chat_id):
+            bridge.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+            return True
+        bridge.refresh_world_state_registry("quality_report", chat_id=chat_id)
+        diagnostics_metrics = collect_diagnostics_metrics(bridge.state, window_seconds=86400)
+        recent_routes = bridge.state.get_recent_request_diagnostics(limit=8)
+        world_state_context = bridge.state.get_world_state_context(limit=8)
+        lines = [
+            "QUALITY REPORT",
+            f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
+            "",
+            render_diagnostics_metrics(diagnostics_metrics),
+        ]
+        if world_state_context:
+            lines.extend(["", world_state_context])
+        if recent_routes:
+            lines.extend(["", "Последние route decisions:", bridge.render_route_diagnostics_rows(recent_routes)])
+        bridge.safe_send_text(chat_id, "\n".join(lines))
+        return True
+
     def render_owner_report_text(self, bridge: "TelegramBridge", chat_id: int) -> str:
         status_snapshot = bridge.state.get_status_snapshot(chat_id)
         last_backup_raw = bridge.state.get_meta("last_backup_ts", "0")

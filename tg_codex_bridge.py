@@ -420,6 +420,7 @@ DIGEST_USAGE_TEXT = "Используй: /digest [YYYY-MM-DD]"
 CHAT_DIGEST_USAGE_TEXT = "Используй: /chatdigest <chat_id> [YYYY-MM-DD]"
 OWNER_REPORT_USAGE_TEXT = "Используй: /ownerreport"
 REPAIR_STATUS_USAGE_TEXT = "Используй: /repairstatus"
+QUALITY_REPORT_USAGE_TEXT = "Используй: /qualityreport"
 ROUTES_USAGE_TEXT = "Используй: /routes [количество]"
 MEMORY_CHAT_USAGE_TEXT = "Используй: /memorychat [запрос]"
 MEMORY_USER_USAGE_TEXT = "Используй: /memoryuser @username, /memoryuser user_id или reply на сообщение участника"
@@ -6095,6 +6096,9 @@ class TelegramBridge:
 
     def handle_repair_status_command(self, chat_id: int, user_id: Optional[int]) -> bool:
         return self.owner_handlers.handle_repair_status_command(self, chat_id, user_id)
+
+    def handle_quality_report_command(self, chat_id: int, user_id: Optional[int]) -> bool:
+        return self.owner_handlers.handle_quality_report_command(self, chat_id, user_id)
 
     def render_owner_report_text(self, chat_id: int) -> str:
         return self.owner_handlers.render_owner_report_text(self, chat_id)

@@ -16,6 +16,7 @@ ADMIN_COMMAND_SPECS: Tuple[AdminCommandSpec, ...] = (
     AdminCommandSpec("/status", "/status", "access", "runtime_audit", "sqlite_snapshot", "Локальный снимок состояния runtime и памяти."),
     AdminCommandSpec("/restart", "/restart", "owner_private", "runtime_audit", "supervisor", "Перезапуск bridge через supervisor."),
     AdminCommandSpec("/ownerreport", "/ownerreport", "owner_private", "runtime_audit", "runtime_probe+world_state", "Подробный operational report."),
+    AdminCommandSpec("/qualityreport", "/qualityreport", "owner_private", "diagnostics", "request_diagnostics+world_state", "Агрегированная сводка по verified/inferred/insufficient и деградациям."),
     AdminCommandSpec("/errors", "/errors [количество]", "owner_private", "diagnostics", "runtime_log", "Последние реальные ошибки из логов."),
     AdminCommandSpec("/events", "/events [restart|access|system|all] [количество]", "owner_private", "diagnostics", "runtime_log", "Последние operational-события."),
     AdminCommandSpec("/routes", "/routes [количество]", "owner_private", "route_audit", "request_diagnostics", "Последние route/self-check telemetry записи."),

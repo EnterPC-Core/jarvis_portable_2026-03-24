@@ -52,6 +52,7 @@
 
 - `/status`
 - `/ownerreport`
+- `/qualityreport`
 - `/resources`
 - `/topproc`
 - `/disk`

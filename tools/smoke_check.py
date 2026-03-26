@@ -280,6 +280,21 @@ def main() -> int:
             owner_report_text = bot.render_owner_report_text(bridge.OWNER_USER_ID)
             if "Quality diagnostics" not in owner_report_text:
                 raise RuntimeError("owner report diagnostics section regressed")
+            sent_messages: list[str] = []
+            original_safe_send_text = bot.safe_send_text
+
+            def _capture_safe_send_text(chat_id: int, text: str, *args, **kwargs):
+                sent_messages.append(text)
+                return {"ok": True, "chat_id": chat_id, "text": text}
+
+            bot.safe_send_text = _capture_safe_send_text
+            try:
+                if not bot.handle_quality_report_command(bridge.OWNER_USER_ID, bridge.OWNER_USER_ID):
+                    raise RuntimeError("quality report command was not handled")
+            finally:
+                bot.safe_send_text = original_safe_send_text
+            if not sent_messages or "QUALITY REPORT" not in sent_messages[-1]:
+                raise RuntimeError("quality report command renderer regressed")
             if not bot.should_process_group_message(
                 {
                     "text": "Jarvis?",

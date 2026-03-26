@@ -111,6 +111,8 @@ class CommandDispatcher:
             return bridge.handle_status_command(chat_id)
         if text == "/repairstatus":
             return bridge.handle_repair_status_command(chat_id, user_id)
+        if text == "/qualityreport":
+            return bridge.handle_quality_report_command(chat_id, user_id)
         if text == "/rating" and user_id is not None:
             bridge.open_control_panel(chat_id, user_id, "profile")
             return True

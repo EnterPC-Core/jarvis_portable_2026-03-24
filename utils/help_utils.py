@@ -127,6 +127,7 @@ def build_help_panel_text(
             "• /restart\n"
             "• /status\n"
             "• /ownerreport\n"
+            "• /qualityreport\n"
             "• /gitstatus\n"
             "• /gitlast [количество]\n"
             "• /errors [количество]\n"
