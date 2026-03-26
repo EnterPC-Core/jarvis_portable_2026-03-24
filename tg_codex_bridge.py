@@ -9466,19 +9466,6 @@ def should_process_group_message(message: dict, text: str, bot_username: str, tr
 def contains_voice_trigger_name(text: str, trigger_name: str, bot_username: str) -> bool:
     return _contains_voice_trigger_name(text, trigger_name, bot_username, DEFAULT_TRIGGER_NAME)
 
-
-def should_include_database_context(user_text: str) -> bool:
-    lowered = (user_text or "").lower()
-    markers = (
-        "база", "бд", "db", "database", "история", "событи", "кто", "почему", "когда",
-        "участник", "пользоват", "user_id", "@", "рейтинг", "топ", "уров", "xp",
-        "ачив", "достиж", "апел", "appeal", "бан", "мут", "warn", "варн", "санкц",
-        "модер", "наруш", "профил", "статист", "лог", "факт", "remember", "recall",
-        "feedback", "фидбек", "отзыв", "роут", "маршрут", "router", "policy", "self-check", "контекст",
-    )
-    return any(marker in lowered for marker in markers)
-
-
 def resolve_sdcard_path(raw_path: str, *, allow_missing: bool, default_to_root: bool) -> Path:
     return _resolve_sdcard_path(
         raw_path,
@@ -9809,64 +9796,6 @@ def compute_group_spontaneous_reply_score(user_text: str) -> int:
     if any(marker in lowered for marker in ("бот", "jarvis", "джарвис", "ссылка", "ozon", "озон", "чат", "контекст")):
         score += 1
     return score
-
-
-def response_shape_hint(intent: str) -> str:
-    if intent == "runtime_status":
-        return "Сначала конкретный статус или метрика. Если точной проверки не было, прямо скажи это. Не имитируй выполненную диагностику."
-    if intent == "purchase_advice":
-        return (
-            "Отвечай как внятный советчик по выбору покупки. "
-            "Сначала короткий вывод под запрос пользователя. "
-            "Потом 2-4 лучших варианта с понятными плюсами и минусами. "
-            "Если в чате уже обсуждали модели или предпочтения, учитывай именно их. "
-            "Если данных не хватает, задай один уточняющий вопрос вместо общего рассуждения. "
-            "Не подавай рекомендацию как абсолютную истину: если выбор спорный, прямо скажи, в чём компромисс."
-        )
-    if intent == "comparison_request":
-        return (
-            "Отвечай как внятное сравнение. "
-            "Сначала коротко скажи, кто сильнее и в каком сценарии. "
-            "Потом сравни по 3-5 ключевым критериям, которые реально важны для этого вопроса. "
-            "Если явного победителя нет, прямо скажи, от чего зависит выбор."
-        )
-    if intent == "recommendation_request":
-        return (
-            "Отвечай как нормальная рекомендация, а не как общий список. "
-            "Сначала дай короткий вывод, потом 2-4 подходящих варианта. "
-            "Если пользователь не уточнил важные ограничения, задай один короткий уточняющий вопрос."
-        )
-    if intent == "chat_dynamics":
-        return "Сначала коротко скажи, что происходит в этом чате сейчас. Затем по делу: участники, динамика, тон, суть. Не уходи в новости и не пересказывай лишнее."
-    if intent == "troubleshooting_help":
-        return "Сначала наиболее вероятная причина. Потом конкретные шаги, что проверить и что сделать. Не раздувай ответ."
-    if intent == "opinion_request":
-        return "Отвечай как мнение и оценка, а не как абсолютный факт. Сначала короткая позиция, потом 2-4 аргумента по делу."
-    if intent == "error_analysis":
-        return "Сначала вероятная причина. Затем конкретное решение. Без длинных вступлений."
-    if intent == "coding":
-        return "Сначала рабочее решение. Затем короткое пояснение. Если нужен код, покажи его достаточным фрагментом."
-    if intent == "task_solving":
-        return "Дай самый практичный вариант действий. Если шагов мало, не раздувай список."
-    if intent == "short_question":
-        return "Ответь коротко и прямо, без вводных фраз."
-    return "Держи ответ компактным, точным и естественным."
-
-
-def should_use_web_research(text: str) -> bool:
-    lowered = normalize_whitespace(text).lower()
-    if not lowered:
-        return False
-    if is_local_project_meta_request(lowered):
-        return False
-    if detect_runtime_query(lowered):
-        return False
-    if is_product_selection_help_request(lowered) and not has_external_research_signal(lowered):
-        return False
-    local_chat_query = detect_local_chat_query(lowered)
-    if local_chat_query and not has_external_research_signal(lowered):
-        return False
-    return has_external_research_signal(lowered)
 
 
 ROUTE_KIND_LIVE_MAP = {
