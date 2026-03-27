@@ -83,21 +83,32 @@ def parse_log_timestamp(line: str) -> Optional[int]:
 def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str, object]:
     snapshot: Dict[str, object] = {
         "restart_count": 0,
+        "session_restart_count": 0,
         "heartbeat_kill_count": 0,
+        "session_heartbeat_kill_count": 0,
         "termination_signal_count": 0,
+        "session_termination_signal_count": 0,
         "network_error_count": 0,
+        "session_network_error_count": 0,
         "codex_error_count": 0,
+        "session_codex_error_count": 0,
         "codex_degraded_count": 0,
+        "session_codex_degraded_count": 0,
         "lock_conflict_count": 0,
         "severe_error_count": 0,
+        "session_severe_error_count": 0,
         "warning_count": 0,
+        "session_warning_count": 0,
         "last_restart_line": "",
         "last_restart_at": 0,
         "last_severe_error_at": 0,
         "last_warning_at": 0,
         "last_heartbeat_kill_at": 0,
+        "last_session_start_at": 0,
         "recent_error_lines": [],
         "recent_warning_lines": [],
+        "recent_session_error_lines": [],
+        "recent_session_warning_lines": [],
     }
     if not log_path.exists():
         return snapshot
@@ -115,7 +126,10 @@ def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str
     )
     severe_lines: List[str] = []
     warning_lines: List[str] = []
+    session_severe_lines: List[str] = []
+    session_warning_lines: List[str] = []
     current_event_ts: Optional[int] = None
+    session_start_at = 0
     for line in lines:
         line_ts = parse_log_timestamp(line)
         if line_ts is not None:
@@ -124,24 +138,53 @@ def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str
             continue
         lowered = line.lower()
         is_timestamped = line.startswith("[")
+        if "bot started" in lowered:
+            session_start_at = line_ts or current_event_ts or 0
+            snapshot["last_session_start_at"] = session_start_at
+            snapshot["session_restart_count"] = 0
+            snapshot["session_heartbeat_kill_count"] = 0
+            snapshot["session_termination_signal_count"] = 0
+            snapshot["session_network_error_count"] = 0
+            snapshot["session_codex_error_count"] = 0
+            snapshot["session_codex_degraded_count"] = 0
+            snapshot["session_severe_error_count"] = 0
+            snapshot["session_warning_count"] = 0
+            session_severe_lines = []
+            session_warning_lines = []
+            continue
+        in_current_session = bool(session_start_at and current_event_ts is not None and current_event_ts >= session_start_at)
         if "bridge exited" in lowered:
             snapshot["restart_count"] = int(snapshot["restart_count"]) + 1
             snapshot["last_restart_line"] = line
             snapshot["last_restart_at"] = line_ts or int(snapshot["last_restart_at"])
+            if in_current_session:
+                snapshot["session_restart_count"] = int(snapshot["session_restart_count"]) + 1
         if "heartbeat stale" in lowered:
             snapshot["heartbeat_kill_count"] = int(snapshot["heartbeat_kill_count"]) + 1
             snapshot["last_heartbeat_kill_at"] = line_ts or int(snapshot["last_heartbeat_kill_at"])
+            if in_current_session:
+                snapshot["session_heartbeat_kill_count"] = int(snapshot["session_heartbeat_kill_count"]) + 1
         if "received termination signal" in lowered:
             snapshot["termination_signal_count"] = int(snapshot["termination_signal_count"]) + 1
+            if in_current_session:
+                snapshot["session_termination_signal_count"] = int(snapshot["session_termination_signal_count"]) + 1
         if "network error in main loop" in lowered:
             snapshot["network_error_count"] = int(snapshot["network_error_count"]) + 1
+            if in_current_session:
+                snapshot["session_network_error_count"] = int(snapshot["session_network_error_count"]) + 1
         if "codex error" in lowered:
             snapshot["codex_error_count"] = int(snapshot["codex_error_count"]) + 1
+            if in_current_session:
+                snapshot["session_codex_error_count"] = int(snapshot["session_codex_error_count"]) + 1
         if "codex degraded" in lowered:
             snapshot["codex_degraded_count"] = int(snapshot["codex_degraded_count"]) + 1
             snapshot["warning_count"] = int(snapshot["warning_count"]) + 1
             snapshot["last_warning_at"] = line_ts or int(snapshot["last_warning_at"])
             warning_lines.append(line)
+            if in_current_session:
+                snapshot["session_codex_degraded_count"] = int(snapshot["session_codex_degraded_count"]) + 1
+                snapshot["session_warning_count"] = int(snapshot["session_warning_count"]) + 1
+                session_warning_lines.append(line)
             continue
         if "instance lock conflict" in lowered:
             snapshot["lock_conflict_count"] = int(snapshot["lock_conflict_count"]) + 1
@@ -149,13 +192,21 @@ def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str
             snapshot["warning_count"] = int(snapshot["warning_count"]) + 1
             snapshot["last_warning_at"] = line_ts or int(snapshot["last_warning_at"])
             warning_lines.append(line)
+            if in_current_session:
+                snapshot["session_warning_count"] = int(snapshot["session_warning_count"]) + 1
+                session_warning_lines.append(line)
             continue
         if is_timestamped and is_error_log_line(lowered):
             snapshot["severe_error_count"] = int(snapshot["severe_error_count"]) + 1
             snapshot["last_severe_error_at"] = line_ts or int(snapshot["last_severe_error_at"])
             severe_lines.append(line)
+            if in_current_session:
+                snapshot["session_severe_error_count"] = int(snapshot["session_severe_error_count"]) + 1
+                session_severe_lines.append(line)
     snapshot["recent_error_lines"] = severe_lines[-8:]
     snapshot["recent_warning_lines"] = warning_lines[-8:]
+    snapshot["recent_session_error_lines"] = session_severe_lines[-8:]
+    snapshot["recent_session_warning_lines"] = session_warning_lines[-8:]
     return snapshot
 
 

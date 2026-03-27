@@ -426,7 +426,7 @@ def main() -> int:
                     raise RuntimeError("self-heal approve command was not handled")
             finally:
                 bot.safe_send_text = original_safe_send_text
-            if not any("QUALITY REPORT" in item for item in sent_messages):
+            if not any("ОТЧЁТ ПО КАЧЕСТВУ" in item for item in sent_messages):
                 raise RuntimeError("quality report command renderer regressed")
             if not any("SELF-HEAL STATUS" in item for item in sent_messages):
                 raise RuntimeError("self-heal status command renderer regressed")

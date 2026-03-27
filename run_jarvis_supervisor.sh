@@ -47,6 +47,23 @@ LOCK_PATH="${LOCK_PATH:-$SCRIPT_DIR/tg_codex_bridge.lock}"
 LOG_PATH="$SCRIPT_DIR/tg_codex_bridge.log"
 BOOT_LOG_PATH="$SCRIPT_DIR/supervisor_boot.log"
 LOCK_CONFLICT_EXIT_CODE=75
+LOG_ROTATE_SIZE_BYTES=$((1024 * 1024))
+
+rotate_log_if_needed() {
+  LOG_FILE="$1"
+  if [ ! -f "$LOG_FILE" ]; then
+    return 0
+  fi
+  LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+  if [ "${LOG_SIZE:-0}" -lt "$LOG_ROTATE_SIZE_BYTES" ]; then
+    return 0
+  fi
+  ROTATE_STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
+  mv "$LOG_FILE" "${LOG_FILE}.${ROTATE_STAMP}.bak"
+}
+
+rotate_log_if_needed "$LOG_PATH"
+rotate_log_if_needed "$BOOT_LOG_PATH"
 
 printf '[%s] supervisor init script_dir=%s db_path=%s heartbeat=%s timeout=%ss\n' \
   "$(date '+%Y-%m-%d %H:%M:%S')" "$SCRIPT_DIR" "$DB_PATH" "$HEARTBEAT_PATH" "$HEARTBEAT_TIMEOUT_SECONDS" >> "$BOOT_LOG_PATH"

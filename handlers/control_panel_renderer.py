@@ -158,8 +158,8 @@ class ControlPanelRenderer:
             f"• Heartbeat: {heartbeat_age_text}\n"
             f"• Последний backup: {backup_line}\n"
             f"• Перезапуски за 24ч: {int(runtime_snapshot.get('restart_count', 0))}\n"
-            f"• Серьёзные ошибки за 24ч: {int(runtime_snapshot.get('severe_error_count', 0))}\n"
-            f"• Recoverable warnings за 24ч: {int(runtime_snapshot.get('warning_count', 0))}\n"
+            f"• Серьёзные ошибки после запуска: {int(runtime_snapshot.get('session_severe_error_count', 0))}\n"
+            f"• Предупреждения после запуска: {int(runtime_snapshot.get('session_warning_count', 0))}\n"
             f"• Риск рантайма: {drive_scores.get('runtime_risk_pressure', 0.0):.1f}\n"
             f"• Уровень неопределённости: {drive_scores.get('uncertainty_pressure', 0.0):.1f}\n"
             f"• Деградировавшие маршруты: {diagnostics_metrics.degraded_count}\n"
@@ -265,8 +265,10 @@ class ControlPanelRenderer:
                 f"{self.render_git_last_commits(bridge.script_path.parent, limit=5)}"
             )
         elif payload == "logs":
-            recent_errors = bridge.read_recent_log_highlights(limit=8)
             runtime_snapshot = bridge.inspect_runtime_log()
+            recent_errors = [self.truncate_text(str(item), 220) for item in runtime_snapshot.get("recent_session_error_lines", [])[-8:]]
+            if not recent_errors:
+                recent_errors = [self.truncate_text(str(item), 220) for item in runtime_snapshot.get("recent_error_lines", [])[-8:]]
             bridge_tail = bridge.read_recent_operational_highlights(limit=8, category="all")
             lines = [
                 "JARVIS • ЛОГИ",
@@ -279,9 +281,11 @@ class ControlPanelRenderer:
                 lines.extend(f"- {item}" for item in recent_errors)
             else:
                 lines.append("- Явных ошибок в хвосте лога не найдено.")
-            recent_warnings = [self.truncate_text(str(item), 220) for item in runtime_snapshot.get("recent_warning_lines", [])[-5:]]
+            recent_warnings = [self.truncate_text(str(item), 220) for item in runtime_snapshot.get("recent_session_warning_lines", [])[-5:]]
+            if not recent_warnings:
+                recent_warnings = [self.truncate_text(str(item), 220) for item in runtime_snapshot.get("recent_warning_lines", [])[-5:]]
             if recent_warnings:
-                lines.extend(["", "Recoverable warnings:"])
+                lines.extend(["", "Последние восстанавливаемые предупреждения:"])
                 lines.extend(f"- {item}" for item in recent_warnings)
             if bridge_tail:
                 lines.extend(["", "Операционный хвост логов:"])
@@ -294,8 +298,8 @@ class ControlPanelRenderer:
                 "JARVIS • GIT И ЛОГИ\n\n"
                 "Короткая сводка. Ниже можно открыть состояние Git и сами логи отдельно.\n\n"
                 f"• Грязных файлов в Git: {int(operational_state.get('git_dirty_count', 0))}\n"
-                f"• Серьёзные ошибки: {int(runtime_snapshot.get('severe_error_count', 0))}\n"
-                f"• Recoverable warnings: {int(runtime_snapshot.get('warning_count', 0))}\n"
+                f"• Серьёзные ошибки после запуска: {int(runtime_snapshot.get('session_severe_error_count', 0))}\n"
+                f"• Предупреждения после запуска: {int(runtime_snapshot.get('session_warning_count', 0))}\n"
                 f"• Codex degraded: {int(runtime_snapshot.get('codex_degraded_count', 0))}\n"
                 f"• Жёсткие ошибки Codex: {int(runtime_snapshot.get('codex_error_count', 0))}\n\n"
                 "Полезные команды: /gitstatus, /gitlast, /errors, /events, /routes, /upgrade"

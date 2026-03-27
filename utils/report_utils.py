@@ -354,10 +354,13 @@ def render_bridge_runtime_watch(
     lines.extend(
         [
             f"Перезапуски за 24ч: {int(runtime_log_snapshot.get('restart_count', 0))}",
+            f"Перезапуски после запуска: {int(runtime_log_snapshot.get('session_restart_count', 0))}",
             f"Принудительные heartbeat-kill за 24ч: {int(runtime_log_snapshot.get('heartbeat_kill_count', 0))}",
             f"Сигналы завершения за 24ч: {int(runtime_log_snapshot.get('termination_signal_count', 0))}",
             f"Серьёзные ошибки за 24ч: {int(runtime_log_snapshot.get('severe_error_count', 0))}",
+            f"Серьёзные ошибки после запуска: {int(runtime_log_snapshot.get('session_severe_error_count', 0))}",
             f"Восстанавливаемые предупреждения за 24ч: {int(runtime_log_snapshot.get('warning_count', 0))}",
+            f"Восстанавливаемые предупреждения после запуска: {int(runtime_log_snapshot.get('session_warning_count', 0))}",
             f"Деградации Codex за 24ч: {int(runtime_log_snapshot.get('codex_degraded_count', 0))}",
             f"Жёсткие ошибки Codex за 24ч: {int(runtime_log_snapshot.get('codex_error_count', 0))}",
             f"Ошибки сетевого цикла за 24ч: {int(runtime_log_snapshot.get('network_error_count', 0))}",
@@ -367,13 +370,17 @@ def render_bridge_runtime_watch(
     if last_restart_line:
         lines.append(f"Последний перезапуск: {truncate_text_func(last_restart_line, 220)}")
 
-    recent_errors = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_error_lines", [])]
+    recent_errors = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_session_error_lines", [])]
+    if not recent_errors:
+        recent_errors = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_error_lines", [])]
     if recent_errors:
         lines.append("")
         lines.append("Последние серьёзные строки в логах:")
         lines.extend(f"- {item}" for item in recent_errors[-5:])
 
-    recent_warnings = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_warning_lines", [])]
+    recent_warnings = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_session_warning_lines", [])]
+    if not recent_warnings:
+        recent_warnings = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_warning_lines", [])]
     if recent_warnings:
         lines.append("")
         lines.append("Последние восстанавливаемые предупреждения:")
