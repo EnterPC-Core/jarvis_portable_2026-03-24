@@ -1,15 +1,10 @@
 from typing import Optional
 
 PANEL_TEXT_SAFE_LIMIT = 3200
-PANEL_TEXT_TRUNCATION_NOTE = "\n\n[panel truncated for Telegram]"
 
 
 def fit_panel_text(text: str) -> str:
-    cleaned = text or ""
-    if len(cleaned) <= PANEL_TEXT_SAFE_LIMIT:
-        return cleaned
-    cutoff = max(0, PANEL_TEXT_SAFE_LIMIT - len(PANEL_TEXT_TRUNCATION_NOTE))
-    return cleaned[:cutoff].rstrip() + PANEL_TEXT_TRUNCATION_NOTE
+    return text or ""
 
 
 class UIHandlers:
@@ -38,21 +33,21 @@ class UIHandlers:
 
     def open_control_panel(self, bridge: "TelegramBridge", chat_id: int, user_id: int, section: str = "home", payload: str = "") -> None:
         text, markup = bridge.build_control_panel(user_id, section, payload)
-        message_id = bridge.send_inline_message(chat_id, fit_panel_text(text), markup)
+        message_id = bridge.send_inline_message(chat_id, text, markup)
         if message_id is not None:
             bridge.state.set_ui_session(user_id, chat_id, int(message_id), section)
 
     def edit_control_panel(self, bridge: "TelegramBridge", chat_id: int, user_id: int, message_id: int, section: str = "home", payload: str = "") -> None:
         text, markup = bridge.build_control_panel(user_id, section, payload)
         try:
-            bridge.edit_inline_message(chat_id, message_id, fit_panel_text(text), markup)
+            bridge.edit_inline_message(chat_id, message_id, text, markup)
             bridge.state.set_ui_session(user_id, chat_id, message_id, section)
         except Exception as error:
             if bridge.is_message_not_modified_error(error):
                 bridge.state.set_ui_session(user_id, chat_id, message_id, section)
                 return
             if bridge.is_message_edit_recoverable_error(error):
-                new_message_id = bridge.send_inline_message(chat_id, fit_panel_text(text), markup)
+                new_message_id = bridge.send_inline_message(chat_id, text, markup)
                 if new_message_id is not None:
                     bridge.state.set_ui_session(user_id, chat_id, int(new_message_id), section)
                     return
@@ -149,6 +144,23 @@ class UIHandlers:
                     if target_section in self.control_panel_sections:
                         self.edit_control_panel(bridge, chat_id, user_id, int(message_id), target_section)
                         return
+                if len(parts) >= 4 and parts[1] == "panel":
+                    target_section = parts[2].strip()
+                    payload = ":".join(parts[3:]).strip()
+                    if target_section in self.control_panel_sections:
+                        self.edit_control_panel(bridge, chat_id, user_id, int(message_id), target_section, payload)
+                        return
+                if user_id == self.owner_user_id and len(parts) == 3 and parts[1] == "ownerautofix":
+                    action = parts[2].strip().lower()
+                    if action == "toggle":
+                        bridge.set_owner_autofix_enabled(not bridge.owner_autofix_enabled())
+                    target_section = "owner_selfheal"
+                    current_session = bridge.state.get_ui_session(user_id)
+                    current_section = str(current_session["active_panel"] or "") if current_session is not None else ""
+                    if current_section == "owner_runtime":
+                        target_section = "owner_runtime"
+                    self.edit_control_panel(bridge, chat_id, user_id, int(message_id), target_section)
+                    return
                 if user_id == self.owner_user_id and len(parts) == 4 and parts[1] == "selfheal" and parts[2] == "view":
                     self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "owner_selfheal", parts[3])
                     return

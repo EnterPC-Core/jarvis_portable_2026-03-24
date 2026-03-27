@@ -2,6 +2,8 @@
 import os
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,6 +20,7 @@ def main() -> int:
     from services.failure_detectors import detect_failure_signals
     from services.repair_playbooks import select_playbooks_for_signals
     from services.self_heal_manager import run_self_heal_cycle
+    from services.self_heal_verifier import verify_repair
     from pipeline.context_pipeline import ContextPipeline
 
     state = bridge.BridgeState(
@@ -182,6 +185,72 @@ def main() -> int:
             raise RuntimeError("repair playbook selector did not return recover_sqlite_lock")
         if not any(playbook.playbook_id == "reinitialize_missing_runtime_artifact" for playbook in playbooks):
             raise RuntimeError("repair playbook selector did not return reinitialize_missing_runtime_artifact")
+        startup_playbook = next((playbook for playbook in playbooks if playbook.playbook_id == "restart_runtime"), None)
+        if startup_playbook is None:
+            raise RuntimeError("restart_runtime playbook missing for verifier checks")
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            log_path = tmp_path / "tg_codex_bridge.log"
+            heartbeat_path = tmp_path / "tg_codex_bridge.heartbeat"
+            heartbeat_path.write_text("ok", encoding="utf-8")
+            before_state = {
+                "heartbeat_exists": True,
+                "heartbeat_age_seconds": 0.1,
+                "process_count": 1,
+                "severe_error_count": 0,
+                "warning_count": 0,
+                "degraded_routes": 0,
+                "stale_world_state": 0,
+            }
+
+            class _VerifierState:
+                def get_recent_request_diagnostics(self, limit: int = 8):
+                    del limit
+                    return []
+
+                def get_world_state_rows(self, limit: int = 8):
+                    del limit
+                    return []
+
+            class _VerifierBridge:
+                def __init__(self, log_file: Path, heartbeat_file: Path) -> None:
+                    self.log_path = log_file
+                    self.heartbeat_path = heartbeat_file
+                    self.script_path = tmp_path / "tg_codex_bridge.py"
+                    self.script_path.write_text("# smoke verifier stub\n", encoding="utf-8")
+                    self.config = SimpleNamespace(heartbeat_timeout_seconds=90)
+                    self.state = _VerifierState()
+
+                def inspect_runtime_log(self):
+                    return {"severe_error_count": 0, "warning_count": 0}
+
+            verifier_bridge = _VerifierBridge(log_path, heartbeat_path)
+            log_path.write_text("[2026-01-01 00:00:00] config loaded\n", encoding="utf-8")
+            missing_marker_verification = verify_repair(
+                verifier_bridge,
+                playbook=startup_playbook,
+                before_state=before_state,
+                execution_status="success",
+            )
+            if missing_marker_verification.verified:
+                raise RuntimeError("startup marker verification passed without startup marker in log")
+            if "startup_marker_missing" not in missing_marker_verification.remaining_issues:
+                raise RuntimeError("startup marker verification did not report missing marker")
+            log_path.write_text(
+                "[2026-01-01 00:00:00] config loaded\n"
+                "[2026-01-01 00:00:01] bot started\n",
+                encoding="utf-8",
+            )
+            successful_marker_verification = verify_repair(
+                verifier_bridge,
+                playbook=startup_playbook,
+                before_state=before_state,
+                execution_status="success",
+            )
+            if not successful_marker_verification.verified:
+                raise RuntimeError(
+                    f"startup marker verification failed despite marker present: {successful_marker_verification.remaining_issues}"
+                )
         if "не абсолютная истина" not in bridge.PUBLIC_HOME_TEXT.lower():
             raise RuntimeError("public home text does not mention beta caution")
         all_pedals_rules = get_group_rules_text("Все педали!")
@@ -277,7 +346,8 @@ def main() -> int:
             raise RuntimeError("duplicate answer blocks were not collapsed")
         bot = bridge.TelegramBridge(bridge.BotConfig())
         try:
-            if "Failure classifier" not in run_self_heal_cycle(bot, source="smoke_check", auto_execute=False):
+            self_heal_text = run_self_heal_cycle(bot, source="smoke_check", auto_execute=False)
+            if "Failure classifier" not in self_heal_text and "активных инцидентов не обнаружено" not in self_heal_text.lower():
                 raise RuntimeError("self-heal cycle renderer regressed")
             if "AUTO SELF-HEAL" not in bot.run_auto_repair_loop("smoke_check"):
                 raise RuntimeError("auto self-heal loop renderer regressed")

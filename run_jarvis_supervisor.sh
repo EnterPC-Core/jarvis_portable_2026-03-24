@@ -46,6 +46,7 @@ LOCK_PATH="${LOCK_PATH:-$SCRIPT_DIR/tg_codex_bridge.lock}"
 : "${LEGACY_JARVIS_DB_PATH:=$SCRIPT_DIR/../jarvis_legacy_data/jarvis.db}"
 LOG_PATH="$SCRIPT_DIR/tg_codex_bridge.log"
 BOOT_LOG_PATH="$SCRIPT_DIR/supervisor_boot.log"
+LOCK_CONFLICT_EXIT_CODE=75
 
 printf '[%s] supervisor init script_dir=%s db_path=%s heartbeat=%s timeout=%ss\n' \
   "$(date '+%Y-%m-%d %H:%M:%S')" "$SCRIPT_DIR" "$DB_PATH" "$HEARTBEAT_PATH" "$HEARTBEAT_TIMEOUT_SECONDS" >> "$BOOT_LOG_PATH"
@@ -82,6 +83,13 @@ while true; do
   done
   BRIDGE_STATUS=0
   wait "$BRIDGE_PID" 2>/dev/null || BRIDGE_STATUS=$?
+  if [ "$BRIDGE_STATUS" -eq "$LOCK_CONFLICT_EXIT_CODE" ]; then
+    printf '[%s] bridge lock conflict detected; another instance already owns %s. stopping this supervisor\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S')" "$LOCK_PATH" >> "$LOG_PATH"
+    printf '[%s] bridge pid=%s exited status=%s due to lock conflict; stopping supervisor to avoid restart loop\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S')" "$BRIDGE_PID" "$BRIDGE_STATUS" >> "$BOOT_LOG_PATH"
+    exit 0
+  fi
   printf '[%s] bridge exited status=%s, restarting in 2s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$BRIDGE_STATUS" >> "$LOG_PATH"
   printf '[%s] bridge pid=%s exited status=%s, restarting in 2s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$BRIDGE_PID" "$BRIDGE_STATUS" >> "$BOOT_LOG_PATH"
   sleep 2

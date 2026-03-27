@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 from typing import Callable, Dict, Optional
 
@@ -367,6 +368,8 @@ class OwnerCommandService:
         return True
 
     def render_owner_report_text(self, bridge: "TelegramBridge", chat_id: int) -> str:
+        operational_state = bridge.refresh_world_state_registry("owner_report_render", chat_id=chat_id)
+        bridge.recompute_drive_scores(operational_state)
         status_snapshot = bridge.state.get_status_snapshot(chat_id)
         last_backup_raw = bridge.state.get_meta("last_backup_ts", "0")
         try:
@@ -374,6 +377,7 @@ class OwnerCommandService:
         except ValueError:
             last_backup_value = 0.0
         backup_text = datetime.utcfromtimestamp(last_backup_value).strftime("%Y-%m-%d %H:%M:%S UTC") if last_backup_value > 0 else "ещё не было"
+        backup_age_hours = ((time.time() - last_backup_value) / 3600.0) if last_backup_value > 0 else -1.0
         runtime_snapshot = bridge.inspect_runtime_log()
         recent_errors = bridge.read_recent_log_highlights(limit=8)
         recent_routes = bridge.state.get_recent_request_diagnostics(limit=5)
@@ -407,6 +411,11 @@ class OwnerCommandService:
             f"Heartbeat: {bridge.config.heartbeat_path}",
             f"Heartbeat timeout: {bridge.config.heartbeat_timeout_seconds}s",
             f"Последний backup: {backup_text}",
+            (
+                f"Возраст backup: {backup_age_hours:.1f} ч"
+                if backup_age_hours >= 0
+                else "Возраст backup: n/a"
+            ),
             "",
             "Ресурсы:",
             bridge.render_resource_summary(),

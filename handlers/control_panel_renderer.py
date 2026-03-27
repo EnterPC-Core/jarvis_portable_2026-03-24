@@ -1,5 +1,9 @@
+import time
 from datetime import datetime
 from typing import Callable, Optional, Tuple
+
+from services.admin_registry import iter_admin_commands
+from services.diagnostics_metrics import collect_diagnostics_metrics, render_diagnostics_metrics
 
 
 class ControlPanelRenderer:
@@ -42,6 +46,260 @@ class ControlPanelRenderer:
             f"{legacy_preview}\n\n"
             "Если нужен полный список без сокращений, используй /help, /commands или открой COMMANDS.md."
         )
+
+    def _build_owner_commands_panel(self, payload: str) -> Tuple[str, dict]:
+        domain_labels = {
+            "runtime_audit": "Среда и runtime",
+            "diagnostics": "Диагностика",
+            "route_audit": "Маршрутизация",
+            "memory_audit": "Память и контекст",
+            "moderation_audit": "Модерация",
+            "access": "Общий доступ",
+        }
+        specs = list(iter_admin_commands())
+        if payload:
+            if payload == "access":
+                selected = [spec for spec in specs if spec.scope == "access"]
+                title = domain_labels["access"]
+            else:
+                selected = [spec for spec in specs if spec.domain == payload]
+                title = domain_labels.get(payload, payload)
+            lines = [
+                f"JARVIS • КОМАНДЫ: {title.upper()}",
+                "",
+            ]
+            if not selected:
+                lines.append("Команды для этого раздела не найдены.")
+            else:
+                for spec in selected:
+                    lines.append(f"- {spec.usage}")
+                    lines.append(f"  доступ={spec.scope}; источник={spec.evidence}; зачем={spec.description}")
+            lines.extend([
+                "",
+                "Правила:",
+                "- owner_only и owner_private команды нельзя выполнять без прав владельца.",
+                "- каждый admin/output должен опираться на свой источник данных.",
+            ])
+            text = "\n".join(lines)
+        else:
+            counts = {
+                "runtime_audit": len([spec for spec in specs if spec.domain == "runtime_audit"]),
+                "diagnostics": len([spec for spec in specs if spec.domain == "diagnostics"]),
+                "route_audit": len([spec for spec in specs if spec.domain == "route_audit"]),
+                "memory_audit": len([spec for spec in specs if spec.domain == "memory_audit"]),
+                "moderation_audit": len([spec for spec in specs if spec.domain == "moderation_audit"]),
+                "access": len([spec for spec in specs if spec.scope == "access"]),
+            }
+            text = (
+                "JARVIS • СПРАВОЧНИК OWNER/ADMIN КОМАНД\n\n"
+                "Короткая навигация по категориям. Полные списки открываются отдельными кнопками.\n\n"
+                f"• Среда и runtime: {counts['runtime_audit']}\n"
+                f"• Диагностика и self-healing: {counts['diagnostics']}\n"
+                f"• Маршрутизация: {counts['route_audit']}\n"
+                f"• Память и контекст: {counts['memory_audit']}\n"
+                f"• Модерация: {counts['moderation_audit']}\n"
+                f"• Общий доступ: {counts['access']}\n\n"
+                "Если нужен совсем полный плоский текст, остаются /help и /commands."
+            )
+        markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Среда и runtime", "callback_data": "ui:panel:owner_commands:runtime_audit"},
+                    {"text": "Диагностика", "callback_data": "ui:panel:owner_commands:diagnostics"},
+                ],
+                [
+                    {"text": "Маршрутизация", "callback_data": "ui:panel:owner_commands:route_audit"},
+                    {"text": "Память", "callback_data": "ui:panel:owner_commands:memory_audit"},
+                ],
+                [
+                    {"text": "Модерация", "callback_data": "ui:panel:owner_commands:moderation_audit"},
+                    {"text": "Общий доступ", "callback_data": "ui:panel:owner_commands:access"},
+                ],
+                [
+                    {"text": "К сводке", "callback_data": "ui:panel:owner_commands"},
+                    {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"},
+                ],
+                [{"text": "Главная", "callback_data": "ui:home"}],
+            ]
+        }
+        return text, markup
+
+    def _build_owner_runtime_summary(self, bridge: "TelegramBridge") -> Tuple[str, dict]:
+        operational_state = bridge.refresh_world_state_registry("owner_runtime_panel", chat_id=self.owner_user_id)
+        drive_scores = bridge.recompute_drive_scores(operational_state)
+        diagnostics_metrics = collect_diagnostics_metrics(bridge.state, window_seconds=86400)
+        owner_autofix_enabled = bridge.owner_autofix_enabled()
+        owner_autofix_status = "включено" if owner_autofix_enabled else "выключено"
+        runtime_snapshot = bridge.inspect_runtime_log()
+        heartbeat_age_text = "n/a"
+        if bridge.heartbeat_path.exists():
+            try:
+                heartbeat_age_text = f"{max(0, int(time.time() - bridge.heartbeat_path.stat().st_mtime))}s"
+            except OSError:
+                heartbeat_age_text = "n/a"
+        last_backup_raw = bridge.state.get_meta("last_backup_ts", "0")
+        try:
+            last_backup_value = float(last_backup_raw or "0")
+        except ValueError:
+            last_backup_value = 0.0
+        if last_backup_value > 0:
+            backup_line = datetime.utcfromtimestamp(last_backup_value).strftime("%Y-%m-%d %H:%M:%S UTC")
+        else:
+            backup_line = "ещё не было"
+        text = (
+            "JARVIS • СРЕДА И RUNTIME\n\n"
+            "Короткая сводка. Детали открываются отдельными кнопками ниже.\n\n"
+            f"• Owner autofix: {owner_autofix_status}\n"
+            f"• Heartbeat: {heartbeat_age_text}\n"
+            f"• Backup: {backup_line}\n"
+            f"• Restarts 24h: {int(runtime_snapshot.get('restart_count', 0))}\n"
+            f"• Severe errors 24h: {int(runtime_snapshot.get('severe_error_count', 0))}\n"
+            f"• Warnings 24h: {int(runtime_snapshot.get('warning_count', 0))}\n"
+            f"• Runtime risk pressure: {drive_scores.get('runtime_risk_pressure', 0.0):.1f}\n"
+            f"• Uncertainty pressure: {drive_scores.get('uncertainty_pressure', 0.0):.1f}\n"
+            f"• Quality degraded routes: {diagnostics_metrics.degraded_count}\n"
+            f"• Git dirty entries: {int(operational_state.get('git_dirty_count', 0))}"
+        )
+        markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Runtime", "callback_data": "ui:panel:owner_runtime:runtime"},
+                    {"text": "Logs", "callback_data": "ui:panel:owner_git:logs"},
+                ],
+                [
+                    {"text": "World state", "callback_data": "ui:panel:owner_runtime:world"},
+                    {"text": "Drive pressures", "callback_data": "ui:panel:owner_runtime:drives"},
+                ],
+                [
+                    {"text": "Quality diagnostics", "callback_data": "ui:panel:owner_runtime:quality"},
+                    {"text": "Git state", "callback_data": "ui:panel:owner_git:state"},
+                ],
+                [{"text": "Self-healing", "callback_data": "ui:panel:owner_selfheal"}],
+                [
+                    {"text": f"Owner autofix: {'ON' if owner_autofix_enabled else 'OFF'}", "callback_data": "ui:ownerautofix:status"},
+                    {"text": "Переключить", "callback_data": "ui:ownerautofix:toggle"},
+                ],
+                [{"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
+            ]
+        }
+        return text, markup
+
+    def _build_owner_runtime_detail(self, bridge: "TelegramBridge", payload: str) -> Tuple[str, dict]:
+        operational_state = bridge.refresh_world_state_registry("owner_runtime_panel", chat_id=self.owner_user_id)
+        bridge.recompute_drive_scores(operational_state)
+        diagnostics_metrics = collect_diagnostics_metrics(bridge.state, window_seconds=86400)
+        runtime_snapshot = bridge.inspect_runtime_log()
+        if payload == "runtime":
+            text = (
+                "JARVIS • RUNTIME\n\n"
+                f"{bridge.render_resource_summary()}\n\n"
+                f"{bridge.render_bridge_runtime_watch()}"
+            )
+        elif payload == "world":
+            snapshots = bridge.state.get_recent_world_state_snapshots(limit=5)
+            lines = [
+                "JARVIS • WORLD STATE",
+                "",
+                bridge.state.get_world_state_context(limit=10) or "World state пока пуст.",
+            ]
+            if snapshots:
+                lines.extend(["", "Последние snapshots:"])
+                for row in snapshots:
+                    stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
+                    lines.append(f"- [{stamp}] {row['source'] or '-'}: {self.truncate_text(row['summary'] or '', 180)}")
+            text = "\n".join(lines)
+        elif payload == "drives":
+            text = (
+                "JARVIS • DRIVE PRESSURES\n\n"
+                + (bridge.state.get_drive_context() or "Drive pressures пока не рассчитаны.")
+            )
+        elif payload == "quality":
+            recent_routes = bridge.state.get_recent_request_diagnostics(limit=6)
+            lines = [
+                "JARVIS • QUALITY DIAGNOSTICS",
+                "",
+                render_diagnostics_metrics(diagnostics_metrics),
+            ]
+            if recent_routes:
+                lines.extend(["", "Последние route decisions:", bridge.render_route_diagnostics_rows(recent_routes)])
+            text = "\n".join(lines)
+        else:
+            return self._build_owner_runtime_summary(bridge)
+        markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Runtime", "callback_data": "ui:panel:owner_runtime:runtime"},
+                    {"text": "Logs", "callback_data": "ui:panel:owner_git:logs"},
+                ],
+                [
+                    {"text": "World state", "callback_data": "ui:panel:owner_runtime:world"},
+                    {"text": "Drive pressures", "callback_data": "ui:panel:owner_runtime:drives"},
+                ],
+                [
+                    {"text": "Quality diagnostics", "callback_data": "ui:panel:owner_runtime:quality"},
+                    {"text": "Git state", "callback_data": "ui:panel:owner_git:state"},
+                ],
+                [{"text": "Self-healing", "callback_data": "ui:panel:owner_selfheal"}],
+                [{"text": "К сводке", "callback_data": "ui:panel:owner_runtime"}, {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
+            ]
+        }
+        return text, markup
+
+    def _build_owner_git_panel(self, bridge: "TelegramBridge", payload: str) -> Tuple[str, dict]:
+        if payload == "state":
+            text = (
+                "JARVIS • GIT STATE\n\n"
+                f"{self.render_git_status_summary(bridge.script_path.parent)}\n\n"
+                f"{self.render_git_last_commits(bridge.script_path.parent, limit=5)}"
+            )
+        elif payload == "logs":
+            recent_errors = bridge.read_recent_log_highlights(limit=8)
+            runtime_snapshot = bridge.inspect_runtime_log()
+            bridge_tail = bridge.read_recent_operational_highlights(limit=8, category="all")
+            lines = [
+                "JARVIS • LOGS",
+                "",
+                "Последние ошибки:",
+            ]
+            if recent_errors:
+                lines.extend(f"- {item}" for item in recent_errors)
+            else:
+                lines.append("- Явных ошибок в хвосте лога не найдено.")
+            recent_warnings = [self.truncate_text(str(item), 220) for item in runtime_snapshot.get("recent_warning_lines", [])[-5:]]
+            if recent_warnings:
+                lines.extend(["", "Recoverable warnings:"])
+                lines.extend(f"- {item}" for item in recent_warnings)
+            if bridge_tail:
+                lines.extend(["", "Operational tail:"])
+                lines.extend(f"- {item}" for item in bridge_tail[-6:])
+            text = "\n".join(lines)
+        else:
+            operational_state = bridge.refresh_world_state_registry("owner_git_panel", chat_id=self.owner_user_id)
+            runtime_snapshot = bridge.inspect_runtime_log()
+            text = (
+                "JARVIS • GIT И ЛОГИ\n\n"
+                "Короткая сводка. Детали открываются отдельными кнопками.\n\n"
+                f"• Git dirty entries: {int(operational_state.get('git_dirty_count', 0))}\n"
+                f"• Recent severe errors: {int(runtime_snapshot.get('severe_error_count', 0))}\n"
+                f"• Recoverable warnings: {int(runtime_snapshot.get('warning_count', 0))}\n"
+                f"• Codex degraded: {int(runtime_snapshot.get('codex_degraded_count', 0))}\n"
+                f"• Codex hard errors: {int(runtime_snapshot.get('codex_error_count', 0))}\n\n"
+                "Команды: /gitstatus, /gitlast, /errors, /events, /routes, /upgrade"
+            )
+        markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Git state", "callback_data": "ui:panel:owner_git:state"},
+                    {"text": "Logs", "callback_data": "ui:panel:owner_git:logs"},
+                ],
+                [
+                    {"text": "Runtime summary", "callback_data": "ui:panel:owner_runtime"},
+                    {"text": "Self-healing", "callback_data": "ui:panel:owner_selfheal"},
+                ],
+                [{"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
+            ]
+        }
+        return text, markup
 
     def build_public_control_panel(self, bridge: "TelegramBridge", user_id: int, section: str, payload: str = "") -> Tuple[str, dict]:
         if section == "profile":
@@ -211,67 +469,11 @@ class ControlPanelRenderer:
             }
             return text, markup
         if section == "owner_runtime" and user_id == self.owner_user_id:
-            text = (
-                "JARVIS • СРЕДА И RUNTIME\n\n"
-                "Раздел для проверки живости бота и текущего runtime.\n"
-                "Сюда имеет смысл идти, если бот тупит, не отвечает, медленно работает или нужно понять общее состояние среды.\n\n"
-                f"{bridge.render_owner_report_text(user_id)}\n\n"
-                "Команды раздела:\n"
-                "• /status — общая служебная сводка по текущему чату и runtime\n"
-                "• /ownerreport — расширенный owner-отчёт\n"
-                "• /resources — память, CPU, swap\n"
-                "• /topproc — самые тяжёлые процессы\n"
-                "• /disk — заполнение дисков\n"
-                "• /net — сетевые интерфейсы и трафик\n"
-                "• /restart — перезапуск bridge через supervisor\n"
-                "• /ownerautofix on|off|status — автоисправление текста владельца"
-                "\n• /selfhealstatus — последние self-heal incidents и state machine"
-                "\n• /selfhealrun <playbook|incident_id> [dry-run|execute] — bounded self-heal запуск"
-                "\n• /selfhealapprove <incident_id> — owner approval queued incident"
-                "\n• /selfhealdeny <incident_id> — deny/manual follow-up"
-            )
-            markup = {
-                "inline_keyboard": [
-                    [{"text": "Git и логи", "callback_data": "ui:panel:owner_git"}, {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
-                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}],
-                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
-                    [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
-                ]
-            }
-            return text, markup
+            if payload:
+                return self._build_owner_runtime_detail(bridge, payload)
+            return self._build_owner_runtime_summary(bridge)
         if section == "owner_git" and user_id == self.owner_user_id:
-            text = (
-                "JARVIS • GIT И ЛОГИ\n\n"
-                "Раздел для проектных изменений, истории коммитов и ошибок runtime.\n"
-                "Если нужно понять, что поменялось, в каком состоянии git и что сломалось в хвосте логов, смотреть сюда.\n\n"
-                f"{self.render_git_status_summary(bridge.script_path.parent)}\n\n"
-                f"{self.render_git_last_commits(bridge.script_path.parent, limit=5)}\n\n"
-                "Команды раздела:\n"
-                "• /gitstatus — worktree, branch, upstream\n"
-                "• /gitlast 5 — последние коммиты, число можно менять\n"
-                "• /errors 10 — только реальные ошибки и поломки\n"
-                "• /events 10 — все служебные события\n"
-                "• /events restart 10 — только рестарты\n"
-                "• /events access 10 — только блокировки доступа\n"
-                "• /events system 10 — только системные operational-события\n"
-                "• /routes 10 — последние route decisions и self-check telemetry\n"
-                "• /upgrade <что изменить> — постановка задачи на изменение кода\n\n"
-                "Примеры:\n"
-                "• /gitlast 12\n"
-                "• /errors 20\n"
-                "• /events 20\n"
-                "• /events restart 20\n"
-                "• /events access 20\n"
-                "• /routes 10\n"
-                "• /upgrade добавь новый route для ..."
-            )
-            markup = {
-                "inline_keyboard": [
-                    [{"text": "Среда и runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Ошибки / логи", "callback_data": "ui:panel:owner_commands"}],
-                    [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
-                ]
-            }
-            return text, markup
+            return self._build_owner_git_panel(bridge, payload)
         if section == "owner_memory" and user_id == self.owner_user_id:
             text = (
                 "JARVIS • ПАМЯТЬ И ЧАТЫ\n\n"
@@ -360,6 +562,8 @@ class ControlPanelRenderer:
             }
             return text, markup
         if section == "owner_selfheal" and user_id == self.owner_user_id:
+            owner_autofix_enabled = bridge.owner_autofix_enabled()
+            owner_autofix_status = "включено" if owner_autofix_enabled else "выключено"
             incidents = bridge.state.get_recent_self_heal_incidents(limit=10)
             if payload.isdigit():
                 incident = bridge.state.get_self_heal_incident(int(payload))
@@ -396,6 +600,7 @@ class ControlPanelRenderer:
                 "JARVIS • АВТОВОССТАНОВЛЕНИЕ",
                 "",
                 "Здесь собраны автоматические инциденты, безопасные repair-playbook'и и ручные owner-решения.",
+                f"Owner autofix сейчас: {owner_autofix_status}.",
                 "Когда использовать:",
                 "• если бот сам что-то чинит",
                 "• если нужен dry-run или ручной approve/deny",
@@ -420,6 +625,12 @@ class ControlPanelRenderer:
                     keyboard.append(
                         [{"text": f"Инцидент #{int(row['id'])}", "callback_data": f"ui:selfheal:view:{int(row['id'])}"}]
                     )
+            keyboard.append(
+                [
+                    {"text": f"Owner autofix: {'ON' if owner_autofix_enabled else 'OFF'}", "callback_data": "ui:ownerautofix:status"},
+                    {"text": "Переключить", "callback_data": "ui:ownerautofix:toggle"},
+                ]
+            )
             keyboard.append([{"text": "Очередь согласования", "callback_data": "ui:panel:owner_selfheal_queue"}])
             keyboard.append([{"text": "Среда и runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Все команды", "callback_data": "ui:panel:owner_commands"}])
             keyboard.append([{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}])
@@ -500,15 +711,7 @@ class ControlPanelRenderer:
             }
             return text, markup
         if section == "owner_commands" and user_id == self.owner_user_id:
-            text = "JARVIS • СПРАВОЧНИК OWNER/ADMIN КОМАНД\n\n" + self._build_owner_commands_text()
-            markup = {
-                "inline_keyboard": [
-                    [{"text": "Среда и runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
-                    [{"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
-                    [{"text": "Главная", "callback_data": "ui:home"}],
-                ]
-            }
-            return text, markup
+            return self._build_owner_commands_panel(payload)
         if section == "profile":
             text = bridge.legacy.render_rating(user_id)
             keyboard = [[{"text": "Обновить", "callback_data": "ui:profile"}]]

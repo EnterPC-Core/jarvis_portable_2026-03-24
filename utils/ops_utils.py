@@ -22,6 +22,7 @@ def is_error_log_line(lowered_line: str) -> bool:
         "exchange yahoo lookup failed",
         "exchange open.er lookup failed",
         "url fetch failed",
+        "codex degraded",
     )
     if any(marker in lowered_line for marker in ignore_markers):
         return False
@@ -43,6 +44,7 @@ def read_recent_log_highlights(
     normalize_whitespace_func: Callable[[str], str],
     truncate_text_func: Callable[[str, int], str],
     limit: int = 8,
+    window_seconds: int = 86400,
 ) -> List[str]:
     if not log_path.exists():
         return []
@@ -50,10 +52,18 @@ def read_recent_log_highlights(
         lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
         return []
+    now_ts = int(time.time())
+    cutoff = now_ts - max(60, window_seconds)
     matched: List[str] = []
-    for line in reversed(lines[-300:]):
+    current_event_ts: Optional[int] = None
+    for line in reversed(lines[-800:]):
+        line_ts = parse_log_timestamp(line)
+        if line_ts is not None:
+            current_event_ts = line_ts
+        if current_event_ts is not None and current_event_ts < cutoff:
+            continue
         lowered = line.lower()
-        if is_error_log_line(lowered):
+        if line.startswith("[") and is_error_log_line(lowered):
             matched.append(truncate_text_func(normalize_whitespace_func(line), 220))
         if len(matched) >= limit:
             break
@@ -77,6 +87,7 @@ def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str
         "termination_signal_count": 0,
         "network_error_count": 0,
         "codex_error_count": 0,
+        "codex_degraded_count": 0,
         "lock_conflict_count": 0,
         "severe_error_count": 0,
         "warning_count": 0,
@@ -104,9 +115,12 @@ def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str
     )
     severe_lines: List[str] = []
     warning_lines: List[str] = []
+    current_event_ts: Optional[int] = None
     for line in lines:
         line_ts = parse_log_timestamp(line)
-        if line_ts is not None and line_ts < cutoff:
+        if line_ts is not None:
+            current_event_ts = line_ts
+        if current_event_ts is not None and current_event_ts < cutoff:
             continue
         lowered = line.lower()
         is_timestamped = line.startswith("[")
@@ -123,6 +137,12 @@ def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str
             snapshot["network_error_count"] = int(snapshot["network_error_count"]) + 1
         if "codex error" in lowered:
             snapshot["codex_error_count"] = int(snapshot["codex_error_count"]) + 1
+        if "codex degraded" in lowered:
+            snapshot["codex_degraded_count"] = int(snapshot["codex_degraded_count"]) + 1
+            snapshot["warning_count"] = int(snapshot["warning_count"]) + 1
+            snapshot["last_warning_at"] = line_ts or int(snapshot["last_warning_at"])
+            warning_lines.append(line)
+            continue
         if "instance lock conflict" in lowered:
             snapshot["lock_conflict_count"] = int(snapshot["lock_conflict_count"]) + 1
         if any(marker in lowered for marker in warning_markers):
@@ -170,6 +190,7 @@ def read_recent_operational_highlights(
     truncate_text_func: Callable[[str, int], str],
     limit: int = 8,
     category: str = "all",
+    window_seconds: int = 86400,
 ) -> List[str]:
     if not log_path.exists():
         return []
@@ -177,8 +198,16 @@ def read_recent_operational_highlights(
         lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
         return []
+    now_ts = int(time.time())
+    cutoff = now_ts - max(60, window_seconds)
     matched: List[str] = []
-    for line in reversed(lines[-400:]):
+    current_event_ts: Optional[int] = None
+    for line in reversed(lines[-1000:]):
+        line_ts = parse_log_timestamp(line)
+        if line_ts is not None:
+            current_event_ts = line_ts
+        if current_event_ts is not None and current_event_ts < cutoff:
+            continue
         lowered = line.lower()
         if is_operational_log_line(lowered, category=category):
             matched.append(truncate_text_func(normalize_whitespace_func(line), 220))

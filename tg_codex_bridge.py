@@ -6549,6 +6549,9 @@ class TelegramBridge:
     def read_recent_log_highlights(self, limit: int = 8) -> List[str]:
         return read_recent_log_highlights(self.log_path, limit=limit)
 
+    def read_recent_operational_highlights(self, limit: int = 8, category: str = "all") -> List[str]:
+        return read_recent_operational_highlights(self.log_path, limit=limit, category=category)
+
     def render_resource_summary(self) -> str:
         return render_resource_summary()
 
@@ -7782,15 +7785,25 @@ class TelegramBridge:
                 return "Не удалось запустить локальный движок Enterprise Core."
 
         if result.returncode != 0:
-            log(f"codex error code={result.returncode} stderr={shorten_for_log(stderr)}")
             details = stderr or stdout or "Движок Enterprise Core завершился с ошибкой без вывода."
-            if is_codex_network_error_output(details):
-                return JARVIS_NETWORK_ERROR_TEXT
-            if is_codex_unavailable_output(details):
-                return JARVIS_OFFLINE_TEXT
-            if approval_policy == "never" and sandbox_mode == "workspace-write":
-                return f"{UPGRADE_FAILED_TEXT}\n{truncate_text(details, 1500)}"
-            return f"Ошибка Enterprise Core:\n{truncate_text(details, 1200)}"
+            usable_stdout = extract_usable_codex_stdout(stdout)
+            if usable_stdout:
+                log(
+                    f"codex degraded code={result.returncode} recovered_from_stdout=yes "
+                    f"stderr={shorten_for_log(stderr)}"
+                )
+                latency_ms = max(1, int((time.perf_counter() - started_at) * 1000))
+                return postprocess_answer(usable_stdout, latency_ms=latency_ms) if postprocess else usable_stdout
+            answer = build_codex_failure_answer(
+                details,
+                sandbox_mode=sandbox_mode,
+                approval_policy=approval_policy,
+            )
+            log(
+                f"codex degraded code={result.returncode} recovered_from_stdout=no "
+                f"stderr={shorten_for_log(stderr)}"
+            )
+            return answer
 
         if not stdout:
             log("codex returned empty stdout")
@@ -8003,15 +8016,25 @@ class TelegramBridge:
         postprocess: bool = True,
     ) -> str:
         if returncode != 0:
-            log(f"codex error code={returncode} stderr={shorten_for_log(stderr)}")
             details = stderr or stdout or "Движок Enterprise Core завершился с ошибкой без вывода."
-            if is_codex_network_error_output(details):
-                return JARVIS_NETWORK_ERROR_TEXT
-            if is_codex_unavailable_output(details):
-                return JARVIS_OFFLINE_TEXT
-            if approval_policy == "never" and sandbox_mode == "workspace-write":
-                return f"{UPGRADE_FAILED_TEXT}\n{truncate_text(details, 1500)}"
-            return f"Ошибка Enterprise Core:\n{truncate_text(details, 1200)}"
+            usable_stdout = extract_usable_codex_stdout(stdout)
+            if usable_stdout:
+                log(
+                    f"codex degraded code={returncode} recovered_from_stdout=yes "
+                    f"stderr={shorten_for_log(stderr)}"
+                )
+                latency_ms = max(1, int((time.perf_counter() - started_at) * 1000))
+                return postprocess_answer(usable_stdout, latency_ms=latency_ms) if postprocess else usable_stdout
+            answer = build_codex_failure_answer(
+                details,
+                sandbox_mode=sandbox_mode,
+                approval_policy=approval_policy,
+            )
+            log(
+                f"codex degraded code={returncode} recovered_from_stdout=no "
+                f"stderr={shorten_for_log(stderr)}"
+            )
+            return answer
 
         if not stdout:
             log("codex returned empty stdout")
@@ -8214,9 +8237,21 @@ class TelegramBridge:
     def safe_send_status(self, chat_id: int, text: str) -> None:
         self.safe_send_text(chat_id, text)
 
+    def fit_single_telegram_message(self, text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
+        cleaned = text or ""
+        if len(cleaned) <= limit:
+            return cleaned
+        truncation_note = "\n\n[message truncated for Telegram]"
+        cutoff = max(0, limit - len(truncation_note))
+        candidate = cleaned[:cutoff].rstrip()
+        split_at = max(candidate.rfind("\n\n"), candidate.rfind("\n"))
+        if split_at >= max(0, cutoff - 800):
+            candidate = candidate[:split_at].rstrip()
+        return (candidate or cleaned[:cutoff]).rstrip() + truncation_note
+
     def send_status_message(self, chat_id: int, text: str) -> Optional[int]:
         try:
-            payload = self.telegram_api("sendMessage", data={"chat_id": chat_id, "text": truncate_text(text, TELEGRAM_TEXT_LIMIT)})
+            payload = self.telegram_api("sendMessage", data={"chat_id": chat_id, "text": self.fit_single_telegram_message(text)})
             result = payload.get("result") or {}
             message_id = result.get("message_id")
             return int(message_id) if message_id is not None else None
@@ -8225,15 +8260,19 @@ class TelegramBridge:
             return None
 
     def edit_status_message(self, chat_id: int, message_id: int, text: str) -> bool:
+        chunks = split_long_message(text)
+        primary_text = chunks[0] if chunks else ""
         try:
             self.telegram_api(
                 "editMessageText",
                 data={
                     "chat_id": chat_id,
                     "message_id": message_id,
-                    "text": truncate_text(text, TELEGRAM_TEXT_LIMIT),
+                    "text": self.fit_single_telegram_message(primary_text),
                 },
             )
+            for extra_chunk in chunks[1:]:
+                self.safe_send_text(chat_id, extra_chunk)
             return True
         except RequestException as error:
             if "message is not modified" in str(error).lower():
@@ -8254,7 +8293,7 @@ class TelegramBridge:
     def send_inline_message(self, chat_id: int, text: str, reply_markup: dict) -> Optional[int]:
         payload = self.telegram_api(
             "sendMessage",
-            data={"chat_id": chat_id, "text": text, "reply_markup": json.dumps(reply_markup)},
+            data={"chat_id": chat_id, "text": self.fit_single_telegram_message(text), "reply_markup": json.dumps(reply_markup)},
         )
         result = payload.get("result") or {}
         message_id = result.get("message_id")
@@ -8266,7 +8305,7 @@ class TelegramBridge:
             data={
                 "chat_id": chat_id,
                 "message_id": message_id,
-                "text": text,
+                "text": self.fit_single_telegram_message(text),
                 "reply_markup": json.dumps(reply_markup),
             },
         )
@@ -9658,6 +9697,92 @@ def is_codex_network_error_output(text: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def extract_usable_codex_stdout(stdout: str) -> str:
+    candidate = extract_codex_text_response(stdout)
+    if not candidate:
+        return ""
+    lowered = candidate.lower()
+    blocked_prefixes = (
+        "openai codex v",
+        "workdir:",
+        "model:",
+        "provider:",
+        "approval:",
+        "sandbox:",
+        "reasoning effort:",
+        "session id:",
+        "mcp startup:",
+    )
+    if any(lowered.startswith(prefix) for prefix in blocked_prefixes):
+        return ""
+    return candidate
+
+
+def extract_codex_error_summary(text: str) -> str:
+    cleaned = normalize_whitespace(text or "")
+    if not cleaned:
+        return ""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return cleaned
+    ignored_prefixes = (
+        "OpenAI Codex v",
+        "workdir:",
+        "model:",
+        "provider:",
+        "approval:",
+        "sandbox:",
+        "reasoning effort:",
+        "reasoning summaries:",
+        "session id:",
+        "user",
+        "mcp startup:",
+        "--------",
+        "System:",
+    )
+    informative_lines = [
+        line for line in lines
+        if not any(line.startswith(prefix) for prefix in ignored_prefixes)
+    ]
+    if not informative_lines:
+        return cleaned
+    priority_markers = (
+        "ERROR:",
+        "error sending request",
+        "stream disconnected before completion",
+        "failed to connect",
+        "connection refused",
+        "connection timed out",
+        "connection error",
+        "network error",
+        "failed to refresh available models",
+        "403 forbidden",
+        "unexpected status 403",
+    )
+    for line in reversed(informative_lines):
+        lowered = line.lower()
+        if any(marker.lower() in lowered for marker in priority_markers):
+            return normalize_whitespace(line)
+    return normalize_whitespace(informative_lines[-1])
+
+
+def build_codex_failure_answer(
+    details: str,
+    *,
+    sandbox_mode: Optional[str] = None,
+    approval_policy: Optional[str] = None,
+) -> str:
+    summary = extract_codex_error_summary(details)
+    if is_codex_network_error_output(details) or is_codex_network_error_output(summary):
+        return JARVIS_NETWORK_ERROR_TEXT
+    if is_codex_unavailable_output(details) or is_codex_unavailable_output(summary):
+        return JARVIS_OFFLINE_TEXT
+    if approval_policy == "never" and sandbox_mode == "workspace-write":
+        return f"{UPGRADE_FAILED_TEXT}\n{truncate_text(summary or details, 600)}"
+    concise = summary or details or "Движок Enterprise Core завершился с ошибкой без вывода."
+    return f"Ошибка Enterprise Core:\n{truncate_text(concise, 400)}"
+
+
 def build_help_panel_text(section: str) -> str:
     return _bridge_build_help_panel_text(
         section,
@@ -10608,6 +10733,7 @@ def is_message_edit_recoverable_error(error: Exception) -> bool:
 
 INSTANCE_LOCK_HANDLE = None
 EXIT_REASON = "normal"
+LOCK_CONFLICT_EXIT_CODE = 75
 
 
 def acquire_instance_lock(lock_path: str):
@@ -10658,8 +10784,9 @@ def main() -> None:
     try:
         INSTANCE_LOCK_HANDLE = acquire_instance_lock(config.lock_path)
     except RuntimeError as error:
+        EXIT_REASON = "startup:instance_lock_conflict"
         log(f"instance lock conflict lock_path={config.lock_path}: {error}")
-        raise
+        raise SystemExit(LOCK_CONFLICT_EXIT_CODE)
     log(
         "config loaded "
         f"mode={config.default_mode} history_limit={config.history_limit} "

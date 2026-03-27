@@ -28,11 +28,25 @@ CREATE INDEX idx_reflections_chat_id_id ON reflections(chat_id, id DESC);
 
 CREATE INDEX idx_relation_memory_chat_id_updated ON relation_memory(chat_id, updated_at DESC, last_interaction_at DESC);
 
+CREATE INDEX idx_repair_journal_created_at ON repair_journal(created_at DESC, id DESC);
+
 CREATE INDEX idx_request_diagnostics_chat_id_id ON request_diagnostics(chat_id, id);
 
 CREATE INDEX idx_score_events_type_created_at ON score_events(event_type, created_at DESC);
 
 CREATE INDEX idx_score_events_user_created_at ON score_events(user_id, created_at DESC);
+
+CREATE INDEX idx_self_heal_attempts_incident ON self_heal_attempts(incident_id, created_at DESC);
+
+CREATE INDEX idx_self_heal_incidents_created_at ON self_heal_incidents(created_at DESC, id DESC);
+
+CREATE INDEX idx_self_heal_incidents_problem_state ON self_heal_incidents(problem_type, state, updated_at DESC);
+
+CREATE INDEX idx_self_heal_lessons_incident ON self_heal_lessons(incident_id, created_at DESC);
+
+CREATE INDEX idx_self_heal_transitions_incident ON self_heal_transitions(incident_id, created_at DESC);
+
+CREATE INDEX idx_self_heal_verifications_incident ON self_heal_verifications(incident_id, created_at DESC);
 
 CREATE INDEX idx_summary_snapshots_chat_id_id ON summary_snapshots(chat_id, id);
 
@@ -259,6 +273,18 @@ CREATE TABLE relation_memory (
                     PRIMARY KEY(chat_id, user_low_id, user_high_id)
                 );
 
+CREATE TABLE repair_journal (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_code TEXT NOT NULL DEFAULT '',
+                    playbook_id TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    evidence TEXT NOT NULL DEFAULT '',
+                    verification_result TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
 CREATE TABLE request_diagnostics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     chat_id INTEGER NOT NULL,
@@ -279,7 +305,7 @@ CREATE TABLE request_diagnostics (
                     latency_ms INTEGER NOT NULL DEFAULT 0,
                     query_text TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                );
+                , request_kind TEXT NOT NULL DEFAULT '', response_mode TEXT NOT NULL DEFAULT '', sources TEXT NOT NULL DEFAULT '', tools_used TEXT NOT NULL DEFAULT '', memory_used TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 0.0, freshness TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '');
 
 CREATE TABLE score_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -294,6 +320,74 @@ CREATE TABLE score_events (
                 abuse_flag TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             );
+
+CREATE TABLE self_heal_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    playbook_id TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    execution_summary TEXT NOT NULL DEFAULT '',
+                    executed_steps_json TEXT NOT NULL DEFAULT '',
+                    failed_step TEXT NOT NULL DEFAULT '',
+                    artifacts_changed_json TEXT NOT NULL DEFAULT '',
+                    verification_required INTEGER NOT NULL DEFAULT 1,
+                    notes TEXT NOT NULL DEFAULT '',
+                    stdout_json TEXT NOT NULL DEFAULT '',
+                    stderr_json TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
+CREATE TABLE self_heal_incidents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    problem_type TEXT NOT NULL DEFAULT '',
+                    signal_code TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL DEFAULT '',
+                    severity TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    evidence TEXT NOT NULL DEFAULT '',
+                    risk_level TEXT NOT NULL DEFAULT '',
+                    autonomy_level TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    suggested_playbook TEXT NOT NULL DEFAULT '',
+                    verification_status TEXT NOT NULL DEFAULT '',
+                    lesson_text TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
+CREATE TABLE self_heal_lessons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    lesson_key TEXT NOT NULL DEFAULT '',
+                    lesson_text TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
+CREATE TABLE self_heal_transitions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    from_state TEXT NOT NULL DEFAULT '',
+                    to_state TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
+
+CREATE TABLE self_heal_verifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    attempt_id INTEGER,
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    before_state_json TEXT NOT NULL DEFAULT '',
+                    after_state_json TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    remaining_issues_json TEXT NOT NULL DEFAULT '',
+                    regressions_json TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                );
 
 CREATE TABLE self_model_state (
                     state_id TEXT PRIMARY KEY,
@@ -374,7 +468,7 @@ CREATE TABLE world_state_registry (
                     value_number REAL,
                     source TEXT NOT NULL DEFAULT '',
                     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                );
+                , confidence REAL NOT NULL DEFAULT 0.0, ttl_seconds INTEGER NOT NULL DEFAULT 0, verification_method TEXT NOT NULL DEFAULT '', stale_flag INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE world_state_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,6 +1,6 @@
 {
   "database": "/home/userland/projects/bots/jarvis_portable_2026-03-24/jarvis_memory.db",
-  "generated_at_utc": "2026-03-25T14:19:46+00:00",
+  "generated_at_utc": "2026-03-27T00:08:50+00:00",
   "tables": [
     "achievement_catalog",
     "appeal_events",
@@ -26,8 +26,14 @@
     "progression_profiles",
     "reflections",
     "relation_memory",
+    "repair_journal",
     "request_diagnostics",
     "score_events",
+    "self_heal_attempts",
+    "self_heal_incidents",
+    "self_heal_lessons",
+    "self_heal_transitions",
+    "self_heal_verifications",
     "self_model_state",
     "skill_memory",
     "summary_snapshots",
@@ -44,40 +50,46 @@
     "achievement_catalog": 17,
     "appeal_events": 5,
     "appeals": 3,
-    "autobiographical_memory": 7,
-    "bot_meta": 7,
-    "chat_events": 1163,
-    "chat_events_fts": 1163,
+    "autobiographical_memory": 223,
+    "bot_meta": 35,
+    "chat_events": 8017,
+    "chat_events_fts": 8017,
     "chat_events_fts_config": 1,
-    "chat_events_fts_data": 31,
-    "chat_events_fts_docsize": 1163,
-    "chat_events_fts_idx": 29,
-    "chat_history": 355,
+    "chat_events_fts_data": 74,
+    "chat_events_fts_docsize": 8017,
+    "chat_events_fts_idx": 66,
+    "chat_history": 645,
     "chat_modes": 1,
-    "chat_participants": 22,
-    "chat_runtime_cache": 2,
+    "chat_participants": 58,
+    "chat_runtime_cache": 3,
     "chat_summaries": 5,
     "drive_scores": 6,
     "memory_facts": 0,
-    "memory_refresh_state": 5,
-    "moderation_actions": 0,
-    "moderation_journal": 0,
-    "progression_profiles": 1001,
-    "reflections": 2,
-    "relation_memory": 25,
-    "request_diagnostics": 84,
-    "score_events": 2412,
+    "memory_refresh_state": 6,
+    "moderation_actions": 3,
+    "moderation_journal": 10,
+    "progression_profiles": 1010,
+    "reflections": 77,
+    "relation_memory": 44,
+    "repair_journal": 0,
+    "request_diagnostics": 241,
+    "score_events": 3241,
+    "self_heal_attempts": 13,
+    "self_heal_incidents": 18,
+    "self_heal_lessons": 0,
+    "self_heal_transitions": 81,
+    "self_heal_verifications": 13,
     "self_model_state": 1,
     "skill_memory": 5,
-    "summary_snapshots": 193,
+    "summary_snapshots": 528,
     "ui_sessions": 3,
-    "user_achievement_state": 16932,
-    "user_memory_profiles": 21,
+    "user_achievement_state": 17051,
+    "user_memory_profiles": 49,
     "warn_settings": 0,
-    "warnings": 0,
+    "warnings": 4,
     "welcome_settings": 1,
-    "world_state_registry": 5,
-    "world_state_snapshots": 5
+    "world_state_registry": 7,
+    "world_state_snapshots": 475
   },
   "safe_table_rows": {
     "bot_meta": [
@@ -87,11 +99,11 @@
       },
       {
         "key": "owner_autofix_enabled",
-        "value": "0"
+        "value": "1"
       },
       {
         "key": "last_update_id",
-        "value": "955148425"
+        "value": "955149731"
       },
       {
         "key": "pending_restart_chat_id",
@@ -107,7 +119,119 @@
       },
       {
         "key": "owner_daily_digest_sent",
-        "value": "2026-03-24"
+        "value": "2026-03-25"
+      },
+      {
+        "key": "group_spontaneous_reply_last_ts:-1001767001968",
+        "value": "1774536315"
+      },
+      {
+        "key": "group_spontaneous_reply_last_message_id:-1001767001968",
+        "value": "578728"
+      },
+      {
+        "key": "group_spontaneous_reply_last_ts:-1003879607896",
+        "value": "1774538193"
+      },
+      {
+        "key": "group_spontaneous_reply_last_message_id:-1003879607896",
+        "value": "12438"
+      },
+      {
+        "key": "group_followup_until:-1003879607896:7087071466",
+        "value": "1774538507"
+      },
+      {
+        "key": "group_followup_until:-1003879607896:7104783736",
+        "value": "1774566904"
+      },
+      {
+        "key": "group_spontaneous_reply_last_ts:-100999000111",
+        "value": "1774566604"
+      },
+      {
+        "key": "group_spontaneous_reply_last_message_id:-100999000111",
+        "value": "1"
+      },
+      {
+        "key": "group_discussion_state:-1003879607896",
+        "value": "{\"thread_id\": \"1774564809:0\", \"expires_at\": 1774567504, \"last_activity_at\": 1774566604, \"anchor_user_id\": 7087071466, \"anchor_message_id\": 0, \"anchor_reply_user_id\": 0, \"participants\": [7087071466], \"reply_to_bot\": 1, \"topic_keywords\": [\"\\u0440\\u0430\\u0437\\u043e\\u0431\\u0440\\u0430\\u0442\\u044c\\u0441\\u044f\", \"\\u043f\\u0440\\u043e\\u0431\\u043b\\u0435\\u043c\\u0435\", \"\\u0445\\u043e\\u0447\\u0443\", \"\\u043a\\u0443\\u043f\\u0438\\u0442\\u044c\", \"\\u0441\\u043c\\u0430\\u0440\\u0442\\u0444\\u043e\\u043d\", \"\\u0440\\u0430\\u0439\\u043e\\u043d\\u0435\", \"\\u043a\\u0443\\u043f\\u0438\\u0442\\u044c\"]}"
+      },
+      {
+        "key": "group_discussion_state:-1001767001968",
+        "value": "{\"expires_at\": 1774542568, \"anchor_user_id\": 6102780373, \"participants\": [6102780373], \"reply_to_bot\": 1}"
+      },
+      {
+        "key": "group_spontaneous_reply_last_ts:-100555000111",
+        "value": "0"
+      },
+      {
+        "key": "group_spontaneous_reply_last_message_id:-100555000111",
+        "value": ""
+      },
+      {
+        "key": "group_followup_until:-100555000111:7001",
+        "value": "1774566902"
+      },
+      {
+        "key": "group_discussion_state:-100555000111",
+        "value": "{\"thread_id\": \"1774564792:101\", \"expires_at\": 1774567502, \"last_activity_at\": 1774566602, \"anchor_user_id\": 7001, \"anchor_message_id\": 103, \"anchor_reply_user_id\": 0, \"participants\": [7001], \"reply_to_bot\": 1, \"topic_keywords\": [\"\\u0441\\u043c\\u0430\\u0440\\u0442\\u0444\\u043e\\u043d\", \"50000\", \"\\u043a\\u0430\\u043c\\u0435\\u0440\\u044b\"]}"
+      },
+      {
+        "key": "group_discussion_turn_count:-100555000111:7001",
+        "value": "5"
+      },
+      {
+        "key": "group_discussion_block_until:-100555000111:7001",
+        "value": "1774567502"
+      },
+      {
+        "key": "group_discussion_turn_count:-1003879607896:7104783736",
+        "value": "0"
+      },
+      {
+        "key": "group_discussion_block_until:-1003879607896:7104783736",
+        "value": "0"
+      },
+      {
+        "key": "group_discussion_threads:-100555000111",
+        "value": "[{\"thread_id\": \"1774564792:101\", \"expires_at\": 1774567502, \"last_activity_at\": 1774566602, \"anchor_user_id\": 7001, \"anchor_message_id\": 103, \"anchor_reply_user_id\": 0, \"participants\": [7001], \"reply_to_bot\": 1, \"topic_keywords\": [\"\\u0441\\u043c\\u0430\\u0440\\u0442\\u0444\\u043e\\u043d\", \"50000\", \"\\u043a\\u0430\\u043c\\u0435\\u0440\\u044b\"]}]"
+      },
+      {
+        "key": "group_discussion_threads:-1003879607896",
+        "value": "[{\"thread_id\": \"1774564809:0\", \"expires_at\": 1774567504, \"last_activity_at\": 1774566604, \"anchor_user_id\": 7087071466, \"anchor_message_id\": 0, \"anchor_reply_user_id\": 0, \"participants\": [7087071466], \"reply_to_bot\": 1, \"topic_keywords\": [\"\\u0440\\u0430\\u0437\\u043e\\u0431\\u0440\\u0430\\u0442\\u044c\\u0441\\u044f\", \"\\u043f\\u0440\\u043e\\u0431\\u043b\\u0435\\u043c\\u0435\", \"\\u0445\\u043e\\u0447\\u0443\", \"\\u043a\\u0443\\u043f\\u0438\\u0442\\u044c\", \"\\u0441\\u043c\\u0430\\u0440\\u0442\\u0444\\u043e\\u043d\", \"\\u0440\\u0430\\u0439\\u043e\\u043d\\u0435\", \"\\u043a\\u0443\\u043f\\u0438\\u0442\\u044c\"]}]"
+      },
+      {
+        "key": "group_followup_until:-1003879607896:1923199753",
+        "value": "1774547256"
+      },
+      {
+        "key": "group_discussion_turn_count:-1003879607896:1923199753",
+        "value": "2"
+      },
+      {
+        "key": "group_followup_until:-1003879607896:1374468897",
+        "value": "1774548146"
+      },
+      {
+        "key": "group_discussion_turn_count:-1003879607896:1374468897",
+        "value": "1"
+      },
+      {
+        "key": "group_followup_until:-1003879607896:1870338495",
+        "value": "1774551337"
+      },
+      {
+        "key": "group_discussion_turn_count:-1003879607896:1870338495",
+        "value": "3"
+      },
+      {
+        "key": "group_followup_until:-1003879607896:795749607",
+        "value": "1774550817"
+      },
+      {
+        "key": "group_discussion_turn_count:-1003879607896:795749607",
+        "value": "2"
       }
     ],
     "chat_modes": [
@@ -135,11 +259,11 @@
       "content_exported": false
     },
     "chat_events": {
-      "rows": 1163,
+      "rows": 8017,
       "content_exported": false
     },
     "chat_history": {
-      "rows": 355,
+      "rows": 645,
       "content_exported": false
     },
     "memory_facts": {

@@ -81,8 +81,7 @@ def _verify_step(step: VerificationStep, after_state: Dict[str, object], bridge:
             return f"unexpected_process_count={after_state.get('process_count', 0)}"
         return ""
     if kind == "startup_marker":
-        recent_errors = bridge.read_recent_log_highlights(limit=1)
-        if recent_errors and "bot started" not in bridge.log_path.read_text(encoding="utf-8", errors="ignore")[-1000:]:
+        if not _log_contains_startup_marker(bridge.log_path):
             return "startup_marker_missing"
         return ""
     if kind == "world_state_fresh":
@@ -133,6 +132,15 @@ def _count_bridge_processes(script_name: str) -> int:
         if marker in line and "grep" not in line:
             count += 1
     return count
+
+
+def _log_contains_startup_marker(log_path: Path, *, marker: str = "bot started", tail_chars: int = 16000) -> bool:
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    tail = content[-tail_chars:].lower()
+    return marker.lower() in tail
 
 
 from typing import TYPE_CHECKING

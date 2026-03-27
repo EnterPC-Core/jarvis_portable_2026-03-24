@@ -354,7 +354,8 @@ def render_bridge_runtime_watch(
             f"Termination signals 24h: {int(runtime_log_snapshot.get('termination_signal_count', 0))}",
             f"Severe errors 24h: {int(runtime_log_snapshot.get('severe_error_count', 0))}",
             f"Recoverable warnings 24h: {int(runtime_log_snapshot.get('warning_count', 0))}",
-            f"Codex errors 24h: {int(runtime_log_snapshot.get('codex_error_count', 0))}",
+            f"Codex degraded 24h: {int(runtime_log_snapshot.get('codex_degraded_count', 0))}",
+            f"Codex hard errors 24h: {int(runtime_log_snapshot.get('codex_error_count', 0))}",
             f"Network loop errors 24h: {int(runtime_log_snapshot.get('network_error_count', 0))}",
         ]
     )
