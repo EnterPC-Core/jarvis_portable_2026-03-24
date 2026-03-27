@@ -63,7 +63,7 @@
 - `/topproc`
 - `/disk`
 - `/net`
-- `/restart` — одно сообщение: сначала `Enterprise Core перезапускается...`, потом оно же обновляется в подтверждение перезапуска
+- `/restart` — self-restart отключён; команда сообщает, что runtime остаётся в сети, а реальный перезапуск делается только внешним supervisor
 - `/ownerautofix on|off|status`
 
 ## Владелец / Git И Логи
@@ -169,7 +169,7 @@
 - `recover_failed_live_provider_config`
 - `recover_sqlite_lock`
 - `reinitialize_missing_runtime_artifact`
-- `restart_runtime` только как проверяемая escalation-ветка с post-restart verification
+- `restart_runtime` сохраняется только как диагностическая escalation-ветка; внутри runtime не исполняется и помечается как blocked, потому что self-restart отключён
 
 Команды owner для self-heal:
 

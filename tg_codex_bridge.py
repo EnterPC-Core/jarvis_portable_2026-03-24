@@ -269,7 +269,7 @@ MAX_HISTORY_ITEM_CHARS = 900
 MAX_CODEX_OUTPUT_CHARS = 12000
 DEFAULT_BRIDGE_CONTEXT_SOFT_LIMIT = 200000
 MAX_BRIDGE_CONTEXT_SOFT_LIMIT = 400000
-CODEX_PROGRESS_UPDATE_SECONDS = 6
+CODEX_PROGRESS_UPDATE_SECONDS = 2
 DEFAULT_STT_BACKEND = "disabled"
 DEFAULT_AUDIO_TRANSCRIBE_MODEL = ""
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -310,6 +310,7 @@ DEFAULT_LEGACY_JARVIS_DB_PATH = str((Path(__file__).resolve().parent.parent / "j
 DEFAULT_WEBAPP_BIND_HOST = "127.0.0.1"
 DEFAULT_WEBAPP_PORT = 8765
 DEFAULT_CODEX_APP_SERVER_URL = "ws://127.0.0.1:4599"
+DEFAULT_ENTERPRISE_SERVER_BASE_URL = "http://127.0.0.1:8766"
 DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
 OWNER_USER_ID = int((os.getenv("OWNER_USER_ID", os.getenv("ADMIN_ID", "6102780373")) or "6102780373").strip())
 OWNER_USERNAME = (os.getenv("OWNER_USERNAME", "@DmitryUnboxing") or "@DmitryUnboxing").strip()
@@ -335,7 +336,7 @@ OWNER_AGENT_RUNNING_TEXT = "Запрос принят. Запускаю Enterpri
 JARVIS_AGENT_RUNNING_TEXT = "Запрос принят. Думаю над ответом..."
 UPGRADE_ALREADY_RUNNING_TEXT = "Upgrade уже выполняется. Дождись завершения текущей задачи."
 UPGRADE_PRIVATE_ONLY_TEXT = "Upgrade выполняется только в личном чате с создателем."
-UPGRADE_APPLIED_TEXT = "Изменения сохранены. Если нужно применить новый код, используй /restart."
+UPGRADE_APPLIED_TEXT = "Изменения сохранены. Runtime больше не делает self-restart; новый код подхватится только после внешнего перезапуска supervisor."
 RESTARTING_TEXT = "Enterprise Core перезапускается..."
 RESTARTED_TEXT = "Enterprise Core перезапущен. Бот снова в сети."
 REMEMBER_USAGE_TEXT = "Используй: /remember <что нужно запомнить>"
@@ -873,6 +874,7 @@ class BotConfig:
         )
         self.legacy_jarvis_db_path = os.getenv("LEGACY_JARVIS_DB_PATH", DEFAULT_LEGACY_JARVIS_DB_PATH).strip() or DEFAULT_LEGACY_JARVIS_DB_PATH
         self.codex_app_server_url = (os.getenv("CODEX_APP_SERVER_URL", DEFAULT_CODEX_APP_SERVER_URL).strip() or DEFAULT_CODEX_APP_SERVER_URL)
+        self.enterprise_server_base_url = (os.getenv("ENTERPRISE_SERVER_BASE_URL", DEFAULT_ENTERPRISE_SERVER_BASE_URL).strip() or DEFAULT_ENTERPRISE_SERVER_BASE_URL).rstrip("/")
         raw_enterprise_timeout = (os.getenv("ENTERPRISE_TASK_TIMEOUT", str(DEFAULT_ENTERPRISE_TASK_TIMEOUT)) or str(DEFAULT_ENTERPRISE_TASK_TIMEOUT)).strip()
         try:
             parsed_enterprise_timeout = int(raw_enterprise_timeout)
@@ -4226,6 +4228,7 @@ class TelegramBridge:
         self.status_answer_delivered: Dict[int, float] = {}
         self.console_jobs_lock = Lock()
         self.console_jobs: Dict[str, Dict[str, object]] = {}
+        self.enterprise_server_bootstrap_lock = Lock()
         self.codex_app_server_started = False
         self.codex_app_server_lock = Lock()
         self.codex_app_server_process: Optional[subprocess.Popen[str]] = None
@@ -4292,8 +4295,14 @@ class TelegramBridge:
                 progress_update_seconds=CODEX_PROGRESS_UPDATE_SECONDS,
                 jarvis_offline_text=JARVIS_OFFLINE_TEXT,
                 upgrade_timeout_text=UPGRADE_TIMEOUT_TEXT,
+                enterprise_worker_path=self.script_path.with_name("enterprise_worker.py"),
+                enterprise_server_base_url=self.config.enterprise_server_base_url,
+                register_pending_job_func=self.register_pending_enterprise_job,
+                clear_pending_job_func=self.clear_pending_enterprise_job,
             )
         )
+        self.ensure_enterprise_server_started()
+        self.resume_pending_enterprise_jobs()
 
     def get_chat_event_count(self, chat_id: int) -> int:
         with self.state.db_lock:
@@ -4302,6 +4311,131 @@ class TelegramBridge:
 
     def build_actor_name(self, user_id: Optional[int], username: str, first_name: str, last_name: str, role: str) -> str:
         return build_actor_name(user_id, username, first_name, last_name, role)
+
+    def ensure_enterprise_server_started(self) -> None:
+        with self.enterprise_server_bootstrap_lock:
+            for _ in range(2):
+                try:
+                    response = self.session.get(f"{self.config.enterprise_server_base_url}/health", timeout=2)
+                    if response.ok:
+                        return
+                except Exception:
+                    pass
+            starter = self.script_path.with_name("start_enterprise_on_userland.sh")
+            if starter.exists():
+                try:
+                    subprocess.Popen(["sh", str(starter)], cwd=str(self.script_path.parent))
+                    for _ in range(10):
+                        time.sleep(0.3)
+                        try:
+                            response = self.session.get(f"{self.config.enterprise_server_base_url}/health", timeout=2)
+                            if response.ok:
+                                return
+                        except Exception:
+                            continue
+                except OSError as error:
+                    log(f"failed to start enterprise server supervisor: {error}")
+
+    def register_pending_enterprise_job(self, payload: dict) -> None:
+        raw = self.state.get_meta("pending_enterprise_jobs", "[]")
+        try:
+            jobs = json.loads(raw)
+        except ValueError:
+            jobs = []
+        jobs = [job for job in jobs if str(job.get("job_id") or "") != str(payload.get("job_id") or "")]
+        jobs.append(payload)
+        self.state.set_meta("pending_enterprise_jobs", json.dumps(jobs, ensure_ascii=False))
+
+    def clear_pending_enterprise_job(self, job_id: str) -> None:
+        raw = self.state.get_meta("pending_enterprise_jobs", "[]")
+        try:
+            jobs = json.loads(raw)
+        except ValueError:
+            jobs = []
+        jobs = [job for job in jobs if str(job.get("job_id") or "") != str(job_id or "")]
+        self.state.set_meta("pending_enterprise_jobs", json.dumps(jobs, ensure_ascii=False))
+
+    def clear_pending_enterprise_jobs_for_chat(self, chat_id: int) -> None:
+        raw = self.state.get_meta("pending_enterprise_jobs", "[]")
+        try:
+            jobs = json.loads(raw)
+        except ValueError:
+            jobs = []
+        jobs = [job for job in jobs if int(job.get("chat_id") or 0) != int(chat_id or 0)]
+        self.state.set_meta("pending_enterprise_jobs", json.dumps(jobs, ensure_ascii=False))
+
+    def resume_pending_enterprise_jobs(self) -> None:
+        raw = self.state.get_meta("pending_enterprise_jobs", "[]")
+        try:
+            jobs = json.loads(raw)
+        except ValueError:
+            jobs = []
+        for job in jobs:
+            job_id = str(job.get("job_id") or "")
+            if not job_id:
+                continue
+            Thread(target=self._resume_pending_enterprise_job, args=(job,), daemon=True).start()
+
+    def _resume_pending_enterprise_job(self, job: dict) -> None:
+        job_id = str(job.get("job_id") or "")
+        chat_id = int(job.get("chat_id") or 0)
+        if not job_id or not chat_id:
+            return
+        try:
+            log(f"resume pending enterprise job={job_id} chat={chat_id}")
+            status_message_id = job.get("status_message_id")
+            if status_message_id in {"", None}:
+                status_message_id = None
+            else:
+                status_message_id = int(status_message_id)
+            answer = self.js_enterprise.wait_for_job(
+                job_id=job_id,
+                chat_id=chat_id,
+                initial_status=str(job.get("initial_status") or OWNER_AGENT_RUNNING_TEXT),
+                status_message_id=status_message_id,
+                effective_timeout=int(job.get("timeout_seconds") or 0) or None,
+                progress_style=str(job.get("progress_style") or "enterprise"),
+                replace_status_with_answer=bool(job.get("replace_status_with_answer")),
+                target_label=str(job.get("target_label") or ""),
+                postprocess=bool(job.get("postprocess", True)),
+                approval_policy=str(job.get("approval_policy") or "") or None,
+                sandbox_mode=str(job.get("sandbox_mode") or "") or None,
+                clear_pending_on_finish=False,
+            )
+            self.state.append_history(chat_id, "assistant", answer)
+            self.state.record_event(chat_id, None, "assistant", "answer", answer)
+            delivered_via_status = self.consume_answer_delivered_via_status(chat_id)
+            if not delivered_via_status:
+                self.safe_send_text(chat_id, answer)
+            self.clear_pending_enterprise_job(job_id)
+            log(f"resume pending enterprise delivered job={job_id} chat={chat_id} via_status={'yes' if delivered_via_status else 'no'}")
+        except Exception as error:
+            self.clear_pending_enterprise_job(job_id)
+            log_exception(f"resume pending enterprise failed job={job_id}", error, limit=10)
+
+    def start_console_job(self, command: str) -> str:
+        self.ensure_enterprise_server_started()
+        return self.js_enterprise.start_remote_job(
+            chat_id=0,
+            prompt=(command or "").strip(),
+            timeout_seconds=self.config.enterprise_task_timeout if self.config.enterprise_task_timeout is not None else self.config.codex_timeout,
+        )
+
+    def get_console_job_snapshot(self, job_id: str) -> Optional[Dict[str, object]]:
+        self.ensure_enterprise_server_started()
+        return self.js_enterprise.get_remote_job_snapshot(job_id)
+
+    def stop_console_job(self, job_id: str) -> bool:
+        del job_id
+        return False
+
+    def get_enterprise_runtime_status(self) -> Optional[Dict[str, object]]:
+        self.ensure_enterprise_server_started()
+        return self.js_enterprise.get_runtime_status()
+
+    def restart_bridge_via_enterprise_server(self) -> Optional[Dict[str, object]]:
+        self.ensure_enterprise_server_started()
+        return self.js_enterprise.restart_bridge_runtime()
 
     def truncate_text(self, text: str, limit: int = 280) -> str:
         return truncate_text(text, limit)
@@ -4336,109 +4470,6 @@ class TelegramBridge:
         )
         return True
 
-    def start_console_job(self, command: str) -> str:
-        job_id = secrets.token_hex(8)
-        prompt = (command or "").strip()
-        job: Dict[str, object] = {
-            "id": job_id,
-            "command": prompt,
-            "started_at": time.time(),
-            "output": "Запрос принят.\nПодключаю Enterprise...",
-            "done": False,
-            "exit_code": None,
-            "cwd": str(self.script_path.parent),
-            "process": None,
-        }
-        with self.console_jobs_lock:
-            self.console_jobs[job_id] = job
-
-        def _runner() -> None:
-            result: Dict[str, object] = {"done": False, "answer": "", "error": None}
-
-            def _model_call() -> None:
-                try:
-                    result["answer"] = self.ask_codex(
-                        chat_id=OWNER_USER_ID,
-                        user_text=prompt,
-                        user_id=OWNER_USER_ID,
-                        chat_type="private",
-                        assistant_persona="enterprise",
-                        message=None,
-                        spontaneous_group_reply=False,
-                        suppress_status_messages=True,
-                    )
-                except Exception as error:
-                    result["error"] = error
-                finally:
-                    result["done"] = True
-
-            try:
-                Thread(target=_model_call, daemon=True).start()
-                phases = [
-                    "Запрос принят.\nПодключаю Enterprise...",
-                    "Запрос принят.\nПодключаю Enterprise...\n\nАнализирую запрос...",
-                    "Запрос принят.\nПодключаю Enterprise...\n\nСобираю контекст проекта...",
-                    "Запрос принят.\nПодключаю Enterprise...\n\nВыполняю задачу...",
-                    "Запрос принят.\nПодключаю Enterprise...\n\nФормирую ответ...",
-                ]
-                phase_index = 0
-                while not bool(result["done"]):
-                    with self.console_jobs_lock:
-                        live_job = self.console_jobs.get(job_id)
-                        if live_job is not None:
-                            live_job["output"] = phases[min(phase_index, len(phases) - 1)]
-                    phase_index += 1
-                    time.sleep(1.2)
-                if isinstance(result["error"], Exception):
-                    raise result["error"]
-                answer = str(result["answer"] or "")
-                with self.console_jobs_lock:
-                    live_job = self.console_jobs.get(job_id)
-                    if live_job is not None:
-                        live_job["output"] = answer or "Enterprise не вернул текст."
-                        live_job["exit_code"] = 0
-                        live_job["done"] = True
-                        live_job["process"] = None
-            except Exception as error:
-                with self.console_jobs_lock:
-                    live_job = self.console_jobs.get(job_id)
-                    if live_job is not None:
-                        live_job["output"] = f"{live_job.get('output', '')}\n{error}".strip()
-                        live_job["exit_code"] = -1
-                        live_job["done"] = True
-                        live_job["process"] = None
-
-        Thread(target=_runner, daemon=True).start()
-        return job_id
-
-    def get_console_job_snapshot(self, job_id: str) -> Optional[Dict[str, object]]:
-        with self.console_jobs_lock:
-            job = self.console_jobs.get(job_id)
-            if job is None:
-                return None
-            return {
-                "id": str(job.get("id") or ""),
-                "command": str(job.get("command") or ""),
-                "started_at": float(job.get("started_at") or 0.0),
-                "output": str(job.get("output") or ""),
-                "done": bool(job.get("done")),
-                "exit_code": job.get("exit_code"),
-                "cwd": str(job.get("cwd") or ""),
-            }
-
-    def stop_console_job(self, job_id: str) -> bool:
-        with self.console_jobs_lock:
-            job = self.console_jobs.get(job_id)
-            if job is None:
-                return False
-            process = job.get("process")
-        if process is None:
-            return False
-        try:
-            process.terminate()
-            return True
-        except Exception:
-            return False
 
     def build_webapp_html_old(self, screen_text: str = "Готов. Пиши запрос.", prompt_value: str = "", auto_refresh_seconds: int = 0) -> str:
         refresh_meta = f'<meta http-equiv="refresh" content="{auto_refresh_seconds}">' if auto_refresh_seconds > 0 else ""
@@ -4577,181 +4608,6 @@ class TelegramBridge:
 </body>
 </html>""".replace("__REFRESH_META__", refresh_meta)
 
-    def start_console_job(self, command: str) -> str:
-        job_id = secrets.token_hex(8)
-        prompt = (command or "").strip()
-        job: Dict[str, object] = {
-            "id": job_id,
-            "command": prompt,
-            "started_at": time.time(),
-            "output": "Запрос принят.\nПодключаю Enterprise...",
-            "done": False,
-            "exit_code": None,
-            "cwd": str(self.script_path.parent),
-            "process": None,
-            "events": ["Запрос принят.", "Подключаю Enterprise..."],
-            "stderr": "",
-            "answer": "",
-        }
-        with self.console_jobs_lock:
-            self.console_jobs[job_id] = job
-
-        def _runner() -> None:
-            try:
-                process = subprocess.Popen(
-                    self.build_codex_command(
-                        sandbox_mode="danger-full-access",
-                        approval_policy="never",
-                        json_output=True,
-                    ) + [prompt],
-                    cwd=str(self.script_path.parent),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    env=build_subprocess_env(),
-                    bufsize=1,
-                )
-                with self.console_jobs_lock:
-                    live_job = self.console_jobs.get(job_id)
-                    if live_job is not None:
-                        live_job["process"] = process
-
-                events: List[str] = ["Запрос принят.", "Подключаю Enterprise..."]
-                stderr_lines: List[str] = []
-                answer_parts: List[str] = []
-
-                def _push_state() -> None:
-                    answer_text = "\n\n".join(part for part in answer_parts if part).strip()
-                    with self.console_jobs_lock:
-                        live_job = self.console_jobs.get(job_id)
-                        if live_job is not None:
-                            live_job["events"] = events[-160:]
-                            live_job["stderr"] = "".join(stderr_lines)[-12000:]
-                            live_job["answer"] = answer_text[-12000:]
-                            live_job["output"] = "\n".join(events[-160:])
-
-                def _append_event(text: str) -> None:
-                    clean = normalize_whitespace(text)
-                    if not clean:
-                        return
-                    events.append(clean)
-                    _push_state()
-
-                if process.stderr is not None:
-                    def _stderr_reader() -> None:
-                        for line in process.stderr:
-                            clean = normalize_whitespace(line or "")
-                            if not clean:
-                                continue
-                            stderr_lines.append(clean + "\n")
-                            _push_state()
-
-                    Thread(target=_stderr_reader, daemon=True).start()
-
-                if process.stdout is not None:
-                    for line in process.stdout:
-                        raw_line = (line or "").strip()
-                        if not raw_line:
-                            continue
-                        try:
-                            payload = json.loads(raw_line)
-                        except json.JSONDecodeError:
-                            _append_event(raw_line)
-                            continue
-                        event_type = str(payload.get("type") or "")
-                        if event_type == "thread.started":
-                            _append_event(f"Поток запущен: {payload.get('thread_id') or '-'}")
-                            continue
-                        if event_type == "turn.started":
-                            _append_event("Ход выполнения начат.")
-                            continue
-                        if event_type == "turn.completed":
-                            usage = payload.get("usage") or {}
-                            _append_event(
-                                "Ход завершён."
-                                f" input={usage.get('input_tokens', '-')}"
-                                f" output={usage.get('output_tokens', '-')}"
-                            )
-                            continue
-                        item = payload.get("item") or {}
-                        item_type = str(item.get("type") or "")
-                        if event_type == "item.started":
-                            _append_event(f"Старт: {item_type or 'item'}")
-                            continue
-                        if event_type == "item.updated":
-                            if item_type == "agent_message":
-                                text = normalize_whitespace(str(item.get("text") or ""))
-                                if text:
-                                    answer_parts[:] = [text]
-                            _append_event(f"Обновление: {item_type or 'item'}")
-                            continue
-                        if event_type == "item.completed":
-                            if item_type == "agent_message":
-                                text = normalize_whitespace(str(item.get("text") or ""))
-                                if text:
-                                    answer_parts.append(text)
-                                    _append_event(f"Ответ: {truncate_text(text, 240)}")
-                                continue
-                            if item_type == "exec_command":
-                                title = normalize_whitespace(str(item.get("title") or item.get("command") or ""))
-                                _append_event(f"Команда: {title or 'exec_command'}")
-                                continue
-                            title = normalize_whitespace(str(item.get("title") or item.get("name") or item_type or "item.completed"))
-                            _append_event(f"Готово: {title}")
-                            continue
-                        _append_event(event_type or raw_line)
-
-                process.wait()
-                _push_state()
-                answer = "\n\n".join(part for part in answer_parts if part).strip()
-                if process.returncode != 0 and not answer:
-                    answer = build_codex_failure_answer(
-                        "".join(stderr_lines) or "\n".join(events[-40:]) or "Enterprise Core завершился с ошибкой.",
-                        sandbox_mode="danger-full-access",
-                        approval_policy="never",
-                    )
-                if not answer:
-                    answer = "Enterprise не вернул текст."
-                with self.console_jobs_lock:
-                    live_job = self.console_jobs.get(job_id)
-                    if live_job is not None:
-                        live_job["output"] = answer
-                        live_job["events"] = events[-160:]
-                        live_job["stderr"] = "".join(stderr_lines)[-12000:]
-                        live_job["answer"] = answer
-                        live_job["exit_code"] = process.returncode
-                        live_job["done"] = True
-                        live_job["process"] = None
-            except Exception as error:
-                with self.console_jobs_lock:
-                    live_job = self.console_jobs.get(job_id)
-                    if live_job is not None:
-                        live_job["output"] = f"{live_job.get('output', '')}\n{error}".strip()
-                        live_job["stderr"] = f"{live_job.get('stderr', '')}\n{error}".strip()
-                        live_job["exit_code"] = -1
-                        live_job["done"] = True
-                        live_job["process"] = None
-
-        Thread(target=_runner, daemon=True).start()
-        return job_id
-
-    def get_console_job_snapshot(self, job_id: str) -> Optional[Dict[str, object]]:
-        with self.console_jobs_lock:
-            job = self.console_jobs.get(job_id)
-            if job is None:
-                return None
-            return {
-                "id": str(job.get("id") or ""),
-                "command": str(job.get("command") or ""),
-                "started_at": float(job.get("started_at") or 0.0),
-                "output": str(job.get("output") or ""),
-                "events": list(job.get("events") or []),
-                "stderr": str(job.get("stderr") or ""),
-                "answer": str(job.get("answer") or ""),
-                "done": bool(job.get("done")),
-                "exit_code": job.get("exit_code"),
-                "cwd": str(job.get("cwd") or ""),
-            }
 
     def build_webapp_html(self, screen_text: str = "Готов. Пиши запрос.", prompt_value: str = "", auto_refresh_seconds: int = 0) -> str:
         refresh_meta = ""
@@ -5643,6 +5499,9 @@ class TelegramBridge:
         if message.get("text") and self.maybe_apply_auto_moderation(chat_id, user_id, message, chat_type):
             return
         if not has_chat_access(self.state.authorized_user_ids, user_id):
+            if chat_type == "private":
+                log(f"blocked private non-owner user_id={user_id} chat_id={chat_id}")
+                return
             guest_allowed = has_public_command_access(raw_text)
             if not guest_allowed and chat_type in {"group", "supergroup"} and message.get("text"):
                 guest_allowed = (
@@ -6242,6 +6101,7 @@ class TelegramBridge:
                 if chat_type in {"group", "supergroup"}:
                     reply_to_message_id = (message or {}).get("message_id")
                 self.safe_send_text(chat_id, answer, reply_to_message_id=reply_to_message_id)
+            self.clear_pending_enterprise_jobs_for_chat(chat_id)
             if chat_type in {"group", "supergroup"}:
                 self.mark_active_group_discussion(chat_id, user_id, message)
             if spontaneous_group_reply:
@@ -6369,6 +6229,7 @@ class TelegramBridge:
             delivered_via_status = self.consume_answer_delivered_via_status(chat_id)
             if not delivered_via_status:
                 self.safe_send_text(chat_id, answer, reply_to_message_id=message_id if chat_type in {"group", "supergroup"} else None)
+            self.clear_pending_enterprise_jobs_for_chat(chat_id)
         finally:
             self.state.finish_chat_task(chat_id)
 
@@ -7518,11 +7379,10 @@ class TelegramBridge:
             open_state="closed",
             tags="owner,restart",
         )
-        self.state.set_meta("pending_restart_chat_id", str(chat_id))
-        self.state.set_meta("pending_restart_text", RESTARTED_TEXT)
-        restart_message_id = self.send_status_message(chat_id, RESTARTING_TEXT)
-        self.state.set_meta("pending_restart_message_id", str(restart_message_id or ""))
-        self.restart_process()
+        self.safe_send_text(
+            chat_id,
+            "Self-restart отключён. Процесс остаётся в сети и больше не перезапускает сам себя; для обновления кода нужен внешний restart supervisor.",
+        )
         return True
 
     def handle_upgrade_command(self, chat_id: int, user_id: Optional[int], task: str, is_private_chat: bool = False) -> bool:
@@ -7621,12 +7481,8 @@ class TelegramBridge:
 
 
     def restart_process(self) -> None:
-        if os.getenv("RUNNING_UNDER_SUPERVISOR", "").strip() == "1":
-            log("restart requested under supervisor, exiting for clean respawn")
-            raise SystemExit(0)
-        log("restart requested without supervisor, re-exec current process")
-        os.execv(sys.executable, [sys.executable, str(self.script_path)])
-        raise SystemExit(0)
+        log("restart requested but suppressed: self-restart is disabled")
+        return
 
     def build_codex_command(self, *, image_path: Optional[Path] = None, sandbox_mode: Optional[str] = None, approval_policy: Optional[str] = None, json_output: bool = False) -> List[str]:
         command = ["codex"]
@@ -7720,7 +7576,19 @@ class TelegramBridge:
             and route_decision.use_workspace
             and is_explicit_runtime_probe_request(user_text)
         ):
-            direct_answer = render_enterprise_runtime_report()
+            runtime_snapshot = self.get_enterprise_runtime_status()
+            if runtime_snapshot:
+                direct_answer = (
+                    "Состояние runtime через Enterprise server:\n"
+                    f"- supervisor PID: {runtime_snapshot.get('supervisor_pid') or '-'}\n"
+                    f"- supervisor alive: {'yes' if runtime_snapshot.get('supervisor_alive') else 'no'}\n"
+                    f"- bridge PID: {runtime_snapshot.get('bridge_pid') or '-'}\n"
+                    f"- bridge alive: {'yes' if runtime_snapshot.get('bridge_alive') else 'no'}\n"
+                    f"- enterprise PID: {runtime_snapshot.get('enterprise_pid') or '-'}\n"
+                    f"- enterprise alive: {'yes' if runtime_snapshot.get('enterprise_alive') else 'no'}"
+                )
+            else:
+                direct_answer = render_enterprise_runtime_report()
             report = enrich_self_check_report(
                 apply_self_check_contract(direct_answer, route_decision),
                 route_decision=route_decision,
@@ -7754,6 +7622,33 @@ class TelegramBridge:
                 query_text=user_text,
             )
             return report.answer
+
+        lowered_user_text = normalize_whitespace(user_text).lower()
+        if (
+            route_decision.persona == "enterprise"
+            and route_decision.use_workspace
+            and any(marker in lowered_user_text for marker in (
+                "restart run_jarvis_supervisor",
+                "рестарт run_jarvis_supervisor",
+                "перезапусти run_jarvis_supervisor",
+                "restart supervisor",
+                "рестарт supervisor",
+            ))
+        ):
+            restart_result = self.restart_bridge_via_enterprise_server()
+            if restart_result:
+                runtime = restart_result.get("runtime") or {}
+                ok = bool(restart_result.get("ok"))
+                direct_answer = (
+                    ("Рестарт bridge через Enterprise server выполнен.\n" if ok else "Рестарт bridge через Enterprise server завершился с ошибкой.\n")
+                    + f"- returncode: {restart_result.get('returncode')}\n"
+                    + f"- stdout: {truncate_text(str(restart_result.get('stdout') or '-'), 200)}\n"
+                    + f"- stderr: {truncate_text(str(restart_result.get('stderr') or '-'), 200)}\n"
+                    + f"- supervisor PID: {runtime.get('supervisor_pid') or '-'}\n"
+                    + f"- bridge PID: {runtime.get('bridge_pid') or '-'}\n"
+                    + f"- enterprise PID: {runtime.get('enterprise_pid') or '-'}"
+                )
+                return postprocess_answer(direct_answer, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
 
         context_progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
         with HeartbeatGuard(self), ProgressStatusGuard(

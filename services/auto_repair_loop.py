@@ -99,26 +99,16 @@ def run_auto_repair_loop(bridge: "TelegramBridge", *, source: str) -> str:
             note=f"auto repair attempt {decision.attempt_number}/{bridge.config.auto_self_heal_max_retries}",
         )
         if playbook.playbook_id == "restart_runtime":
-            attempt_id = bridge.state.record_self_heal_attempt(
-                incident_id=incident_id,
-                playbook_id=playbook.playbook_id,
-                state=SELF_HEAL_STATE_EXECUTING,
-                status="pending_restart",
-                execution_summary=f"auto restart {classification.problem_type}",
-                executed_steps=("request_restart",),
-                verification_required=True,
-                notes="restart scheduled; verification continues after next startup",
-            )
-            _prepare_pending_auto_restart(
+            _mark_restart_runtime_blocked(
                 bridge,
                 incident_id=incident_id,
-                attempt_id=attempt_id,
                 classification=classification,
-                playbook_id=playbook.playbook_id,
-                before_state=before_state,
                 attempt_number=decision.attempt_number,
+                reason="self-restart disabled",
             )
-            bridge.restart_process()
+            lines.append(f"- incident={incident_id} problem={classification.problem_type} playbook={playbook.playbook_id} status=BLOCKED attempt={decision.attempt_number}/{bridge.config.auto_self_heal_max_retries}")
+            handled += 1
+            continue
         execution = execute_repair_plan(bridge, plan=plan)
         attempt_id = bridge.state.record_self_heal_attempt(
             incident_id=incident_id,
@@ -391,31 +381,40 @@ def _schedule_restart_escalation(
     before_state: dict,
     attempt_number: int,
 ) -> None:
-    attempt_id = bridge.state.record_self_heal_attempt(
+    del before_state
+    _mark_restart_runtime_blocked(
+        bridge,
+        incident_id=incident_id,
+        classification=classification,
+        attempt_number=attempt_number,
+        reason="restart escalation suppressed because self-restart is disabled",
+    )
+
+
+def _mark_restart_runtime_blocked(
+    bridge: "TelegramBridge",
+    *,
+    incident_id: int,
+    classification: "FailureClassification",
+    attempt_number: int,
+    reason: str,
+) -> None:
+    bridge.state.record_self_heal_attempt(
         incident_id=incident_id,
         playbook_id="restart_runtime",
         state=SELF_HEAL_STATE_EXECUTING,
-        status="pending_restart",
-        execution_summary=f"auto escalation restart for {classification.problem_type}",
-        executed_steps=("request_restart",),
-        verification_required=True,
-        notes="verification after restart startup",
+        status="blocked_restart_disabled",
+        execution_summary=f"restart suppressed for {classification.problem_type}",
+        executed_steps=("request_restart_blocked",),
+        verification_required=False,
+        notes=reason,
     )
     bridge.state.update_self_heal_incident_state(
         incident_id,
-        new_state=SELF_HEAL_STATE_EXECUTING,
-        note=f"auto escalation to restart attempt {attempt_number}/{bridge.config.auto_self_heal_max_retries}",
+        new_state=SELF_HEAL_STATE_FAILED,
+        note=f"{reason}; attempt {attempt_number}/{bridge.config.auto_self_heal_max_retries}",
+        verification_status="failed",
     )
-    _prepare_pending_auto_restart(
-        bridge,
-        incident_id=incident_id,
-        attempt_id=attempt_id,
-        classification=classification,
-        playbook_id="restart_runtime",
-        before_state=before_state,
-        attempt_number=attempt_number,
-    )
-    bridge.restart_process()
 
 
 class _SyntheticClassification:

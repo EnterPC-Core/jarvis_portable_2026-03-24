@@ -125,6 +125,7 @@ def build_help_panel_text(
             "Служебные команды:\n"
             "• /upgrade <что изменить>\n"
             "• /restart\n"
+            "  сообщает статус: self-restart отключён, внешний restart делает supervisor\n"
             "• /status\n"
             "• /ownerreport\n"
             "• /qualityreport\n"

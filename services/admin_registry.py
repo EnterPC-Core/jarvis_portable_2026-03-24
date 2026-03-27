@@ -14,7 +14,7 @@ class AdminCommandSpec:
 
 ADMIN_COMMAND_SPECS: Tuple[AdminCommandSpec, ...] = (
     AdminCommandSpec("/status", "/status", "access", "runtime_audit", "sqlite_snapshot", "Локальный снимок состояния runtime и памяти."),
-    AdminCommandSpec("/restart", "/restart", "owner_private", "runtime_audit", "supervisor", "Перезапуск bridge через supervisor."),
+    AdminCommandSpec("/restart", "/restart", "owner_private", "runtime_audit", "supervisor", "Показывает, что self-restart отключён; реальный перезапуск выполняется только внешним supervisor."),
     AdminCommandSpec("/ownerreport", "/ownerreport", "owner_private", "runtime_audit", "runtime_probe+world_state", "Подробный отчёт по состоянию среды, памяти, world-state и route diagnostics."),
     AdminCommandSpec("/qualityreport", "/qualityreport", "owner_private", "diagnostics", "request_diagnostics+world_state", "Агрегированная сводка по verified/inferred/insufficient и деградациям."),
     AdminCommandSpec("/selfhealstatus", "/selfhealstatus", "owner_private", "diagnostics", "self_heal_incidents", "Статус автоматики восстановления, последние инциденты и их состояния."),

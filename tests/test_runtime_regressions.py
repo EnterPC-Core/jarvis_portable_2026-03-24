@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from tempfile import NamedTemporaryFile
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -7,6 +8,7 @@ from handlers.telegram_handlers import TelegramMessageHandlers
 from handlers.ui_handlers import UIHandlers
 from handlers.command_dispatch import CommandDispatcher
 from handlers.control_panel_renderer import ControlPanelRenderer
+from enterprise_worker import extract_json_answer
 from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
 from services.text_route_service import TextRouteService, TextRouteServiceDeps
 from services.context_assembly import build_text_context_bundle
@@ -129,6 +131,37 @@ class RuntimeRegressionTests(unittest.TestCase):
                     "chat": {"id": 2, "type": "private"},
                     "from": {"id": 2, "is_bot": False},
                     "text": "просто пишу от фонаря",
+                }
+            }
+        )
+
+        self.assertEqual(recorded, [])
+
+    def test_private_non_owner_public_command_is_blocked_before_dispatch(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        recorded = []
+        bridge.state = SimpleNamespace(
+            is_duplicate_message=lambda _chat_id, _message_id: False,
+            authorized_user_ids=set(),
+        )
+        bridge.record_incoming_event = lambda chat_id, user_id, message: recorded.append((chat_id, user_id, message.get("text")))
+        bridge.maybe_refresh_chat_participants_snapshot = lambda _chat_id, _chat_type: None
+        bridge.maybe_handle_owner_moderation_override = lambda _chat_id, _user_id, _raw_text, _message, _chat_type: False
+        bridge.maybe_apply_auto_moderation = lambda _chat_id, _user_id, _message, _chat_type: False
+        bridge.is_group_spontaneous_reply_candidate = lambda *_args, **_kwargs: False
+        bridge.is_group_followup_message = lambda *_args, **_kwargs: False
+        bridge.is_group_discussion_continuation = lambda *_args, **_kwargs: False
+        bridge.handle_text_message = lambda *_args, **_kwargs: self.fail("blocked private guest command must not reach text handler")
+        bridge.safe_send_text = lambda *_args, **_kwargs: None
+        bridge.should_record_incoming_event = TelegramBridge.should_record_incoming_event.__get__(bridge, TelegramBridge)
+
+        bridge.handle_update(
+            {
+                "message": {
+                    "message_id": 11,
+                    "chat": {"id": 2, "type": "private"},
+                    "from": {"id": 2, "is_bot": False},
+                    "text": "/start",
                 }
             }
         )
@@ -324,6 +357,7 @@ class RuntimeRegressionTests(unittest.TestCase):
                 upgrade_timeout_text="timeout",
                 codex_timeout=30,
                 progress_update_seconds=1.0,
+                enterprise_worker_path=Path("/tmp/enterprise_worker.py"),
             )
         )
 
@@ -457,6 +491,77 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         self.assertTrue(answer.startswith("Ошибка Enterprise Core:\n"))
         self.assertIn("model provider unavailable", answer)
+
+    def test_restart_process_is_suppressed_without_exit_or_exec(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+
+        with patch("tg_codex_bridge.log") as log_mock, patch("tg_codex_bridge.os.execv") as execv_mock:
+            TelegramBridge.restart_process(bridge)
+
+        execv_mock.assert_not_called()
+        log_mock.assert_called_once()
+        self.assertIn("self-restart is disabled", log_mock.call_args.args[0])
+
+    def test_owner_restart_command_reports_disabled_restart_and_keeps_process_alive(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        sent_messages = []
+        recorded_events = []
+        bridge.safe_send_text = lambda chat_id, text: sent_messages.append((chat_id, text))
+        bridge.state = SimpleNamespace(record_autobiographical_event=lambda **kwargs: recorded_events.append(kwargs))
+
+        handled = TelegramBridge.handle_restart_command(bridge, chat_id=77, user_id=OWNER_USER_ID)
+
+        self.assertTrue(handled)
+        self.assertEqual(len(recorded_events), 1)
+        self.assertEqual(sent_messages[0][0], 77)
+        self.assertIn("Self-restart отключён", sent_messages[0][1])
+
+    def test_pending_enterprise_job_is_persisted_and_cleared(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        meta = {}
+        bridge.state = SimpleNamespace(
+            get_meta=lambda key, default="": meta.get(key, default),
+            set_meta=lambda key, value: meta.__setitem__(key, value),
+        )
+
+        TelegramBridge.register_pending_enterprise_job(bridge, {"job_id": "abc", "chat_id": 1})
+        TelegramBridge.register_pending_enterprise_job(bridge, {"job_id": "def", "chat_id": 2})
+        self.assertIn('"job_id": "abc"', meta["pending_enterprise_jobs"])
+        self.assertIn('"job_id": "def"', meta["pending_enterprise_jobs"])
+
+        TelegramBridge.clear_pending_enterprise_job(bridge, "abc")
+        self.assertNotIn('"job_id": "abc"', meta["pending_enterprise_jobs"])
+        self.assertIn('"job_id": "def"', meta["pending_enterprise_jobs"])
+
+    def test_pending_enterprise_jobs_can_be_cleared_by_chat_after_delivery(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        meta = {}
+        bridge.state = SimpleNamespace(
+            get_meta=lambda key, default="": meta.get(key, default),
+            set_meta=lambda key, value: meta.__setitem__(key, value),
+        )
+
+        TelegramBridge.register_pending_enterprise_job(bridge, {"job_id": "abc", "chat_id": 1})
+        TelegramBridge.register_pending_enterprise_job(bridge, {"job_id": "def", "chat_id": 2})
+        TelegramBridge.register_pending_enterprise_job(bridge, {"job_id": "ghi", "chat_id": 1})
+
+        TelegramBridge.clear_pending_enterprise_jobs_for_chat(bridge, 1)
+
+        self.assertNotIn('"job_id": "abc"', meta["pending_enterprise_jobs"])
+        self.assertNotIn('"job_id": "ghi"', meta["pending_enterprise_jobs"])
+        self.assertIn('"job_id": "def"', meta["pending_enterprise_jobs"])
+
+    def test_enterprise_worker_extracts_final_agent_message_from_json_stream(self):
+        stream = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"t1"}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"Сначала проверяю состояние."}}',
+                '{"type":"item.completed","item":{"type":"command_execution","command":"echo ok"}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"Рестарт прошёл успешно."}}',
+            ]
+        )
+
+        self.assertEqual(extract_json_answer(stream), "Рестарт прошёл успешно.")
 
 
 if __name__ == "__main__":

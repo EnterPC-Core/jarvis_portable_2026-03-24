@@ -140,6 +140,7 @@ Supervisor:
 - следит за heartbeat
 - перезапускает процесс после падения
 - выставляет `RUNNING_UNDER_SUPERVISOR=1`
+- является единственным допустимым механизмом реального перезапуска; runtime сам себя не `exec`/`exit`-рестартит
 
 ## Фоновый запуск
 
@@ -221,7 +222,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - проект рассчитывает на один активный инстанс
 - lock-файл: `tg_codex_bridge.lock`
 - heartbeat-файл: `tg_codex_bridge.heartbeat`
-- если после `/restart` бот зацикливается, надо проверять `last_update_id` и `bot_meta`
+- `/restart` больше не выполняет self-restart; если нужен реальный перезапуск, перезапускается supervisor
 - если `codex` не стартует, первым делом проверяется версия `node`
 - перед коммитом желательно обновлять runtime-backups и документацию
 
@@ -292,7 +293,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - `/autobio [запрос]` — autobiographical memory
 - `/skills [запрос]` — procedural/skill memory
 - `/reflections [N]` — последние reflection entries
-- `/restart` — одно сообщение: сначала статус перезапуска, после нового старта это же сообщение обновляется в подтверждение
+- `/restart` — только сервисное уведомление, что self-restart отключён; процесс продолжает жить, а реальный restart делается только supervisor
 
 ## Owner Panel
 

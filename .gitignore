@@ -16,6 +16,12 @@ tg_supervisor.out.*.bak
 tg_codex_bridge.heartbeat
 tg_manual.out
 .jarvis_supervisor.pid
+.enterprise_supervisor.pid
+enterprise_server.heartbeat
+enterprise_server.out
+enterprise_supervisor.out
+enterprise_jobs/
+enterprise_sessions/
 data/local-state.json
 supervisor_boot.log.*.bak
 data/runtime_backups/local_archives/

@@ -107,7 +107,7 @@ Portable-сборка не делает за тебя:
 
 - бот стартует без traceback
 - heartbeat обновляется
-- `/restart` не зацикливается
+- `/restart` не делает self-restart и не роняет runtime
 - `Jarvis` отвечает в личке
 - `Enterprise` отвечает в личке и в группах по триггеру
 - progress идёт в одном сообщении

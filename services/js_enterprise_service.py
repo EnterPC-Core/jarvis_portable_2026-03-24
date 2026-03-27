@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,10 @@ class JSEnterpriseServiceDeps:
     progress_update_seconds: float
     jarvis_offline_text: str
     upgrade_timeout_text: str
+    enterprise_worker_path: Optional[Path] = None
+    enterprise_server_base_url: str = "http://127.0.0.1:8766"
+    register_pending_job_func: Optional[Callable[[dict], None]] = None
+    clear_pending_job_func: Optional[Callable[[str], None]] = None
 
 
 class JSEnterpriseService:
@@ -46,6 +51,242 @@ class JSEnterpriseService:
             return None
         return timeout_seconds
 
+    def _build_payload(
+        self,
+        *,
+        chat_id: int = 0,
+        prompt: str,
+        image_path: Optional[Path],
+        sandbox_mode: Optional[str],
+        approval_policy: Optional[str],
+        json_output: bool,
+        timeout_seconds: Optional[int],
+    ) -> Dict[str, object]:
+        return {
+            "chat_id": int(chat_id or 0),
+            "prompt": prompt,
+            "image_path": str(image_path) if image_path is not None else "",
+            "sandbox_mode": sandbox_mode,
+            "approval_policy": approval_policy,
+            "json_output": json_output,
+            "codex_timeout": timeout_seconds if timeout_seconds is not None else self.deps.codex_timeout,
+        }
+
+    def _post_json(self, path: str, payload: Dict[str, object], timeout: Optional[int]) -> dict:
+        base_url = self.deps.enterprise_server_base_url.rstrip("/")
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = Request(
+            f"{base_url}{path}",
+            data=raw,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urlopen(request, timeout=timeout or self.deps.codex_timeout or 180) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _get_json(self, path: str, timeout: Optional[int]) -> dict:
+        base_url = self.deps.enterprise_server_base_url.rstrip("/")
+        with urlopen(f"{base_url}{path}", timeout=timeout or self.deps.codex_timeout or 180) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def get_runtime_status(self) -> Optional[Dict[str, object]]:
+        try:
+            payload = self._get_json("/api/runtime/status", 15)
+        except Exception as error:
+            self.deps.log_func(f"не удалось получить runtime status Enterprise: {error}")
+            return None
+        return dict(payload)
+
+    def restart_bridge_runtime(self) -> Optional[Dict[str, object]]:
+        try:
+            payload = self._post_json("/api/runtime/restart_bridge", {}, 60)
+        except Exception as error:
+            self.deps.log_func(f"не удалось перезапустить bridge через Enterprise: {error}")
+            return None
+        return dict(payload)
+
+    def start_remote_job(self, *, chat_id: int, prompt: str, timeout_seconds: Optional[int]) -> str:
+        payload = self._build_payload(
+            chat_id=chat_id,
+            prompt=prompt,
+            image_path=None,
+            sandbox_mode="danger-full-access",
+            approval_policy="never",
+            json_output=True,
+            timeout_seconds=timeout_seconds,
+        )
+        response = self._post_json("/api/jobs", payload, 15)
+        return str(response.get("job_id") or "")
+
+    def get_remote_job_snapshot(self, job_id: str) -> Optional[Dict[str, object]]:
+        try:
+            payload = self._get_json(f"/api/jobs/{job_id}", 15)
+        except HTTPError as error:
+            if error.code == 404:
+                return None
+            self.deps.log_func(f"не удалось получить snapshot Enterprise job={job_id}: {error}")
+            return None
+        except Exception as error:
+            self.deps.log_func(f"не удалось получить snapshot Enterprise job={job_id}: {error}")
+            return None
+        return dict(payload)
+
+    def _read_remote_result(self, payload: dict) -> Tuple[bool, str]:
+        answer = self.deps.normalize_whitespace_func(str(payload.get("answer") or ""))
+        ok = bool(payload.get("ok"))
+        if ok:
+            return True, answer or "Пустой ответ. Переформулируй запрос."
+        return False, answer or self.deps.jarvis_offline_text
+
+    def _render_remote_events_text(self, initial_status: str, snapshot: Dict[str, object]) -> str:
+        events = snapshot.get("events") or []
+        if not isinstance(events, list) or not events:
+            return initial_status
+        lines = [self.deps.normalize_whitespace_func(str(item)) for item in events[-24:]]
+        lines = [line for line in lines if line]
+        if not lines:
+            return initial_status
+        return f"{initial_status}\n\n" + "\n".join(lines)
+
+    def _render_remote_completion_text(self, initial_status: str, snapshot: Dict[str, object], answer: str) -> str:
+        base = self._render_remote_events_text(initial_status, snapshot)
+        if answer in {self.deps.jarvis_offline_text}:
+            tail = "✖ Завершение\n└ Enterprise сейчас недоступен"
+        elif answer == self.deps.upgrade_timeout_text or answer.startswith("Слишком долгий ответ."):
+            tail = "⌛ Завершение\n└ Время ожидания вышло"
+        elif answer.startswith("Ошибка Enterprise Core:"):
+            tail = "⚠ Завершение\n└ Выполнение завершилось с ошибкой"
+        else:
+            tail = "✔ Завершение\n└ Выполнение завершено"
+        return f"{base}\n{tail}".strip()
+
+    def _stepwise_events_snapshot(
+        self,
+        snapshot: Dict[str, object],
+        displayed_events: List[str],
+    ) -> Dict[str, object]:
+        raw_events = snapshot.get("events") or []
+        if not isinstance(raw_events, list):
+            return snapshot
+        normalized_events = [self.deps.normalize_whitespace_func(str(item)) for item in raw_events]
+        normalized_events = [item for item in normalized_events if item]
+        if len(displayed_events) < len(normalized_events):
+            next_event = normalized_events[len(displayed_events)]
+            displayed_events.append(next_event)
+        limited_snapshot = dict(snapshot)
+        limited_snapshot["events"] = displayed_events[-24:]
+        return limited_snapshot
+
+    def wait_for_job(
+        self,
+        *,
+        job_id: str,
+        chat_id: int,
+        initial_status: str,
+        status_message_id: Optional[int],
+        effective_timeout: Optional[int],
+        progress_style: str,
+        replace_status_with_answer: bool,
+        target_label: str,
+        postprocess: bool,
+        approval_policy: Optional[str],
+        sandbox_mode: Optional[str],
+        clear_pending_on_finish: bool = False,
+    ) -> str:
+        phase_index = 0
+        next_update_at = 0.0
+        started_at = time.perf_counter()
+        snapshot: Dict[str, object] = {}
+        displayed_events: List[str] = []
+        while True:
+            elapsed = int(max(1, time.perf_counter() - started_at))
+            try:
+                snapshot = self._get_json(f"/api/jobs/{job_id}", 15)
+            except HTTPError as error:
+                if error.code == 404:
+                    lost_answer = (
+                        "Задача оборвалась во время рестарта: Enterprise больше не видит этот job_id. "
+                        "Нужен повторный запуск."
+                    )
+                    if status_message_id is not None:
+                        self.deps.edit_status_message_func(
+                            chat_id,
+                            status_message_id,
+                            f"{initial_status}\n\n⚠ Завершение\n└ Задача потеряна после рестарта",
+                        )
+                    if clear_pending_on_finish and self.deps.clear_pending_job_func is not None:
+                        self.deps.clear_pending_job_func(job_id)
+                    return lost_answer
+                raise
+            if bool(snapshot.get("done")):
+                break
+            now = time.perf_counter()
+            if now >= next_update_at:
+                self.deps.send_chat_action_func(chat_id, "typing")
+                if status_message_id is not None:
+                    render_snapshot = self._stepwise_events_snapshot(snapshot, displayed_events)
+                    self.deps.edit_status_message_func(
+                        chat_id,
+                        status_message_id,
+                        self._render_remote_events_text(initial_status, render_snapshot),
+                    )
+                phase_index += 1
+                next_update_at = now + self.deps.progress_update_seconds
+            if effective_timeout is not None and elapsed >= effective_timeout:
+                self.deps.log_func(
+                    "таймаут ожидания Enterprise "
+                    f"chat={chat_id} timeout={effective_timeout} style={progress_style}"
+                )
+                if status_message_id is not None:
+                    self.deps.edit_status_message_func(
+                        chat_id,
+                        status_message_id,
+                        f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.",
+                    )
+                if approval_policy == "never" and sandbox_mode == "workspace-write":
+                    return self.deps.upgrade_timeout_text
+                return "Слишком долгий ответ. Повтори короче или уточни запрос."
+            time.sleep(0.5)
+        result_code = int(snapshot.get("exit_code") or 0)
+        stderr = self.deps.normalize_whitespace_func(str(snapshot.get("error") or ""))
+        ok, answer = self._read_remote_result(snapshot)
+        if result_code != 0 and not ok:
+                self.deps.log_func(
+                    self.deps.shorten_for_log_func(
+                    f"ошибка Enterprise chat={chat_id} rc={result_code} stderr={stderr}",
+                    600,
+                )
+            )
+        if ok:
+            answer = answer if not postprocess else self.deps.postprocess_answer_func(answer, None)
+        if progress_style == "enterprise" and status_message_id is not None and not replace_status_with_answer:
+            final_snapshot = dict(snapshot)
+            raw_events = final_snapshot.get("events") or []
+            if isinstance(raw_events, list):
+                final_snapshot["events"] = [
+                    self.deps.normalize_whitespace_func(str(item))
+                    for item in raw_events
+                    if self.deps.normalize_whitespace_func(str(item))
+                ][-24:]
+            self.deps.edit_status_message_func(
+                chat_id,
+                status_message_id,
+                self._render_remote_completion_text(initial_status, final_snapshot, answer),
+            )
+        else:
+            self.deps.finish_progress_status_func(
+                chat_id,
+                status_message_id,
+                initial_status,
+                answer,
+                progress_style,
+                replace_status_with_answer,
+                target_label,
+            )
+        if clear_pending_on_finish and self.deps.clear_pending_job_func is not None:
+            self.deps.clear_pending_job_func(job_id)
+        return answer
+
     def run(
         self,
         prompt: str,
@@ -56,56 +297,35 @@ class JSEnterpriseService:
         json_output: bool = False,
         postprocess: bool = True,
     ) -> str:
-        command = self.deps.build_codex_command_func(
-            image_path=image_path,
-            sandbox_mode=sandbox_mode,
-            approval_policy=approval_policy,
-            json_output=json_output,
-        )
-        started_at = time.perf_counter()
+        effective_timeout = self._resolve_timeout(None, self.deps.codex_timeout)
         try:
-            result = subprocess.run(
-                command + ["-"],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=self.deps.codex_timeout,
-                env=self.deps.build_subprocess_env_func(),
+            result = self._post_json(
+                "/api/run_sync",
+                self._build_payload(
+                    chat_id=0,
+                    prompt=prompt,
+                    image_path=image_path,
+                    sandbox_mode=sandbox_mode,
+                    approval_policy=approval_policy,
+                    json_output=json_output,
+                    timeout_seconds=effective_timeout,
+                ),
+                effective_timeout,
             )
-        except OSError as error:
-            self.deps.log_func(f"failed to start codex: {error}")
+            ok, answer = self._read_remote_result(result)
+        except (OSError, URLError, subprocess.TimeoutExpired) as error:
+            self.deps.log_func(f"не удалось связаться с Enterprise: {error}")
             return self.deps.jarvis_offline_text
-        except subprocess.TimeoutExpired:
-            self.deps.log_func(f"codex timeout after {self.deps.codex_timeout}s")
+        except TimeoutError:
+            self.deps.log_func(f"таймаут Enterprise после {effective_timeout}s")
             return "Слишком долгий ответ. Повтори короче или уточни запрос."
-
-        stdout = self.deps.normalize_whitespace_func(result.stdout or "")
-        stderr = self.deps.normalize_whitespace_func(result.stderr or "")
-        if result.returncode != 0 and "No prompt provided" in stderr:
-            self.deps.log_func("codex stdin prompt rejected, retrying with prompt argument")
-            try:
-                result = subprocess.run(
-                    command + [prompt],
-                    capture_output=True,
-                    text=True,
-                    timeout=self.deps.codex_timeout,
-                    env=self.deps.build_subprocess_env_func(),
-                )
-            except (OSError, subprocess.TimeoutExpired) as error:
-                self.deps.log_func(f"failed to restart codex with prompt argument: {error}")
-                return self.deps.jarvis_offline_text
-            stdout = self.deps.normalize_whitespace_func(result.stdout or "")
-            stderr = self.deps.normalize_whitespace_func(result.stderr or "")
-
-        return self._finalize_result(
-            stdout=stdout,
-            stderr=stderr,
-            returncode=result.returncode,
-            started_at=started_at,
-            sandbox_mode=sandbox_mode,
-            approval_policy=approval_policy,
-            postprocess=postprocess,
-        )
+        if not ok:
+            self.deps.log_func(self.deps.shorten_for_log_func(f"Enterprise вернул ошибку: {answer}", 600))
+        if ok:
+            if not postprocess:
+                return answer
+            return self.deps.postprocess_answer_func(answer, None)
+        return answer
 
     def run_with_progress(
         self,
@@ -125,92 +345,59 @@ class JSEnterpriseService:
         show_status_message: bool = True,
         target_label: str = "",
     ) -> str:
-        if json_output:
-            return self._run_with_json_progress(
-                chat_id=chat_id,
-                prompt=prompt,
-                initial_status=initial_status,
-                status_message_id=status_message_id,
-                image_path=image_path,
-                sandbox_mode=sandbox_mode,
-                approval_policy=approval_policy,
-                postprocess=postprocess,
-                timeout_seconds=timeout_seconds,
-                replace_status_with_answer=replace_status_with_answer,
-            )
         if show_status_message and status_message_id is None:
             status_message_id = self.deps.send_status_message_func(chat_id, initial_status)
-        command = self.deps.build_codex_command_func(
-            image_path=image_path,
-            sandbox_mode=sandbox_mode,
-            approval_policy=approval_policy,
-            json_output=json_output,
-        )
-        stdin_command = command + ["-"]
-        started_at = time.perf_counter()
         effective_timeout = self._resolve_timeout(timeout_seconds, self.deps.codex_timeout)
 
         try:
             with self.deps.heartbeat_guard_factory():
-                with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_handle, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_handle:
-                    process = subprocess.Popen(
-                        stdin_command,
-                        stdin=subprocess.PIPE,
-                        stdout=stdout_handle,
-                        stderr=stderr_handle,
-                        text=True,
-                        env=self.deps.build_subprocess_env_func(),
+                create_response = self._post_json(
+                    "/api/jobs",
+                    self._build_payload(
+                        chat_id=chat_id,
+                        prompt=prompt,
+                        image_path=image_path,
+                        sandbox_mode=sandbox_mode,
+                        approval_policy=approval_policy,
+                        json_output=json_output,
+                        timeout_seconds=effective_timeout,
+                    ),
+                    15,
+                )
+                job_id = str(create_response.get("job_id") or "")
+                if not job_id:
+                    raise OSError("Enterprise не вернул идентификатор задачи")
+                if self.deps.register_pending_job_func is not None:
+                    self.deps.register_pending_job_func(
+                        {
+                            "job_id": job_id,
+                            "chat_id": chat_id,
+                            "status_message_id": status_message_id,
+                            "initial_status": initial_status,
+                            "progress_style": progress_style,
+                            "replace_status_with_answer": replace_status_with_answer,
+                            "target_label": target_label,
+                            "postprocess": postprocess,
+                            "approval_policy": approval_policy or "",
+                            "sandbox_mode": sandbox_mode or "",
+                            "timeout_seconds": effective_timeout or 0,
+                        }
                     )
-                    assert process.stdin is not None
-                    process.stdin.write(prompt)
-                    process.stdin.close()
-
-                    phase_index = 0
-                    next_update_at = 0.0
-                    while True:
-                        return_code = process.poll()
-                        elapsed = int(max(1, time.perf_counter() - started_at))
-                        if return_code is not None:
-                            break
-                        now = time.perf_counter()
-                        if now >= next_update_at:
-                            self.deps.send_chat_action_func(chat_id, "typing")
-                            self.deps.update_progress_status_func(
-                                chat_id,
-                                status_message_id,
-                                initial_status,
-                                elapsed,
-                                phase_index,
-                                progress_style,
-                                target_label,
-                            )
-                            phase_index += 1
-                            next_update_at = now + self.deps.progress_update_seconds
-                        if effective_timeout is not None and elapsed >= effective_timeout:
-                            process.kill()
-                            process.wait(timeout=5)
-                            self.deps.log_func(
-                                "codex progress timeout "
-                                f"chat={chat_id} timeout={effective_timeout} progress_style={progress_style}"
-                            )
-                            if status_message_id is not None:
-                                self.deps.edit_status_message_func(
-                                    chat_id,
-                                    status_message_id,
-                                    f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.",
-                                )
-                            if approval_policy == "never" and sandbox_mode == "workspace-write":
-                                return self.deps.upgrade_timeout_text
-                            return "Слишком долгий ответ. Повтори короче или уточни запрос."
-                        time.sleep(0.5)
-
-                    stdout_handle.seek(0)
-                    stderr_handle.seek(0)
-                    stdout = self.deps.normalize_whitespace_func(stdout_handle.read() or "")
-                    stderr = self.deps.normalize_whitespace_func(stderr_handle.read() or "")
-                    result_code = process.returncode or 0
-        except OSError as error:
-            self.deps.log_func(f"failed to start codex with progress: {error}")
+                return self.wait_for_job(
+                    job_id=job_id,
+                    chat_id=chat_id,
+                    initial_status=initial_status,
+                    status_message_id=status_message_id,
+                    effective_timeout=effective_timeout,
+                    progress_style=progress_style,
+                    replace_status_with_answer=replace_status_with_answer,
+                    target_label=target_label,
+                    postprocess=postprocess,
+                    approval_policy=approval_policy,
+                    sandbox_mode=sandbox_mode,
+                )
+        except (OSError, URLError) as error:
+            self.deps.log_func(f"не удалось связаться с Enterprise во время выполнения: {error}")
             if status_message_id is not None:
                 self.deps.edit_status_message_func(
                     chat_id,
@@ -218,42 +405,7 @@ class JSEnterpriseService:
                     f"{initial_status}\n\nНе удалось запустить Enterprise Core.",
                 )
             return self.deps.jarvis_offline_text
-
-        if result_code != 0 and "No prompt provided" in stderr:
-            self.deps.log_func("codex stdin prompt rejected during progress run, retrying with prompt argument")
-            return self._retry_with_progress(
-                chat_id=chat_id,
-                status_message_id=status_message_id,
-                initial_status=initial_status,
-                command=command + [prompt],
-                sandbox_mode=sandbox_mode,
-                approval_policy=approval_policy,
-                postprocess=postprocess,
-                timeout_seconds=effective_timeout,
-                progress_style=progress_style,
-                replace_status_with_answer=replace_status_with_answer,
-                target_label=target_label,
-            )
-
-        answer = self._finalize_result(
-            stdout=stdout,
-            stderr=stderr,
-            returncode=result_code,
-            started_at=started_at,
-            sandbox_mode=sandbox_mode,
-            approval_policy=approval_policy,
-            postprocess=postprocess,
-        )
-        self.deps.finish_progress_status_func(
-            chat_id,
-            status_message_id,
-            initial_status,
-            answer,
-            progress_style,
-            replace_status_with_answer,
-            target_label,
-        )
-        return answer
+        return self.deps.jarvis_offline_text
 
     def _render_live_event_text(self, initial_status: str, events: List[str]) -> str:
         if not events:
