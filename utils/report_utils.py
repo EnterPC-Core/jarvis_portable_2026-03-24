@@ -7,6 +7,7 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 
 def render_event_rows(
@@ -72,25 +73,26 @@ def render_resource_summary(
     format_bytes_func: Callable[[int], str],
     format_swap_line_func: Callable[[], str],
     extract_meminfo_value_func: Callable[[str, str], Optional[int]],
+    display_timezone: ZoneInfo,
 ) -> str:
     lines = ["Ресурсы системы"]
-    lines.append(f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    lines.append(f"Время: {datetime.now(display_timezone).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     try:
         with open("/proc/loadavg", "r", encoding="utf-8") as handle:
-            lines.append(f"Load average: {handle.read().strip()}")
+            lines.append(f"Средняя нагрузка: {handle.read().strip()}")
     except OSError:
         pass
     if psutil_module is not None:
         vm = psutil_module.virtual_memory()
         cpu_percent = psutil_module.cpu_percent(interval=0.5)
-        boot_time = datetime.utcfromtimestamp(psutil_module.boot_time()).strftime("%Y-%m-%d %H:%M:%S")
+        boot_time = datetime.fromtimestamp(psutil_module.boot_time(), tz=display_timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
         lines.append(f"CPU: {cpu_percent:.1f}%")
         lines.append(f"RAM: {vm.percent:.1f}% ({format_bytes_func(vm.used)} / {format_bytes_func(vm.total)})")
         lines.append(f"Swap: {format_swap_line_func()}")
         lines.append(
-            f"CPU cores: logical={psutil_module.cpu_count()} physical={psutil_module.cpu_count(logical=False) or 'n/a'}"
+            f"Ядра CPU: logical={psutil_module.cpu_count()} physical={psutil_module.cpu_count(logical=False) or 'n/a'}"
         )
-        lines.append(f"Boot time UTC: {boot_time}")
+        lines.append(f"Время запуска системы: {boot_time}")
     else:
         lines.append("psutil не установлен, показываю только базовые данные из /proc.")
         try:
@@ -224,26 +226,28 @@ def render_enterprise_runtime_report(
     truncate_text_func: Callable[[str, int], str],
     build_subprocess_env_func: Callable[[], dict],
     render_bridge_runtime_watch_func: Callable[[], str],
+    display_timezone: ZoneInfo,
 ) -> str:
-    lines = ["Enterprise runtime probe"]
-    lines.append(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    lines = ["Проверка enterprise runtime"]
+    lines.append(f"Время: {datetime.now(display_timezone).strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
     visible_tools = []
     for tool_name in ("htop", "sar", "iostat", "mpstat", "pidstat", "free", "df", "ps", "ip", "ss", "apt-cache"):
         tool_path = shutil.which(tool_name)
         visible_tools.append(f"{tool_name}={'MISSING' if not tool_path else tool_path}")
-    lines.extend(["", "Tools visible in this runtime:", *[f"- {item}" for item in visible_tools]])
+    lines.extend(["", "Инструменты, доступные в этом рантайме:", *[f"- {item}" for item in visible_tools]])
 
     proc_bits = []
     for proc_path in ("/proc/loadavg", "/proc/meminfo", "/proc/vmstat", "/proc/net/dev"):
         proc_bits.append(f"{proc_path}={'readable' if os.access(proc_path, os.R_OK) else 'unreadable'}")
-    lines.extend(["", "Proc access:", *[f"- {item}" for item in proc_bits]])
+    lines.extend(["", "Доступ к /proc:", *[f"- {item}" for item in proc_bits]])
 
     resource_lines = render_resource_summary(
         psutil_module=psutil_module,
         format_bytes_func=format_bytes_func,
         format_swap_line_func=format_swap_line_func,
         extract_meminfo_value_func=extract_meminfo_value,
+        display_timezone=display_timezone,
     ).splitlines()
     lines.extend(["", *resource_lines])
     lines.extend(["", render_bridge_runtime_watch_func()])
@@ -322,25 +326,25 @@ def render_bridge_runtime_watch(
     supervisor_log_path: Path,
     runtime_log_snapshot: Dict[str, object],
 ) -> str:
-    lines = ["Bridge runtime watch"]
-    heartbeat_age_text = "missing"
+    lines = ["Наблюдение за рантаймом bridge"]
+    heartbeat_age_text = "отсутствует"
     if heartbeat_path.exists():
         try:
             heartbeat_age = max(0, int(time.time() - heartbeat_path.stat().st_mtime))
             heartbeat_age_text = f"{heartbeat_age}s"
         except OSError:
-            heartbeat_age_text = "unavailable"
-    lines.append(f"Heartbeat file: {heartbeat_path} (age={heartbeat_age_text})")
+            heartbeat_age_text = "недоступно"
+    lines.append(f"Heartbeat-файл: {heartbeat_path} (возраст={heartbeat_age_text})")
 
     bridge_processes = _find_matching_processes(psutil_module, ("tg_codex_bridge.py",), limit=3)
     supervisor_processes = _find_matching_processes(psutil_module, ("run_jarvis_supervisor.sh",), limit=3)
-    lines.append(f"Bridge process: {'running' if bridge_processes else 'not found'}")
+    lines.append(f"Процесс bridge: {'запущен' if bridge_processes else 'не найден'}")
     for process in bridge_processes:
         uptime_text = f"{process['uptime_seconds']}s" if 0 <= int(process["uptime_seconds"]) <= 86400 * 30 else "n/a"
         lines.append(
             f"- pid={process['pid']} uptime={uptime_text} ram={format_bytes_func(int(process['rss']))} cmd={truncate_text_func(process['cmdline'] or process['name'], 140)}"
         )
-    lines.append(f"Supervisor process: {'running' if supervisor_processes else 'not found'}")
+    lines.append(f"Процесс supervisor: {'запущен' if supervisor_processes else 'не найден'}")
     for process in supervisor_processes:
         uptime_text = f"{process['uptime_seconds']}s" if 0 <= int(process["uptime_seconds"]) <= 86400 * 30 else "n/a"
         lines.append(
@@ -349,47 +353,47 @@ def render_bridge_runtime_watch(
 
     lines.extend(
         [
-            f"Restarts 24h: {int(runtime_log_snapshot.get('restart_count', 0))}",
-            f"Heartbeat kills 24h: {int(runtime_log_snapshot.get('heartbeat_kill_count', 0))}",
-            f"Termination signals 24h: {int(runtime_log_snapshot.get('termination_signal_count', 0))}",
-            f"Severe errors 24h: {int(runtime_log_snapshot.get('severe_error_count', 0))}",
-            f"Recoverable warnings 24h: {int(runtime_log_snapshot.get('warning_count', 0))}",
-            f"Codex degraded 24h: {int(runtime_log_snapshot.get('codex_degraded_count', 0))}",
-            f"Codex hard errors 24h: {int(runtime_log_snapshot.get('codex_error_count', 0))}",
-            f"Network loop errors 24h: {int(runtime_log_snapshot.get('network_error_count', 0))}",
+            f"Перезапуски за 24ч: {int(runtime_log_snapshot.get('restart_count', 0))}",
+            f"Принудительные heartbeat-kill за 24ч: {int(runtime_log_snapshot.get('heartbeat_kill_count', 0))}",
+            f"Сигналы завершения за 24ч: {int(runtime_log_snapshot.get('termination_signal_count', 0))}",
+            f"Серьёзные ошибки за 24ч: {int(runtime_log_snapshot.get('severe_error_count', 0))}",
+            f"Восстанавливаемые предупреждения за 24ч: {int(runtime_log_snapshot.get('warning_count', 0))}",
+            f"Деградации Codex за 24ч: {int(runtime_log_snapshot.get('codex_degraded_count', 0))}",
+            f"Жёсткие ошибки Codex за 24ч: {int(runtime_log_snapshot.get('codex_error_count', 0))}",
+            f"Ошибки сетевого цикла за 24ч: {int(runtime_log_snapshot.get('network_error_count', 0))}",
         ]
     )
     last_restart_line = str(runtime_log_snapshot.get("last_restart_line") or "").strip()
     if last_restart_line:
-        lines.append(f"Last restart: {truncate_text_func(last_restart_line, 220)}")
+        lines.append(f"Последний перезапуск: {truncate_text_func(last_restart_line, 220)}")
 
     recent_errors = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_error_lines", [])]
     if recent_errors:
         lines.append("")
-        lines.append("Recent severe log lines:")
+        lines.append("Последние серьёзные строки в логах:")
         lines.extend(f"- {item}" for item in recent_errors[-5:])
 
     recent_warnings = [truncate_text_func(str(item), 220) for item in runtime_log_snapshot.get("recent_warning_lines", [])]
     if recent_warnings:
         lines.append("")
-        lines.append("Recent recoverable warnings:")
+        lines.append("Последние восстанавливаемые предупреждения:")
         lines.extend(f"- {item}" for item in recent_warnings[-5:])
 
     bridge_tail = read_log_tail(bridge_log_path, limit=6)
     lines.append("")
-    lines.append(f"tg_codex_bridge.log tail ({bridge_log_path}):")
+    lines.append(f"Хвост tg_codex_bridge.log ({bridge_log_path}):")
     if bridge_tail:
         lines.extend(f"- {truncate_text_func(line, 220)}" for line in bridge_tail)
     else:
-        lines.append("- log is empty")
+        lines.append("- лог пуст")
 
     supervisor_tail = read_log_tail(supervisor_log_path, limit=6)
     lines.append("")
-    lines.append(f"supervisor_boot.log tail ({supervisor_log_path}):")
+    lines.append(f"Хвост supervisor_boot.log ({supervisor_log_path}):")
     if supervisor_tail:
         lines.extend(f"- {truncate_text_func(line, 220)}" for line in supervisor_tail)
     else:
-        lines.append("- log is empty")
+        lines.append("- лог пуст")
 
     return "\n".join(lines)
 

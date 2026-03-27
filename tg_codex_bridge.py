@@ -10546,6 +10546,7 @@ def render_resource_summary() -> str:
         format_bytes_func=format_bytes,
         format_swap_line_func=format_swap_line,
         extract_meminfo_value_func=extract_meminfo_value,
+        display_timezone=DISPLAY_TIMEZONE,
     )
 
 
@@ -10557,6 +10558,7 @@ def render_enterprise_runtime_report() -> str:
         truncate_text_func=truncate_text,
         build_subprocess_env_func=build_subprocess_env,
         render_bridge_runtime_watch_func=render_bridge_runtime_watch,
+        display_timezone=DISPLAY_TIMEZONE,
     )
 
 

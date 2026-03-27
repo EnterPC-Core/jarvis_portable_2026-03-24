@@ -1,6 +1,7 @@
 import time
 from datetime import datetime
 from typing import Callable, Dict, Optional
+from zoneinfo import ZoneInfo
 
 from services.diagnostics_metrics import collect_diagnostics_metrics, render_diagnostics_metrics
 from services.failure_detectors import detect_failure_signals, render_failure_signals
@@ -306,20 +307,21 @@ class OwnerCommandService:
         if not self.is_owner_private_chat_func(user_id, chat_id):
             bridge.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
             return True
+        display_timezone = ZoneInfo("Europe/Moscow")
         bridge.refresh_world_state_registry("quality_report", chat_id=chat_id)
         diagnostics_metrics = collect_diagnostics_metrics(bridge.state, window_seconds=86400)
         recent_routes = bridge.state.get_recent_request_diagnostics(limit=8)
         world_state_context = bridge.state.get_world_state_context(limit=8)
         lines = [
-            "QUALITY REPORT",
-            f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
+            "ОТЧЁТ ПО КАЧЕСТВУ",
+            f"Время: {datetime.now(display_timezone).strftime('%Y-%m-%d %H:%M:%S %Z')}",
             "",
             render_diagnostics_metrics(diagnostics_metrics),
         ]
         if world_state_context:
             lines.extend(["", world_state_context])
         if recent_routes:
-            lines.extend(["", "Последние route decisions:", bridge.render_route_diagnostics_rows(recent_routes)])
+            lines.extend(["", "Последние решения маршрутизации:", bridge.render_route_diagnostics_rows(recent_routes)])
         bridge.safe_send_text(chat_id, "\n".join(lines))
         return True
 
@@ -368,6 +370,7 @@ class OwnerCommandService:
         return True
 
     def render_owner_report_text(self, bridge: "TelegramBridge", chat_id: int) -> str:
+        display_timezone = ZoneInfo("Europe/Moscow")
         operational_state = bridge.refresh_world_state_registry("owner_report_render", chat_id=chat_id)
         bridge.recompute_drive_scores(operational_state)
         status_snapshot = bridge.state.get_status_snapshot(chat_id)
@@ -376,7 +379,11 @@ class OwnerCommandService:
             last_backup_value = float(last_backup_raw or "0")
         except ValueError:
             last_backup_value = 0.0
-        backup_text = datetime.utcfromtimestamp(last_backup_value).strftime("%Y-%m-%d %H:%M:%S UTC") if last_backup_value > 0 else "ещё не было"
+        backup_text = (
+            datetime.fromtimestamp(last_backup_value, tz=display_timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
+            if last_backup_value > 0
+            else "ещё не было"
+        )
         backup_age_hours = ((time.time() - last_backup_value) / 3600.0) if last_backup_value > 0 else -1.0
         runtime_snapshot = bridge.inspect_runtime_log()
         recent_errors = bridge.read_recent_log_highlights(limit=8)
@@ -394,22 +401,22 @@ class OwnerCommandService:
         self_heal_incidents = bridge.state.get_recent_self_heal_incidents(limit=4)
         lines = [
             "ОТЧЁТ ВЛАДЕЛЬЦА",
-            f"Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
+            f"Время: {datetime.now(display_timezone).strftime('%Y-%m-%d %H:%M:%S %Z')}",
             f"Режим чата: {bridge.state.get_mode(chat_id)}",
             f"События в этом чате: {status_snapshot['events_count']}",
             f"Факты в этом чате: {status_snapshot['facts_count']}",
             f"История в этом чате: {status_snapshot['history_count']}",
-            f"User memory profiles в этом чате: {status_snapshot['user_memory_profiles']}",
-            f"Relation memory в этом чате: {status_snapshot['relation_memory_rows']}",
-            f"Summary snapshots в этом чате: {status_snapshot['summary_snapshots']}",
-            f"Autobiographical events: {status_snapshot['autobiographical_rows']}",
-            f"Reflections: {status_snapshot['reflections_rows']}",
-            f"World-state rows: {status_snapshot['world_state_rows']}",
+            f"Профили памяти пользователей в этом чате: {status_snapshot['user_memory_profiles']}",
+            f"Связи relation-memory в этом чате: {status_snapshot['relation_memory_rows']}",
+            f"Слепки summary memory в этом чате: {status_snapshot['summary_snapshots']}",
+            f"Автобиографические события: {status_snapshot['autobiographical_rows']}",
+            f"Рефлексии: {status_snapshot['reflections_rows']}",
+            f"Записи world-state: {status_snapshot['world_state_rows']}",
             f"Всего событий в БД: {status_snapshot['total_events']}",
-            f"Route decisions в БД: {status_snapshot['total_route_decisions']}",
+            f"Решения маршрутизации в БД: {status_snapshot['total_route_decisions']}",
             f"Upgrade активен: {'да' if bridge.state.global_upgrade_active else 'нет'}",
             f"Heartbeat: {bridge.config.heartbeat_path}",
-            f"Heartbeat timeout: {bridge.config.heartbeat_timeout_seconds}s",
+            f"Heartbeat timeout: {bridge.config.heartbeat_timeout_seconds}с",
             f"Последний backup: {backup_text}",
             (
                 f"Возраст backup: {backup_age_hours:.1f} ч"
@@ -430,11 +437,11 @@ class OwnerCommandService:
             lines.extend(["", drive_context])
         lines.extend(["", render_diagnostics_metrics(diagnostics_metrics)])
         if recent_routes:
-            lines.extend(["", "Последние route decisions:", bridge.render_route_diagnostics_rows(recent_routes)])
+            lines.extend(["", "Последние решения маршрутизации:", bridge.render_route_diagnostics_rows(recent_routes)])
         lines.extend(["", render_failure_signals(failure_signals), "", render_playbook_summary(repair_playbooks)])
         if repair_journal:
             lines.append("")
-            lines.append("Последние repair journal entries:")
+            lines.append("Последние записи repair journal:")
             for row in repair_journal:
                 stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
                 lines.append(
@@ -453,7 +460,7 @@ class OwnerCommandService:
         else:
             lines.extend(["", "Недавние ошибки/сбои:", "- Явных ошибок в хвосте лога не найдено."])
         if int(runtime_snapshot.get("warning_count", 0)):
-            lines.extend(["", "Недавние recoverable warnings:", *[f"- {item}" for item in runtime_snapshot.get("recent_warning_lines", [])[-5:]]])
+            lines.extend(["", "Недавние восстанавливаемые предупреждения:", *[f"- {item}" for item in runtime_snapshot.get("recent_warning_lines", [])[-5:]]])
         return "\n".join(lines)
 
 

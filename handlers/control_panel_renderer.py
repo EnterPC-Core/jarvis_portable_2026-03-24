@@ -1,6 +1,7 @@
 import time
 from datetime import datetime
 from typing import Callable, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from services.admin_registry import iter_admin_commands
 from services.diagnostics_metrics import collect_diagnostics_metrics, render_diagnostics_metrics
@@ -49,7 +50,7 @@ class ControlPanelRenderer:
 
     def _build_owner_commands_panel(self, payload: str) -> Tuple[str, dict]:
         domain_labels = {
-            "runtime_audit": "Среда и runtime",
+            "runtime_audit": "Среда и рантайм",
             "diagnostics": "Диагностика",
             "route_audit": "Маршрутизация",
             "memory_audit": "Память и контекст",
@@ -93,8 +94,8 @@ class ControlPanelRenderer:
             text = (
                 "JARVIS • СПРАВОЧНИК OWNER/ADMIN КОМАНД\n\n"
                 "Короткая навигация по категориям. Полные списки открываются отдельными кнопками.\n\n"
-                f"• Среда и runtime: {counts['runtime_audit']}\n"
-                f"• Диагностика и self-healing: {counts['diagnostics']}\n"
+                f"• Среда и рантайм: {counts['runtime_audit']}\n"
+                f"• Диагностика и автовосстановление: {counts['diagnostics']}\n"
                 f"• Маршрутизация: {counts['route_audit']}\n"
                 f"• Память и контекст: {counts['memory_audit']}\n"
                 f"• Модерация: {counts['moderation_audit']}\n"
@@ -104,7 +105,7 @@ class ControlPanelRenderer:
         markup = {
             "inline_keyboard": [
                 [
-                    {"text": "Среда и runtime", "callback_data": "ui:panel:owner_commands:runtime_audit"},
+                    {"text": "Среда и рантайм", "callback_data": "ui:panel:owner_commands:runtime_audit"},
                     {"text": "Диагностика", "callback_data": "ui:panel:owner_commands:diagnostics"},
                 ],
                 [
@@ -143,40 +144,44 @@ class ControlPanelRenderer:
         except ValueError:
             last_backup_value = 0.0
         if last_backup_value > 0:
-            backup_line = datetime.utcfromtimestamp(last_backup_value).strftime("%Y-%m-%d %H:%M:%S UTC")
+            backup_line = datetime.fromtimestamp(last_backup_value, tz=ZoneInfo("Europe/Moscow")).strftime("%Y-%m-%d %H:%M:%S %Z")
         else:
             backup_line = "ещё не было"
         text = (
             "JARVIS • СРЕДА И RUNTIME\n\n"
-            "Короткая сводка. Детали открываются отдельными кнопками ниже.\n\n"
-            f"• Owner autofix: {owner_autofix_status}\n"
+            "Это короткий экран состояния. Ниже можно открыть подробные разделы по кнопкам.\n\n"
+            "Что смотреть в первую очередь:\n"
+            "• свеж ли heartbeat\n"
+            "• есть ли ошибки за последние 24 часа\n"
+            "• не накопился ли риск по рантайму и качеству ответов\n\n"
+            f"• Автофикс владельца: {owner_autofix_status}\n"
             f"• Heartbeat: {heartbeat_age_text}\n"
-            f"• Backup: {backup_line}\n"
-            f"• Restarts 24h: {int(runtime_snapshot.get('restart_count', 0))}\n"
-            f"• Severe errors 24h: {int(runtime_snapshot.get('severe_error_count', 0))}\n"
-            f"• Warnings 24h: {int(runtime_snapshot.get('warning_count', 0))}\n"
-            f"• Runtime risk pressure: {drive_scores.get('runtime_risk_pressure', 0.0):.1f}\n"
-            f"• Uncertainty pressure: {drive_scores.get('uncertainty_pressure', 0.0):.1f}\n"
-            f"• Quality degraded routes: {diagnostics_metrics.degraded_count}\n"
-            f"• Git dirty entries: {int(operational_state.get('git_dirty_count', 0))}"
+            f"• Последний backup: {backup_line}\n"
+            f"• Перезапуски за 24ч: {int(runtime_snapshot.get('restart_count', 0))}\n"
+            f"• Серьёзные ошибки за 24ч: {int(runtime_snapshot.get('severe_error_count', 0))}\n"
+            f"• Recoverable warnings за 24ч: {int(runtime_snapshot.get('warning_count', 0))}\n"
+            f"• Риск рантайма: {drive_scores.get('runtime_risk_pressure', 0.0):.1f}\n"
+            f"• Уровень неопределённости: {drive_scores.get('uncertainty_pressure', 0.0):.1f}\n"
+            f"• Деградировавшие маршруты: {diagnostics_metrics.degraded_count}\n"
+            f"• Грязных файлов в Git: {int(operational_state.get('git_dirty_count', 0))}"
         )
         markup = {
             "inline_keyboard": [
                 [
-                    {"text": "Runtime", "callback_data": "ui:panel:owner_runtime:runtime"},
-                    {"text": "Logs", "callback_data": "ui:panel:owner_git:logs"},
+                    {"text": "Рантайм", "callback_data": "ui:panel:owner_runtime:runtime"},
+                    {"text": "Логи", "callback_data": "ui:panel:owner_git:logs"},
                 ],
                 [
-                    {"text": "World state", "callback_data": "ui:panel:owner_runtime:world"},
-                    {"text": "Drive pressures", "callback_data": "ui:panel:owner_runtime:drives"},
+                    {"text": "Состояние мира", "callback_data": "ui:panel:owner_runtime:world"},
+                    {"text": "Давления системы", "callback_data": "ui:panel:owner_runtime:drives"},
                 ],
                 [
-                    {"text": "Quality diagnostics", "callback_data": "ui:panel:owner_runtime:quality"},
-                    {"text": "Git state", "callback_data": "ui:panel:owner_git:state"},
+                    {"text": "Качество ответов", "callback_data": "ui:panel:owner_runtime:quality"},
+                    {"text": "Состояние Git", "callback_data": "ui:panel:owner_git:state"},
                 ],
-                [{"text": "Self-healing", "callback_data": "ui:panel:owner_selfheal"}],
+                [{"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
                 [
-                    {"text": f"Owner autofix: {'ON' if owner_autofix_enabled else 'OFF'}", "callback_data": "ui:ownerautofix:status"},
+                    {"text": f"Автофикс: {'ВКЛ' if owner_autofix_enabled else 'ВЫКЛ'}", "callback_data": "ui:ownerautofix:status"},
                     {"text": "Переключить", "callback_data": "ui:ownerautofix:toggle"},
                 ],
                 [{"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
@@ -191,16 +196,19 @@ class ControlPanelRenderer:
         runtime_snapshot = bridge.inspect_runtime_log()
         if payload == "runtime":
             text = (
-                "JARVIS • RUNTIME\n\n"
+                "JARVIS • РАНТАЙМ\n\n"
+                "Здесь собраны живость процесса, ресурсы и последний технический срез по bridge.\n\n"
                 f"{bridge.render_resource_summary()}\n\n"
                 f"{bridge.render_bridge_runtime_watch()}"
             )
         elif payload == "world":
             snapshots = bridge.state.get_recent_world_state_snapshots(limit=5)
             lines = [
-                "JARVIS • WORLD STATE",
+                "JARVIS • СОСТОЯНИЕ МИРА",
                 "",
-                bridge.state.get_world_state_context(limit=10) or "World state пока пуст.",
+                "Это актуальные служебные записи о состоянии рантайма, проекта, live-источников и диагностики.",
+                "",
+                bridge.state.get_world_state_context(limit=10) or "Состояние мира пока пусто.",
             ]
             if snapshots:
                 lines.extend(["", "Последние snapshots:"])
@@ -210,13 +218,16 @@ class ControlPanelRenderer:
             text = "\n".join(lines)
         elif payload == "drives":
             text = (
-                "JARVIS • DRIVE PRESSURES\n\n"
-                + (bridge.state.get_drive_context() or "Drive pressures пока не рассчитаны.")
+                "JARVIS • ДАВЛЕНИЯ СИСТЕМЫ\n\n"
+                "Это внутренние pressure-сигналы приоритизации: где система видит накопленный риск или долг.\n\n"
+                + (bridge.state.get_drive_context() or "Давления системы пока не рассчитаны.")
             )
         elif payload == "quality":
             recent_routes = bridge.state.get_recent_request_diagnostics(limit=6)
             lines = [
-                "JARVIS • QUALITY DIAGNOSTICS",
+                "JARVIS • КАЧЕСТВО ОТВЕТОВ",
+                "",
+                "Здесь видно, насколько ответы были verified / inferred / insufficient и где роутинг деградировал.",
                 "",
                 render_diagnostics_metrics(diagnostics_metrics),
             ]
@@ -228,18 +239,18 @@ class ControlPanelRenderer:
         markup = {
             "inline_keyboard": [
                 [
-                    {"text": "Runtime", "callback_data": "ui:panel:owner_runtime:runtime"},
-                    {"text": "Logs", "callback_data": "ui:panel:owner_git:logs"},
+                    {"text": "Рантайм", "callback_data": "ui:panel:owner_runtime:runtime"},
+                    {"text": "Логи", "callback_data": "ui:panel:owner_git:logs"},
                 ],
                 [
-                    {"text": "World state", "callback_data": "ui:panel:owner_runtime:world"},
-                    {"text": "Drive pressures", "callback_data": "ui:panel:owner_runtime:drives"},
+                    {"text": "Состояние мира", "callback_data": "ui:panel:owner_runtime:world"},
+                    {"text": "Давления системы", "callback_data": "ui:panel:owner_runtime:drives"},
                 ],
                 [
-                    {"text": "Quality diagnostics", "callback_data": "ui:panel:owner_runtime:quality"},
-                    {"text": "Git state", "callback_data": "ui:panel:owner_git:state"},
+                    {"text": "Качество ответов", "callback_data": "ui:panel:owner_runtime:quality"},
+                    {"text": "Состояние Git", "callback_data": "ui:panel:owner_git:state"},
                 ],
-                [{"text": "Self-healing", "callback_data": "ui:panel:owner_selfheal"}],
+                [{"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
                 [{"text": "К сводке", "callback_data": "ui:panel:owner_runtime"}, {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
             ]
         }
@@ -248,7 +259,8 @@ class ControlPanelRenderer:
     def _build_owner_git_panel(self, bridge: "TelegramBridge", payload: str) -> Tuple[str, dict]:
         if payload == "state":
             text = (
-                "JARVIS • GIT STATE\n\n"
+                "JARVIS • СОСТОЯНИЕ GIT\n\n"
+                "Здесь видно, чисто ли дерево, какие файлы изменены и какие были последние коммиты.\n\n"
                 f"{self.render_git_status_summary(bridge.script_path.parent)}\n\n"
                 f"{self.render_git_last_commits(bridge.script_path.parent, limit=5)}"
             )
@@ -257,7 +269,9 @@ class ControlPanelRenderer:
             runtime_snapshot = bridge.inspect_runtime_log()
             bridge_tail = bridge.read_recent_operational_highlights(limit=8, category="all")
             lines = [
-                "JARVIS • LOGS",
+                "JARVIS • ЛОГИ",
+                "",
+                "Этот экран нужен, если бот тупит, молчит или вёл себя странно. Сначала смотри последние ошибки.",
                 "",
                 "Последние ошибки:",
             ]
@@ -270,7 +284,7 @@ class ControlPanelRenderer:
                 lines.extend(["", "Recoverable warnings:"])
                 lines.extend(f"- {item}" for item in recent_warnings)
             if bridge_tail:
-                lines.extend(["", "Operational tail:"])
+                lines.extend(["", "Операционный хвост логов:"])
                 lines.extend(f"- {item}" for item in bridge_tail[-6:])
             text = "\n".join(lines)
         else:
@@ -278,23 +292,23 @@ class ControlPanelRenderer:
             runtime_snapshot = bridge.inspect_runtime_log()
             text = (
                 "JARVIS • GIT И ЛОГИ\n\n"
-                "Короткая сводка. Детали открываются отдельными кнопками.\n\n"
-                f"• Git dirty entries: {int(operational_state.get('git_dirty_count', 0))}\n"
-                f"• Recent severe errors: {int(runtime_snapshot.get('severe_error_count', 0))}\n"
+                "Короткая сводка. Ниже можно открыть состояние Git и сами логи отдельно.\n\n"
+                f"• Грязных файлов в Git: {int(operational_state.get('git_dirty_count', 0))}\n"
+                f"• Серьёзные ошибки: {int(runtime_snapshot.get('severe_error_count', 0))}\n"
                 f"• Recoverable warnings: {int(runtime_snapshot.get('warning_count', 0))}\n"
                 f"• Codex degraded: {int(runtime_snapshot.get('codex_degraded_count', 0))}\n"
-                f"• Codex hard errors: {int(runtime_snapshot.get('codex_error_count', 0))}\n\n"
-                "Команды: /gitstatus, /gitlast, /errors, /events, /routes, /upgrade"
+                f"• Жёсткие ошибки Codex: {int(runtime_snapshot.get('codex_error_count', 0))}\n\n"
+                "Полезные команды: /gitstatus, /gitlast, /errors, /events, /routes, /upgrade"
             )
         markup = {
             "inline_keyboard": [
                 [
-                    {"text": "Git state", "callback_data": "ui:panel:owner_git:state"},
-                    {"text": "Logs", "callback_data": "ui:panel:owner_git:logs"},
+                    {"text": "Состояние Git", "callback_data": "ui:panel:owner_git:state"},
+                    {"text": "Логи", "callback_data": "ui:panel:owner_git:logs"},
                 ],
                 [
-                    {"text": "Runtime summary", "callback_data": "ui:panel:owner_runtime"},
-                    {"text": "Self-healing", "callback_data": "ui:panel:owner_selfheal"},
+                    {"text": "Сводка рантайма", "callback_data": "ui:panel:owner_runtime"},
+                    {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"},
                 ],
                 [{"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
             ]
@@ -448,18 +462,18 @@ class ControlPanelRenderer:
                 "• команды с параметрами здесь описаны с примерами и usage-шаблонами\n"
                 "• если нужен полный справочник без сокращений, открывай раздел «Все команды»\n\n"
                 "Разделы:\n"
-                "• Среда и runtime: здоровье процесса, ресурсы, перезапуск, owner report\n"
+                "• Среда и рантайм: здоровье процесса, ресурсы, перезапуск, owner report\n"
                 "• Git и логи: ветка, коммиты, ошибки, upgrade\n"
                 "• Память и чаты: history, digest, recall, portraits, export\n"
                 "• Файлы и медиа: sdcard-команды, файлы, документы, media-context\n"
                 "• Live-данные: погода, курсы, новости, current-facts\n"
-                "• Автовосстановление: инциденты, approval gate, безопасные repair playbooks\n"
+                "• Автовосстановление: инциденты, статус, безопасные repair playbooks\n"
                 "• Модерация: санкции, предупреждения, welcome, appeals\n"
                 "• Все команды: полный текстовый реестр проекта"
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Среда и runtime", "callback_data": "ui:panel:owner_runtime"}, {"text": "Git и логи", "callback_data": "ui:panel:owner_git"}],
+                    [{"text": "Среда и рантайм", "callback_data": "ui:panel:owner_runtime"}, {"text": "Git и логи", "callback_data": "ui:panel:owner_git"}],
                     [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}],
                     [{"text": "Live-данные", "callback_data": "ui:panel:owner_live"}, {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
                     [{"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
