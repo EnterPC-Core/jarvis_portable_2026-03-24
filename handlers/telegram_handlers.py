@@ -29,11 +29,11 @@ class TelegramMessageHandlers:
         if (
             chat_type in {"group", "supergroup"}
             and user_id == self.owner_user_id
-            and assistant_persona != "enterprise"
+            and assistant_persona not in {"enterprise", "jarvis"}
             and not raw_text.startswith("/")
         ):
             bridge.log(
-                f"owner jarvis suppressed in group chat={chat_id} user={user_id} "
+                f"owner group message without explicit persona ignored chat={chat_id} user={user_id} "
                 f"text={bridge.shorten_for_log(raw_text)}"
             )
             return

@@ -7,15 +7,20 @@
 Сборка включает:
 
 - локальный bridge к `Enterprise Core`
+- отдельный локальный `enterprise_server`
 - SQLite-память
-- supervisor для живого процесса
+- supervisor для живых процессов
 - вспомогательные скрипты запуска
 - legacy-адаптер для старой базы `Jarvis`
 
 ## Что внутри
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной runtime
+- [`enterprise_server.py`](./enterprise_server.py) — отдельный server для Enterprise-задач
+- [`enterprise_worker.py`](./enterprise_worker.py) — worker для выполнения конкретной задачи
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — удержание процесса
+- [`run_enterprise_supervisor.sh`](./run_enterprise_supervisor.sh) — удержание `enterprise_server.py`
+- [`restart_jarvis_supervisor.sh`](./restart_jarvis_supervisor.sh) — безопасный рестарт bridge
 - [`start_jarvis_on_termux.sh`](./start_jarvis_on_termux.sh) — фоновый старт в Termux
 - [`start_jarvis_on_userland.sh`](./start_jarvis_on_userland.sh) — фоновый старт в UserLAnd
 - [`jarvis_memory.db`](./jarvis_memory.db) — текущая память
@@ -66,12 +71,14 @@ python3 -m py_compile tg_codex_bridge.py
 
 ```bash
 sh run_jarvis_supervisor.sh
+sh run_enterprise_supervisor.sh
 ```
 
 Для UserLAnd:
 
 ```bash
 sh start_jarvis_on_userland.sh
+sh start_enterprise_on_userland.sh
 ```
 
 ## Что не входит в “магический автозапуск”
@@ -98,6 +105,7 @@ Portable-сборка не делает за тебя:
 Правильный локальный runtime:
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py)
+- [`enterprise_server.py`](./enterprise_server.py)
 
 Не нужно путать его со старыми альтернативными launcher-ветками.
 
@@ -107,9 +115,11 @@ Portable-сборка не делает за тебя:
 
 - бот стартует без traceback
 - heartbeat обновляется
+- `enterprise_server` жив отдельно от bridge
 - `/restart` не делает self-restart и не роняет runtime
 - `Jarvis` отвечает в личке
 - `Enterprise` отвечает в личке и в группах по триггеру
+- в группах owner может явно выбрать профиль: `Jarvis ...` или `Enterprise ...`
 - progress идёт в одном сообщении
 - live-запросы на погоду/курс/новости/цену/current-facts не выдумываются
 - reply-aware контекст работает для обычных текстовых запросов

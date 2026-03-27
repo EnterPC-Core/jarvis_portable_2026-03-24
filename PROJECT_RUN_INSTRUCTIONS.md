@@ -2,13 +2,18 @@
 
 ## Для чего этот файл
 
-Это актуальная инструкция для текущего проекта `Enterprise Core` в локальной среде. Она описывает реальный рабочий режим: бот запускается здесь, в этой Linux/UserLAnd-среде, через `tg_codex_bridge.py` и supervisor.
+Это актуальная инструкция для текущего проекта `Enterprise Core` в локальной среде. Она описывает реальный рабочий режим: здесь постоянно живут два процесса, `tg_codex_bridge.py` и `enterprise_server.py`, каждый под своим supervisor.
 
 ## Основные файлы
 
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Enterprise Core bridge
+- [`enterprise_server.py`](./enterprise_server.py) — отдельный локальный сервер Enterprise
+- [`enterprise_worker.py`](./enterprise_worker.py) — отдельный worker для конкретной Enterprise-задачи
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — supervisor для постоянного процесса
+- [`run_enterprise_supervisor.sh`](./run_enterprise_supervisor.sh) — supervisor для `enterprise_server.py`
+- [`restart_jarvis_supervisor.sh`](./restart_jarvis_supervisor.sh) — безопасный single-flight рестарт bridge-supervisor
 - [`start_jarvis_on_userland.sh`](./start_jarvis_on_userland.sh) — фоновый запуск в UserLAnd
+- [`start_enterprise_on_userland.sh`](./start_enterprise_on_userland.sh) — фоновый запуск `enterprise_server` в UserLAnd
 - [`start_jarvis_on_termux.sh`](./start_jarvis_on_termux.sh) — фоновый запуск в Termux
 - [`jarvis_memory.db`](./jarvis_memory.db) — память, история, сервисное состояние
 
@@ -116,6 +121,8 @@ LEGACY_JARVIS_DB_PATH=/home/userland/projects/bots/jarvis_legacy_data/jarvis.db
 
 ## Ручной запуск
 
+### Bridge
+
 ```bash
 cd /home/userland/projects/bots/jarvis_portable_2026-03-24
 python3 tg_codex_bridge.py
@@ -127,7 +134,16 @@ python3 tg_codex_bridge.py
 - когда нужен foreground-режим
 - когда нужно видеть поведение процесса напрямую
 
+### Enterprise server
+
+```bash
+cd /home/userland/projects/bots/jarvis_portable_2026-03-24
+python3 enterprise_server.py
+```
+
 ## Нормальный запуск через supervisor
+
+### Bridge
 
 ```bash
 cd /home/userland/projects/bots/jarvis_portable_2026-03-24
@@ -142,6 +158,15 @@ Supervisor:
 - выставляет `RUNNING_UNDER_SUPERVISOR=1`
 - является единственным допустимым механизмом реального перезапуска; runtime сам себя не `exec`/`exit`-рестартит
 
+### Enterprise server
+
+```bash
+cd /home/userland/projects/bots/jarvis_portable_2026-03-24
+sh run_enterprise_supervisor.sh
+```
+
+Этот supervisor держит `enterprise_server.py` отдельно от bridge и не должен падать вместе с рестартом `tg_codex_bridge.py`.
+
 ## Фоновый запуск
 
 ### UserLAnd
@@ -149,6 +174,7 @@ Supervisor:
 ```bash
 cd /home/userland/projects/bots/jarvis_portable_2026-03-24
 sh start_jarvis_on_userland.sh
+sh start_enterprise_on_userland.sh
 ```
 
 ### Termux
@@ -158,11 +184,22 @@ cd /home/userland/projects/bots/jarvis_portable_2026-03-24
 sh start_jarvis_on_termux.sh
 ```
 
+## Безопасный рестарт bridge
+
+```bash
+cd /home/userland/projects/bots/jarvis_portable_2026-03-24
+sh restart_jarvis_supervisor.sh
+```
+
+Нужно использовать именно этот helper, а не запускать `run_jarvis_supervisor.sh` поверх живого supervisor.
+
 ## Остановка
 
 ```bash
 pkill -f 'python3 tg_codex_bridge.py'
 pkill -f 'run_jarvis_supervisor.sh'
+pkill -f 'python3 enterprise_server.py'
+pkill -f 'run_enterprise_supervisor.sh'
 ```
 
 ## Проверки
@@ -188,7 +225,7 @@ sh tools/refresh_repo_state.sh
 ### Жив ли процесс
 
 ```bash
-ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
+ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh|enterprise_server.py|run_enterprise_supervisor.sh' | grep -v grep
 ```
 
 ### Логи
@@ -196,6 +233,8 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - [`tg_codex_bridge.log`](./tg_codex_bridge.log)
 - [`supervisor_boot.log`](./supervisor_boot.log)
 - [`tg_supervisor.out`](./tg_supervisor.out)
+- [`enterprise_server.log`](./enterprise_server.log)
+- [`enterprise_supervisor.out`](./enterprise_supervisor.out)
 
 ## Что хранится в базе
 
@@ -222,6 +261,7 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 - проект рассчитывает на один активный инстанс
 - lock-файл: `tg_codex_bridge.lock`
 - heartbeat-файл: `tg_codex_bridge.heartbeat`
+- server-side jobs и session-memory хранятся отдельно в `enterprise_jobs/` и `enterprise_sessions/`
 - `/restart` больше не выполняет self-restart; если нужен реальный перезапуск, перезапускается supervisor
 - если `codex` не стартует, первым делом проверяется версия `node`
 - перед коммитом желательно обновлять runtime-backups и документацию
@@ -236,8 +276,10 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh' | grep -v grep
 
 ### В группах
 
-- ответы только на обращения владельца через trigger/reply/упоминание
-- `Enterprise` тоже может работать, если маршрут явно вызван
+- owner-сценарий разделён по явному имени:
+- `Enterprise ...` — инженерный `enterprise`-контур
+- `Jarvis ...` — разговорный `jarvis`-контур
+- без явного имени owner-сообщение в группе игнорируется
 - reply на чужое сообщение теперь попадает в prompt как отдельный контекст вместе с коротким thread history
 - вопросы вида `что тут происходит`, `кто в чате`, `изучи этот чат`, `что между ними` теперь должны опираться на локальные `chat_events`, `user memory`, `relation memory`, `participant registry` и chat-dynamics слой
 

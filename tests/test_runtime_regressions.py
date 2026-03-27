@@ -106,6 +106,122 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(sent_messages, [])
         self.assertTrue(any("group non-owner ignored" in row for row in logs))
 
+    def test_owner_group_explicit_jarvis_starts_jarvis_task(self):
+        started = []
+        logs = []
+        handler = TelegramMessageHandlers(owner_user_id=1, safe_mode_reply="safe")
+        bridge = SimpleNamespace(
+            normalize_incoming_text=lambda text, _bot_username: text,
+            extract_assistant_persona=lambda text: ("jarvis", "проверь память"),
+            bot_username="jarvis_bot",
+            log=lambda message: logs.append(message),
+            shorten_for_log=lambda text: text,
+            contains_profanity=lambda _text: False,
+            is_group_discussion_rate_limited=lambda *_args, **_kwargs: False,
+            is_group_followup_message=lambda *_args, **_kwargs: False,
+            is_group_discussion_continuation=lambda *_args, **_kwargs: False,
+            get_group_participant_priority=lambda *_args, **_kwargs: "owner",
+            should_process_group_message=lambda *_args, **_kwargs: True,
+            is_meaningful_group_request=lambda *_args, **_kwargs: True,
+            is_ambient_group_chatter=lambda *_args, **_kwargs: False,
+            should_consider_group_spontaneous_reply=lambda *_args, **_kwargs: False,
+            owner_autofix_enabled=lambda: False,
+            should_attempt_owner_autofix=lambda *_args, **_kwargs: False,
+            handle_command=lambda *_args, **_kwargs: False,
+            config=SimpleNamespace(safe_chat_only=False),
+            is_dangerous_request=lambda _text: False,
+            can_owner_use_workspace_mode=lambda *_args, **_kwargs: True,
+            state=SimpleNamespace(try_start_chat_task=lambda _chat_id: True),
+            send_chat_action=lambda *_args, **_kwargs: None,
+            safe_send_text=lambda *_args, **_kwargs: None,
+            run_text_task=lambda *args, **_kwargs: started.append(args),
+        )
+
+        with patch("handlers.telegram_handlers.Thread") as thread_cls:
+            thread_cls.side_effect = lambda target, args=(), daemon=None: SimpleNamespace(start=lambda: target(*args))
+            handler.handle_text_message(
+                bridge,
+                chat_id=-100,
+                user_id=1,
+                message={"text": "Jarvis, проверь память", "message_id": 10},
+                chat_type="group",
+            )
+
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0][1], "проверь память")
+        self.assertEqual(started[0][4], "jarvis")
+        self.assertFalse(any("ignored" in row for row in logs))
+
+    def test_owner_group_explicit_enterprise_starts_enterprise_task(self):
+        started = []
+        logs = []
+        handler = TelegramMessageHandlers(owner_user_id=1, safe_mode_reply="safe")
+        bridge = SimpleNamespace(
+            normalize_incoming_text=lambda text, _bot_username: text,
+            extract_assistant_persona=lambda text: ("enterprise", "проверь память"),
+            bot_username="jarvis_bot",
+            log=lambda message: logs.append(message),
+            shorten_for_log=lambda text: text,
+            contains_profanity=lambda _text: False,
+            is_group_discussion_rate_limited=lambda *_args, **_kwargs: False,
+            is_group_followup_message=lambda *_args, **_kwargs: False,
+            is_group_discussion_continuation=lambda *_args, **_kwargs: False,
+            get_group_participant_priority=lambda *_args, **_kwargs: "owner",
+            should_process_group_message=lambda *_args, **_kwargs: True,
+            is_meaningful_group_request=lambda *_args, **_kwargs: True,
+            is_ambient_group_chatter=lambda *_args, **_kwargs: False,
+            should_consider_group_spontaneous_reply=lambda *_args, **_kwargs: False,
+            owner_autofix_enabled=lambda: False,
+            should_attempt_owner_autofix=lambda *_args, **_kwargs: False,
+            handle_command=lambda *_args, **_kwargs: False,
+            config=SimpleNamespace(safe_chat_only=False),
+            is_dangerous_request=lambda _text: False,
+            can_owner_use_workspace_mode=lambda *_args, **_kwargs: True,
+            state=SimpleNamespace(try_start_chat_task=lambda _chat_id: True),
+            send_chat_action=lambda *_args, **_kwargs: None,
+            safe_send_text=lambda *_args, **_kwargs: None,
+            run_text_task=lambda *args, **_kwargs: started.append(args),
+        )
+
+        with patch("handlers.telegram_handlers.Thread") as thread_cls:
+            thread_cls.side_effect = lambda target, args=(), daemon=None: SimpleNamespace(start=lambda: target(*args))
+            handler.handle_text_message(
+                bridge,
+                chat_id=-100,
+                user_id=1,
+                message={"text": "Enterprise, проверь память", "message_id": 11},
+                chat_type="group",
+            )
+
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0][1], "проверь память")
+        self.assertEqual(started[0][4], "enterprise")
+        self.assertFalse(any("ignored" in row for row in logs))
+
+    def test_owner_group_message_without_persona_stays_silent(self):
+        sent_messages = []
+        logs = []
+        handler = TelegramMessageHandlers(owner_user_id=1, safe_mode_reply="safe")
+        bridge = SimpleNamespace(
+            normalize_incoming_text=lambda text, _bot_username: text,
+            extract_assistant_persona=lambda text: ("", text),
+            bot_username="jarvis_bot",
+            log=lambda message: logs.append(message),
+            shorten_for_log=lambda text: text,
+            safe_send_text=lambda chat_id, text: sent_messages.append((chat_id, text)),
+        )
+
+        handler.handle_text_message(
+            bridge,
+            chat_id=-100,
+            user_id=1,
+            message={"text": "проверь память", "message_id": 12},
+            chat_type="group",
+        )
+
+        self.assertEqual(sent_messages, [])
+        self.assertTrue(any("owner group message without explicit persona ignored" in row for row in logs))
+
     def test_private_non_owner_noise_is_not_recorded_before_block(self):
         bridge = TelegramBridge.__new__(TelegramBridge)
         recorded = []

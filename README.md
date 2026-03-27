@@ -5,13 +5,13 @@
 - `Jarvis` — разговорный и ассистентский слой
 - `Enterprise` — режим для реальных проверок среды, кода, файлов и системных задач
 
-Проект работает прямо в текущей Linux/UserLAnd-среде. Отдельный деплой для основной рабочей схемы не нужен. Главная точка входа — [`tg_codex_bridge.py`](./tg_codex_bridge.py), а не Cloudflare Worker-часть.
+Проект работает прямо в текущей Linux/UserLAnd-среде. Отдельный деплой для основной рабочей схемы не нужен. Боевая схема теперь состоит из двух постоянных процессов: Telegram bridge [`tg_codex_bridge.py`](./tg_codex_bridge.py) и отдельного локального сервера [`enterprise_server.py`](./enterprise_server.py).
 
 ## Статус Проекта
 
 - текущий режим: локальный runtime в `UserLAnd` / `Termux`
-- основной entrypoint: [`tg_codex_bridge.py`](./tg_codex_bridge.py)
-- поддерживаемый способ удержания процесса: [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh)
+- основные entrypoint'ы: [`tg_codex_bridge.py`](./tg_codex_bridge.py) и [`enterprise_server.py`](./enterprise_server.py)
+- поддерживаемые supervisor-контуры: [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) и [`run_enterprise_supervisor.sh`](./run_enterprise_supervisor.sh)
 - модель доступа по умолчанию: owner-only диалог плюс публичный пользовательский контур
 - storage: локальная SQLite-память + legacy SQLite для рейтингов и апелляций
 
@@ -57,16 +57,23 @@ python3 tools/behavioral_check.py
 
 ### 4. Запуск
 
-Нормальный рабочий запуск:
+Нормальный рабочий запуск bridge:
 
 ```bash
 sh run_jarvis_supervisor.sh
+```
+
+Нормальный рабочий запуск Enterprise server:
+
+```bash
+sh run_enterprise_supervisor.sh
 ```
 
 Фоновый запуск для UserLAnd:
 
 ```bash
 sh start_jarvis_on_userland.sh
+sh start_enterprise_on_userland.sh
 ```
 
 Фоновый запуск для Termux:
@@ -77,7 +84,9 @@ sh start_jarvis_on_termux.sh
 
 ## Структура Репозитория
 
-- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — runtime entrypoint и coordinator: Telegram polling, orchestration, интеграция router/pipeline/services
+- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — Telegram bridge: polling, Telegram handlers, orchestration и presentation
+- [`enterprise_server.py`](./enterprise_server.py) — отдельный локальный server для Enterprise jobs, session memory, runtime-control и persistent job storage
+- [`enterprise_worker.py`](./enterprise_worker.py) — отдельный worker-процесс, который исполняет конкретную Enterprise-задачу вне bridge-runtime
 - [`handlers/`](./handlers) — Telegram message handlers, command dispatch и command parsers
 - [`models/`](./models) — типизированные контракты: `RouteDecision`, `ContextBundle`, `SelfCheckReport`, `AttachmentBundle`, live records
 - [`router/`](./router) — deterministic routing policy и request classification без Telegram I/O
@@ -104,7 +113,7 @@ sh start_jarvis_on_termux.sh
 
 - что сообщение отправлено владельцем
 - что есть триггер `Jarvis` / `Enterprise` или корректный reply/mention
-- что живы `run_jarvis_supervisor.sh` и `tg_codex_bridge.py`
+- что живы `run_jarvis_supervisor.sh`, `tg_codex_bridge.py` и `enterprise_server.py`
 - что `BOT_TOKEN` и локальный `codex` реально доступны в этой среде
 
 ## Что Проверять Перед Пушем
@@ -137,6 +146,7 @@ sh tools/refresh_repo_state.sh
 ### Основное
 
 - Telegram long polling через локальный Python bridge
+- отдельный `enterprise_server` с persistent jobs и server-side session memory
 - память диалога и служебное состояние в SQLite
 - четыре слоя памяти: `user memory`, `relation memory`, `chat memory`, `summary memory`
 - persistent entity-слои: `self-model`, `autobiographical memory`, `reflection loop`, `skill memory`, `world-state registry`, `drive pressures`
@@ -148,7 +158,7 @@ sh tools/refresh_repo_state.sh
 - фото и документы идут в реальный анализ, а текстовые файлы дают excerpt в prompt
 - режимы `Jarvis` и `Enterprise`
 - живой progress-статус в одном сообщении во время долгих задач
-- запуск `Enterprise Core` из локальной среды
+- запуск `Enterprise` вне bridge-процесса через отдельный server/worker-контур
 - у владельца есть project-ops команды: `git status`, последние коммиты, хвост ошибок, digest по конкретной группе
 - у владельца разделены `errors` и `events`: реальные поломки отдельно от рестартов и блокировок, у `events` есть фильтр по категориям
 - для владельца есть `Панель владельца` в inline UI: все команды проекта разложены по категориям в админ-панели и описаны по-русски
@@ -201,12 +211,14 @@ sh tools/refresh_repo_state.sh
 
 ### Three Contours
 
-Теперь проект явнее разделён на три контура:
+Теперь проект явнее разделён на четыре контура:
 
 - `assistant / jarvis`:
   ответы пользователю, chat-facing логика, Telegram presentation
+- `telegram bridge`:
+  polling, команды, UI, routing входящих Telegram-сообщений
 - `enterprise / runtime`:
-  owner ops, runtime diagnostics, файлы, код, среда, self-heal
+  owner ops, runtime diagnostics, файлы, код, среда, self-heal через отдельный `enterprise_server`
 - `moderation`:
   anti-abuse, sanctions, warns, appeals, modlog, group guardrails
 

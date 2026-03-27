@@ -14,6 +14,9 @@
 
 - Свободный диалог и runtime-команды доступны только владельцу
 - Публичные пользовательские команды доступны всем: `/start`, `/rating`, `/top`, `/topweek`, `/topday`, `/appeal`, `/appeals`
+- В группах owner-профиль выбирается явным именем в сообщении:
+- `Jarvis ...` — разговорный сценарий
+- `Enterprise ...` — инженерный сценарий
 
 ## Режимы ответа
 
@@ -64,6 +67,7 @@
 - `/disk`
 - `/net`
 - `/restart` — self-restart отключён; команда сообщает, что runtime остаётся в сети, а реальный перезапуск делается только внешним supervisor
+- реальный safe-restart bridge делается shell-helper'ом [`restart_jarvis_supervisor.sh`](./restart_jarvis_supervisor.sh), а не повторным запуском `run_jarvis_supervisor.sh`
 - `/ownerautofix on|off|status`
 
 ## Владелец / Git И Логи
