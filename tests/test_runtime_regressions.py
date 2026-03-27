@@ -13,6 +13,8 @@ from enterprise_server import PROTECTED_SERVER_CORE_PATHS
 from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
 from services.text_route_service import TextRouteService, TextRouteServiceDeps
 from services.context_assembly import build_attachment_context_bundle, build_text_context_bundle
+from services.diagnostics_pipeline import derive_memory_used, enrich_self_check_report
+from models.contracts import ContextBundle, RouteDecision, SelfCheckReport
 from tg_codex_bridge import (
     BridgeState,
     OWNER_USER_ID,
@@ -80,6 +82,80 @@ class _FakeState:
 
 
 class RuntimeRegressionTests(unittest.TestCase):
+    def test_diagnostics_memory_used_prioritizes_direct_grounding_layers(self):
+        route_decision = RouteDecision(
+            persona="enterprise",
+            intent="chat_dynamics",
+            chat_type="group",
+            route_kind="codex_workspace",
+            source_label="Enterprise",
+            use_live=False,
+            use_web=False,
+            use_events=True,
+            use_database=True,
+            use_reply=True,
+            use_workspace=True,
+            guardrails=(),
+            request_kind="chat_local_context",
+        )
+        context_bundle = ContextBundle(
+            database_context="db facts",
+            reply_context="reply facts",
+            event_context="event facts",
+            world_state_text="world facts",
+            user_memory_text="user memory",
+            relation_memory_text="relation memory",
+            chat_memory_text="chat memory",
+            summary_memory_text="summary memory",
+        )
+
+        self.assertEqual(
+            derive_memory_used(context_bundle, route_decision),
+            ("database_context", "reply_context", "chat_events", "world_state"),
+        )
+
+    def test_enriched_self_check_report_keeps_direct_grounding_in_memory_trace(self):
+        route_decision = RouteDecision(
+            persona="enterprise",
+            intent="chat_dynamics",
+            chat_type="group",
+            route_kind="codex_workspace",
+            source_label="Enterprise",
+            use_live=False,
+            use_web=False,
+            use_events=True,
+            use_database=True,
+            use_reply=True,
+            use_workspace=True,
+            guardrails=(),
+            request_kind="chat_local_context",
+        )
+        context_bundle = ContextBundle(
+            database_context="db facts",
+            reply_context="reply facts",
+            event_context="event facts",
+            world_state_text="world facts",
+            user_memory_text="user memory",
+            relation_memory_text="relation memory",
+        )
+        report = SelfCheckReport(
+            outcome="ok",
+            answer="grounded answer",
+            flags=(),
+            observed_basis=("chat_events",),
+        )
+
+        enriched = enrich_self_check_report(
+            report,
+            route_decision=route_decision,
+            context_bundle=context_bundle,
+        )
+
+        self.assertEqual(
+            enriched.memory_used,
+            ("database_context", "reply_context", "chat_events", "world_state"),
+        )
+
     def test_runtime_log_treats_status_edit_429_as_warning_not_severe(self):
         with TemporaryDirectory() as tmp_dir:
             log_path = Path(tmp_dir) / "tg_codex_bridge.log"

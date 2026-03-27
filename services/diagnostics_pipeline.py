@@ -30,22 +30,19 @@ def derive_memory_used(context_bundle: Optional[ContextBundle], route_decision: 
             if getattr(route_decision, "use_database" if source == "database_context" else "use_reply", False)
         )
     layers: List[str] = []
-    if context_bundle.user_memory_text:
-        layers.append("user_memory")
-    if context_bundle.relation_memory_text:
-        layers.append("relation_memory")
-    if context_bundle.chat_memory_text:
-        layers.append("chat_memory")
-    if context_bundle.summary_memory_text:
-        layers.append("summary_memory")
-    if context_bundle.reply_context:
-        layers.append("reply_context")
-    if context_bundle.event_context:
-        layers.append("chat_events")
-    if context_bundle.database_context:
-        layers.append("database_context")
-    if context_bundle.world_state_text:
-        layers.append("world_state")
+    precedence_order = (
+        ("database_context", context_bundle.database_context),
+        ("reply_context", context_bundle.reply_context),
+        ("chat_events", context_bundle.event_context),
+        ("world_state", context_bundle.world_state_text),
+        ("user_memory", context_bundle.user_memory_text),
+        ("relation_memory", context_bundle.relation_memory_text),
+        ("chat_memory", context_bundle.chat_memory_text),
+        ("summary_memory", context_bundle.summary_memory_text),
+    )
+    for layer_name, layer_value in precedence_order:
+        if layer_value:
+            layers.append(layer_name)
     if len(layers) > 4:
         layers = layers[:4]
     return tuple(layers)
