@@ -1,4 +1,5 @@
 import unittest
+from tempfile import NamedTemporaryFile
 from types import SimpleNamespace
 
 from handlers.telegram_handlers import TelegramMessageHandlers
@@ -8,7 +9,7 @@ from handlers.control_panel_renderer import ControlPanelRenderer
 from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
 from services.text_route_service import TextRouteService, TextRouteServiceDeps
 from services.context_assembly import build_text_context_bundle
-from tg_codex_bridge import TelegramBridge, has_public_callback_access, has_public_command_access
+from tg_codex_bridge import BridgeState, OWNER_USER_ID, TelegramBridge, has_public_callback_access, has_public_command_access
 
 
 class _FakeState:
@@ -101,6 +102,37 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         self.assertEqual(sent_messages, [])
         self.assertTrue(any("group non-owner ignored" in row for row in logs))
+
+    def test_private_non_owner_noise_is_not_recorded_before_block(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        recorded = []
+        bridge.state = SimpleNamespace(
+            is_duplicate_message=lambda _chat_id, _message_id: False,
+            authorized_user_ids=set(),
+        )
+        bridge.record_incoming_event = lambda chat_id, user_id, message: recorded.append((chat_id, user_id, message.get("text")))
+        bridge.maybe_refresh_chat_participants_snapshot = lambda _chat_id, _chat_type: None
+        bridge.maybe_handle_owner_moderation_override = lambda _chat_id, _user_id, _raw_text, _message, _chat_type: False
+        bridge.maybe_apply_auto_moderation = lambda _chat_id, _user_id, _message, _chat_type: False
+        bridge.is_group_spontaneous_reply_candidate = lambda *_args, **_kwargs: False
+        bridge.is_group_followup_message = lambda *_args, **_kwargs: False
+        bridge.is_group_discussion_continuation = lambda *_args, **_kwargs: False
+        bridge.handle_text_message = lambda *_args, **_kwargs: self.fail("blocked private guest message must not reach text handler")
+        bridge.safe_send_text = lambda *_args, **_kwargs: None
+        bridge.should_record_incoming_event = TelegramBridge.should_record_incoming_event.__get__(bridge, TelegramBridge)
+
+        bridge.handle_update(
+            {
+                "message": {
+                    "message_id": 10,
+                    "chat": {"id": 2, "type": "private"},
+                    "from": {"id": 2, "is_bot": False},
+                    "text": "просто пишу от фонаря",
+                }
+            }
+        )
+
+        self.assertEqual(recorded, [])
 
     def test_unauthorized_callback_is_ignored_without_access_denied_reply(self):
         sent_messages = []
@@ -212,6 +244,39 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(top_markup["inline_keyboard"][-1][0]["callback_data"], "ui:home")
         self.assertIn("JARVIS • АПЕЛЛЯЦИИ", appeals_text)
         self.assertEqual(appeals_markup["inline_keyboard"][0][0]["callback_data"], "ui:appeal:new")
+
+    def test_memory_refresh_queue_skips_non_owner_private_chats(self):
+        with NamedTemporaryFile(suffix=".db") as tmp:
+            state = BridgeState(history_limit=4, default_mode="jarvis", db_path=tmp.name)
+            try:
+                for index in range(3):
+                    state.record_event(
+                        2,
+                        2,
+                        "user",
+                        "text",
+                        f"guest private {index}",
+                        message_id=index + 1,
+                        chat_type="private",
+                    )
+                for index in range(3):
+                    state.record_event(
+                        -100,
+                        2,
+                        "user",
+                        "text",
+                        f"group {index}",
+                        message_id=100 + index,
+                        chat_type="group",
+                    )
+
+                due = state.get_chats_due_for_memory_refresh(limit=5, min_new_events=1, min_gap_seconds=0)
+            finally:
+                state.db.close()
+
+        self.assertTrue(any(chat_id == -100 for chat_id, _last_event_id, _new_events in due))
+        self.assertFalse(any(chat_id == 2 for chat_id, _last_event_id, _new_events in due))
+        self.assertFalse(any(chat_id > 0 and chat_id != OWNER_USER_ID for chat_id, _last_event_id, _new_events in due))
 
     def test_owner_auto_moderation_report_exposes_recommended_decision(self):
         bridge = TelegramBridge.__new__(TelegramBridge)

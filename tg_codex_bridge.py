@@ -2773,6 +2773,8 @@ class BridgeState:
             now_ts = int(time.time())
             due: List[Tuple[int, int, int]] = []
             for chat_id, max_id in chat_rows:
+                if int(chat_id) > 0 and int(chat_id) != OWNER_USER_ID:
+                    continue
                 marker_row = self.db.execute(
                     "SELECT last_event_id, last_run_at FROM memory_refresh_state WHERE chat_id = ?",
                     (chat_id,),
@@ -5627,7 +5629,8 @@ class TelegramBridge:
             log(f"video ignored chat={chat_id} user={user_id} message_id={message_id}")
             return
 
-        self.record_incoming_event(chat_id, user_id, message)
+        if self.should_record_incoming_event(chat_id, user_id, message, chat_type):
+            self.record_incoming_event(chat_id, user_id, message)
         self.maybe_refresh_chat_participants_snapshot(chat_id, chat_type)
 
         if message.get("new_chat_members"):
@@ -5676,6 +5679,19 @@ class TelegramBridge:
         except Exception as error:
             log_exception(f"message handling error chat={chat_id}", error, limit=6)
             self.safe_send_text(chat_id, "Не удалось обработать сообщение. Попробуй еще раз.")
+
+    def should_record_incoming_event(self, chat_id: int, user_id: Optional[int], message: dict, chat_type: str) -> bool:
+        del chat_id
+        if has_chat_access(self.state.authorized_user_ids, user_id):
+            return True
+        if chat_type in {"group", "supergroup"}:
+            return True
+        text = (message.get("text") or "").strip()
+        if text and has_public_command_access(text):
+            return False
+        if message.get("caption") and has_public_command_access(message.get("caption") or ""):
+            return False
+        return False
 
     def record_incoming_event(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
         from_user = message.get("from") or {}

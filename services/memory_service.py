@@ -15,6 +15,8 @@ class MemoryService:
         self.deps = deps
 
     def refresh_ai_chat_summary(self, bridge: "TelegramBridge", chat_id: int) -> bool:
+        if chat_id > 0 and chat_id != bridge.owner_user_id:
+            return False
         rows = bridge.state.get_recent_chat_rows(chat_id, limit=40)
         if len(rows) < 12:
             return False
@@ -29,6 +31,8 @@ class MemoryService:
         return True
 
     def refresh_ai_user_memory(self, bridge: "TelegramBridge", chat_id: int) -> bool:
+        if chat_id > 0 and chat_id != bridge.owner_user_id:
+            return False
         rows = bridge.state.get_recent_chat_rows(chat_id, limit=80)
         counts: Dict[int, int] = {}
         labels: Dict[int, Tuple[str, str, str]] = {}
