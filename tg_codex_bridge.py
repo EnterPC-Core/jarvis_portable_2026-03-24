@@ -172,6 +172,7 @@ from services.orchestration_utils import (
     validate_route_decision as _validate_route_decision,
 )
 from services.live_gateway import LiveGateway, LiveGatewayDeps
+from services.research_service import ResearchService, ResearchServiceDeps
 from pipeline.diagnostics import (
     build_attachment_bundle,
     build_persisted_self_check_report,
@@ -194,6 +195,17 @@ from models.contracts import (
     SelfCheckReport,
     ROUTER_POLICY_MATRIX,
 )
+from models.presentation import PresentationModel, PresentationSection
+from policy.final_answer_policy import FinalAnswerPolicy
+from search.search_models import ResearchMode, SearchResponse
+from adapters.telegram.answer_templates import (
+    build_citation_answer_model,
+    build_comparison_model,
+    build_deep_research_model,
+    build_error_model,
+    build_quick_answer_model,
+)
+from adapters.telegram.telegram_response_renderer import TelegramResponseRenderer
 from services.auto_moderation import (
     AutoModerationDecision,
     detect_auto_moderation_decision as _detect_auto_moderation_decision,
@@ -4290,6 +4302,39 @@ class TelegramBridge:
             bot_user_id_getter=lambda: self.bot_user_id,
             owner_user_id=OWNER_USER_ID,
         )
+        self.telegram_response_renderer = TelegramResponseRenderer()
+        self.final_answer_policy = FinalAnswerPolicy()
+        self.pending_rendered_messages: Dict[int, List[str]] = {}
+        self.research_service = ResearchService(
+            deps=ResearchServiceDeps(
+                normalize_whitespace_func=normalize_whitespace,
+                truncate_text_func=truncate_text,
+                log_func=log,
+                request_text_with_retry_func=self.request_text_with_retry,
+                detect_weather_location_func=detect_weather_location,
+                detect_currency_pair_func=detect_currency_pair,
+                detect_crypto_asset_func=detect_crypto_asset,
+                detect_stock_symbol_func=detect_stock_symbol,
+                detect_current_fact_query_func=detect_current_fact_query,
+                detect_news_query_func=detect_news_query,
+                plan_external_research_tasks_func=plan_external_research_tasks,
+                build_actor_name_func=build_actor_name,
+                owner_user_id=OWNER_USER_ID,
+                owner_username=OWNER_USERNAME,
+                run_codex_short_func=self.run_codex_short,
+                extract_urls_func=extract_urls,
+                shorten_for_log_func=shorten_for_log,
+                normalize_external_search_query_func=normalize_external_search_query,
+                is_irrelevant_web_search_result_func=is_irrelevant_web_search_result,
+                is_query_too_broad_for_external_search_func=is_query_too_broad_for_external_search,
+                build_external_search_needs_object_reply_func=build_external_search_needs_object_reply,
+                build_external_search_not_confirmed_reply_func=build_external_search_not_confirmed_reply,
+                is_direct_url_antibot_block_func=is_direct_url_antibot_block,
+                build_direct_url_blocked_reply_func=build_direct_url_blocked_reply,
+            ),
+            live_gateway=self.live_gateway,
+            cache_path=self.script_path.parent / "data" / "search_cache.sqlite3",
+        )
 
     def get_chat_event_count(self, chat_id: int) -> int:
         with self.state.db_lock:
@@ -5485,7 +5530,11 @@ class TelegramBridge:
                 reply_to_message_id = None
                 if chat_type in {"group", "supergroup"}:
                     reply_to_message_id = (message or {}).get("message_id")
-                self.safe_send_text(chat_id, answer, reply_to_message_id=reply_to_message_id)
+                rendered_chunks = self.consume_structured_delivery(chat_id)
+                if rendered_chunks:
+                    self.safe_send_rendered_chunks(chat_id, rendered_chunks, reply_to_message_id=reply_to_message_id)
+                else:
+                    self.safe_send_text(chat_id, answer, reply_to_message_id=reply_to_message_id)
             if chat_type in {"group", "supergroup"}:
                 self.mark_active_group_discussion(chat_id, user_id, message)
             if spontaneous_group_reply:
@@ -6903,6 +6952,42 @@ class TelegramBridge:
             and not route_decision.use_database
             and not route_decision.use_reply
         ):
+            search_response = self.run_search_orchestrator(
+                user_text,
+                user_id=user_id,
+                chat_id=chat_id,
+                chat_type=chat_type,
+            )
+            if search_response is not None and search_response.answer:
+                self.queue_structured_search_delivery(chat_id, search_response)
+                report = enrich_self_check_report(
+                    apply_self_check_contract(search_response.answer, route_decision),
+                    route_decision=route_decision,
+                    notes="modular search orchestrator handled web route with evidence and citations",
+                )
+                self.state.update_self_model_state(last_outcome=report.outcome)
+                self.run_post_task_reflection(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    route_decision=route_decision,
+                    user_text=user_text,
+                    report=report,
+                    source="search_orchestrator",
+                )
+                if early_status_message_id is not None:
+                    try:
+                        self.delete_message(chat_id, early_status_message_id)
+                    except RequestException:
+                        pass
+                self.record_route_diagnostic(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    route_decision=route_decision,
+                    report=report,
+                    started_at=started_at,
+                    query_text=user_text,
+                )
+                return report.answer
             progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
             with HeartbeatGuard(self), ProgressStatusGuard(
                 self,
@@ -7242,25 +7327,8 @@ class TelegramBridge:
 
     def try_handle_live_data_query(self, user_text: str, route_decision: Optional[RouteDecision] = None) -> Optional[str]:
         route_kind = route_decision.route_kind if route_decision is not None else ""
-        weather_location = detect_weather_location(user_text)
-        if weather_location and route_kind in {"", "live_weather"}:
-            return self.fetch_weather_answer(weather_location)
-        currency_pair = detect_currency_pair(user_text)
-        if currency_pair and route_kind in {"", "live_fx"}:
-            return self.fetch_exchange_rate_answer(currency_pair[0], currency_pair[1])
-        crypto_id = detect_crypto_asset(user_text)
-        if crypto_id and route_kind in {"", "live_crypto"}:
-            return self.fetch_crypto_price_answer(crypto_id)
-        stock_symbol = detect_stock_symbol(user_text)
-        if stock_symbol and route_kind in {"", "live_stocks"}:
-            return self.fetch_stock_price_answer(stock_symbol)
-        current_fact_query = detect_current_fact_query(user_text)
-        if current_fact_query and route_kind in {"", "live_current_fact"}:
-            return self.fetch_current_fact_answer(current_fact_query)
-        news_query = detect_news_query(user_text)
-        if news_query and route_kind in {"", "live_news"}:
-            return self.fetch_news_answer(news_query)
-        return None
+        answer = self.research_service.try_handle_live_query(user_text, route_kind=route_kind)
+        return answer or None
 
     def request_text_with_retry(
         self,
@@ -7364,266 +7432,37 @@ class TelegramBridge:
         return self.run_codex_short(prompt, timeout_seconds=25)
 
     def build_direct_url_context(self, query: str, limit_chars: int = 3500) -> str:
-        urls = extract_urls(query)
-        if not urls:
-            return ""
-        url = urls[0]
-        host = urlparse(url).netloc or url
-        try:
-            response_text = self.request_text_with_retry(
-                "get",
-                url,
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"url fetch failed url={shorten_for_log(url, 240)} error={error}")
-            if is_direct_url_antibot_block(url, "", "", error=error):
-                return build_direct_url_blocked_reply(url)
-            return ""
-
-        cleaned_html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\\1>", " ", response_text)
-        title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", cleaned_html)
-        title = normalize_whitespace(html.unescape(re.sub(r"<.*?>", " ", title_match.group(1) if title_match else "")))
-        meta_match = re.search(
-            r"""(?is)<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["'](.*?)["']""",
-            cleaned_html,
-        )
-        meta_description = normalize_whitespace(html.unescape(re.sub(r"<.*?>", " ", meta_match.group(1) if meta_match else "")))
-        if is_direct_url_antibot_block(url, title, meta_description, response_text=response_text):
-            return build_direct_url_blocked_reply(url)
-        text_content = normalize_whitespace(html.unescape(re.sub(r"<[^>]+>", " ", cleaned_html)))
-        excerpt = truncate_text(text_content, limit_chars)
-        lines = [f"Прямой контекст страницы: {host}"]
-        if title:
-            lines.append(f"Title: {title}")
-        if meta_description:
-            lines.append(f"Description: {truncate_text(meta_description, 500)}")
-        if excerpt:
-            lines.append(f"Page excerpt: {excerpt}")
-        lines.append(f"URL: {truncate_text(url, 400)}")
-        return "\n".join(lines)
+        return self.research_service.build_direct_url_context(query, limit_chars=limit_chars)
 
     def build_web_search_context(self, query: str, limit: int = 5) -> str:
-        normalized_query = normalize_whitespace(query)
-        if not normalized_query:
-            return ""
-        direct_url_context = self.build_direct_url_context(normalized_query)
-        if not direct_url_context and is_query_too_broad_for_external_search(normalized_query):
-            return build_external_search_needs_object_reply(normalized_query)
-        search_query = normalize_external_search_query(normalized_query)
-        if direct_url_context and not search_query:
-            return direct_url_context
-        if not search_query:
-            return direct_url_context
-        try:
-            response_text = self.request_text_with_retry(
-                "post",
-                "https://html.duckduckgo.com/html/",
-                data={"q": search_query},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=20,
-            )
-        except RequestException as error:
-            log(f"web search failed query={shorten_for_log(search_query)} error={error}")
-            return direct_url_context
-
-        pattern = re.compile(
-            r'<a[^>]*class="result__a"[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
-            r'(?:<a[^>]*class="result__snippet"[^>]*>(?P<snippet_a>.*?)</a>|'
-            r'<div[^>]*class="result__snippet"[^>]*>(?P<snippet_div>.*?)</div>)',
-            re.S,
-        )
-        raw_results = 0
-        irrelevant_results = 0
-        items: List[str] = []
-        for match in pattern.finditer(response_text):
-            raw_results += 1
-            title = html.unescape(re.sub(r"<.*?>", " ", match.group("title") or ""))
-            snippet_raw = match.group("snippet_a") or match.group("snippet_div") or ""
-            snippet = html.unescape(re.sub(r"<.*?>", " ", snippet_raw))
-            url = html.unescape(match.group("url") or "")
-            title = normalize_whitespace(title)
-            snippet = normalize_whitespace(snippet)
-            url = normalize_whitespace(url)
-            if not title or not url:
-                continue
-            if is_irrelevant_web_search_result(title, snippet, url):
-                irrelevant_results += 1
-                continue
-            items.append(
-                f"- {truncate_text(title, 180)}\n  URL: {truncate_text(url, 300)}\n  Фрагмент: {truncate_text(snippet or 'Фрагмент не найден.', 260)}"
-            )
-            if len(items) >= limit:
-                break
-        if irrelevant_results and not items:
-            return build_external_search_needs_object_reply(normalized_query)
-        if raw_results >= 3 and irrelevant_results >= max(2, raw_results - 1) and len(items) <= 1:
-            return build_external_search_not_confirmed_reply(normalized_query)
-        if not items:
-            return direct_url_context
-        web_context = f"Свежий веб-контекст по запросу «{truncate_text(search_query, 180)}»:\n" + "\n".join(items)
-        if direct_url_context:
-            return direct_url_context + "\n\n" + web_context
-        return web_context
+        return self.research_service.build_web_search_context(query, limit=limit)
 
     def collect_external_research_sections(self, query: str) -> List[Tuple[str, str]]:
-        normalized_query = normalize_whitespace(query)
-        if not normalized_query:
-            return []
-        return self.live_gateway.collect_external_research_sections(
-            normalized_query,
-            plan_external_research_tasks(normalized_query),
-            self.build_web_search_context,
+        return self.research_service.collect_external_research_sections(
+            query,
+            build_web_search_context_func=self.build_web_search_context,
         )
 
     def build_external_research_context(self, query: str) -> str:
-        rendered_sections: List[str] = []
-        for label, body in self.collect_external_research_sections(query):
-            if label == "Web":
-                rendered_sections.append(body)
-            else:
-                rendered_sections.append(f"{label}:\n{body}")
-        return "\n\n".join(section.strip() for section in rendered_sections if section.strip())
-
-    def build_observed_news_summary(self, body: str) -> str:
-        titles = []
-        for line in (body or "").splitlines():
-            cleaned = normalize_whitespace(line)
-            if cleaned.startswith("• "):
-                titles.append(cleaned[2:].strip())
-            if len(titles) >= 2:
-                break
-        if not titles:
-            return truncate_text(normalize_whitespace(body), 220)
-        return "Главные свежие сюжеты в выдаче: " + "; ".join(titles) + "."
-
-    def build_observed_current_fact_summary(self, body: str, fallback_limit: int = 260) -> str:
-        cleaned = normalize_whitespace(body)
-        if not cleaned:
-            return ""
-        for marker in ("\n\nПодтверждение:", "\n\nИсточники по запросу", "Источники по запросу"):
-            if marker in body:
-                head = normalize_whitespace(body.split(marker, 1)[0])
-                if head:
-                    return truncate_text(head, fallback_limit)
-        return truncate_text(cleaned, fallback_limit)
-
-    def build_observed_weather_summary(self, label: str, body: str) -> str:
-        cleaned = normalize_whitespace(body)
-        cleaned = re.sub(r"\s*Источник:\s.*$", "", cleaned)
-        location = label.split(":", 1)[1] if ":" in label else label
-        cleaned = cleaned.replace("Погода сейчас в ", "")
-        return f"{location}: {truncate_text(cleaned, 180)}"
-
-    def build_observed_rate_summary(self, body: str) -> str:
-        cleaned = normalize_whitespace(body)
-        return truncate_text(cleaned, 180)
-
-    def build_observed_crypto_summary(self, body: str) -> str:
-        cleaned = normalize_whitespace(body)
-        return truncate_text(cleaned, 180)
-
-    def collect_observed_source_labels(self, external_sections: List[Tuple[str, str]]) -> List[str]:
-        labels: List[str] = []
-        for label, body in external_sections:
-            lowered = label.lower()
-            if label == "Новости" and "Google News" not in labels:
-                labels.append("Google News RSS")
-            elif lowered.startswith("погода") and "Open-Meteo" not in labels:
-                labels.append("Open-Meteo")
-            elif label == "Курс":
-                if "open.er-api" in body and "open.er-api" not in labels:
-                    labels.append("open.er-api")
-                elif "Yahoo Finance" in body and "Yahoo Finance" not in labels:
-                    labels.append("Yahoo Finance")
-                elif "Frankfurter" not in labels:
-                    labels.append("Frankfurter")
-            elif label == "Bitcoin price" and "CoinGecko" not in labels:
-                labels.append("CoinGecko")
-            elif label in {"Смартфон", "Bitcoin outlook"} and "DuckDuckGo snippets" not in labels:
-                labels.append("DuckDuckGo snippets")
-        return labels
+        return self.research_service.build_external_research_context(
+            query,
+            build_web_search_context_func=self.build_web_search_context,
+        )
 
     def build_observed_mixed_answer(self, chat_id: int, user_text: str, user_id: Optional[int] = None) -> str:
-        external_sections = self.collect_external_research_sections(user_text)
-        lowered = normalize_whitespace(user_text).lower()
-        local_lines: List[str] = []
-        if "как меня звать" in lowered and user_id == OWNER_USER_ID:
-            owner_name = OWNER_USERNAME.lstrip("@") or "Дмитрий"
-            local_lines.append(f"Тебя зовут {owner_name}.")
-        if "кто в чате" in lowered or "кто сегодня общался" in lowered:
-            day, rows = self.state.get_daily_summary_context(chat_id, "")
-            speakers: List[str] = []
-            for _created_at, event_user_id, username, first_name, last_name, role, _message_type, _content in rows:
-                if role != "user":
-                    continue
-                actor = build_actor_name(event_user_id, username or "", first_name or "", last_name or "", role)
-                if actor not in speakers:
-                    speakers.append(actor)
-            if speakers:
-                local_lines.append(f"Сегодня в чате ({day}) писали: {', '.join(speakers[:12])}.")
-            else:
-                local_lines.append("Сегодня в чате подтверждённых пользовательских сообщений не найдено.")
-        if not external_sections and not local_lines:
-            return ""
-        lines = ["Коротко по подтверждённому сейчас."]
-        weather_summaries: List[str] = []
-        web_fallback = ""
-        for label, body in external_sections:
-            if label == "Новости":
-                lines.append(f"- Мир: {self.build_observed_news_summary(body)}")
-            elif label == "Смартфон":
-                lines.append(f"- Смартфон: {self.build_observed_current_fact_summary(body)}")
-            elif label.startswith("Погода:"):
-                weather_summaries.append(self.build_observed_weather_summary(label, body))
-            elif label == "Курс":
-                lines.append(f"- Доллар: {self.build_observed_rate_summary(body)}")
-            elif label == "Bitcoin price":
-                lines.append(f"- Биткойн сейчас: {self.build_observed_crypto_summary(body)}")
-            elif label == "Bitcoin outlook":
-                lines.append(f"- Биткойн по рынку: {self.build_observed_current_fact_summary(body, fallback_limit=220)}")
-            elif label == "Web":
-                web_fallback = truncate_text(normalize_whitespace(body), 240)
-        if weather_summaries:
-            lines.append(f"- Погода: {'; '.join(weather_summaries)}")
-        if local_lines:
-            lines.append(f"- По чату: {' '.join(local_lines)}")
-        if web_fallback and len(external_sections) <= 1:
-            lines.append(f"- Доп. веб-контекст: {web_fallback}")
-        source_labels = self.collect_observed_source_labels(external_sections)
-        if source_labels:
-            lines.append("")
-            lines.append("Источники: " + ", ".join(source_labels) + ".")
-        return "\n".join(lines).strip()
+        return self.research_service.build_observed_mixed_answer(
+            chat_id=chat_id,
+            user_text=user_text,
+            user_id=user_id,
+            build_web_search_context_func=self.build_web_search_context,
+            get_daily_summary_context_func=self.state.get_daily_summary_context,
+        )
 
     def build_web_route_fallback_answer(self, query: str, web_context: str) -> str:
-        normalized_query = truncate_text(normalize_whitespace(query), 180)
-        cleaned_context = (web_context or "").strip()
-        if not cleaned_context:
-            return "Не удалось собрать внешний контекст по запросу."
-        return (
-            f"Собрал внешний контекст по запросу «{normalized_query}», "
-            "но финальный AI-разбор не успел завершиться. Ниже то, что уже подтверждено источниками.\n\n"
-            f"{cleaned_context}"
-        )
+        return self.research_service.build_web_route_fallback_answer(query, web_context)
 
     def summarize_web_context(self, query: str, web_context: str) -> str:
-        cleaned_context = (web_context or "").strip()
-        if not cleaned_context:
-            return ""
-        prompt = (
-            "Ниже есть внешний веб-контекст по запросу пользователя.\n"
-            "Сделай короткий полезный ответ на русском.\n"
-            "Требования:\n"
-            "- сначала дай прямой вывод по сути запроса\n"
-            "- не выдумывай то, чего нет в источниках\n"
-            "- если данных мало или они косвенные, прямо скажи это\n"
-            "- если есть ссылки/источники в контексте, кратко укажи, на чём основан вывод\n\n"
-            f"Запрос пользователя: {normalize_whitespace(query)}\n\n"
-            f"Веб-контекст:\n{truncate_text(cleaned_context, 5000)}"
-        )
-        return self.run_codex_short(prompt, timeout_seconds=20)
+        return self.research_service.summarize_web_context(query, web_context)
 
     def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str, message: Optional[dict] = None) -> str:
         prompt_text = caption or DEFAULT_IMAGE_PROMPT
@@ -8721,6 +8560,89 @@ class TelegramBridge:
             except RequestException as error:
                 log(f"failed to send message chat={chat_id}: {error}")
                 break
+
+    def safe_send_rendered_chunks(
+        self,
+        chat_id: int,
+        chunks: List[str],
+        reply_to_message_id: Optional[int] = None,
+    ) -> None:
+        for chunk in chunks:
+            try:
+                payload = {"chat_id": chat_id, "text": chunk}
+                if reply_to_message_id is not None:
+                    payload["reply_to_message_id"] = int(reply_to_message_id)
+                self.send_message_with_html_fallback(payload)
+            except RequestException as error:
+                log(f"failed to send rendered message chat={chat_id}: {error}")
+                break
+
+    def build_presentation_model_for_search(self, response: SearchResponse) -> PresentationModel:
+        shaped = self.final_answer_policy.shape_search_response(response)
+        citations = tuple(f"[{item.index}] {item.title}: {item.url}" for item in response.citations)
+        if response.mode == ResearchMode.DEEP:
+            if response.intent.value == "comparison":
+                return build_comparison_model(
+                    title="JARVIS • СРАВНЕНИЕ ПО ИСТОЧНИКАМ",
+                    summary=shaped.headline,
+                    bullets=tuple(truncate_text(item, 220) for item in shaped.bullets),
+                    citations=citations,
+                    next_step=shaped.next_step,
+                )
+            return build_deep_research_model(
+                title="JARVIS • DEEP RESEARCH",
+                summary=shaped.headline,
+                bullets=tuple(truncate_text(item, 220) for item in shaped.bullets),
+                citations=citations,
+                warning=shaped.short_disclaimer,
+                next_step=shaped.next_step,
+            )
+        details = tuple(
+            PresentationSection(
+                title=item.title or item.publisher,
+                body=truncate_text(item.snippet or item.extracted_text or item.url, 260),
+            )
+            for item in response.evidence_bundle.items[:3]
+        )
+        if response.citations:
+            return build_citation_answer_model(
+                title="JARVIS • ОТВЕТ С ИСТОЧНИКАМИ",
+                summary=shaped.headline,
+                bullets=tuple(truncate_text(item, 220) for item in shaped.bullets),
+                details=details,
+                citations=citations,
+                warning=shaped.short_disclaimer,
+                next_step=shaped.next_step,
+            )
+        return build_quick_answer_model(
+            title="JARVIS • БЫСТРЫЙ ОТВЕТ",
+            summary=shaped.headline,
+            bullets=tuple(truncate_text(item, 220) for item in shaped.bullets),
+            warning=shaped.short_disclaimer,
+            next_step=shaped.next_step,
+        )
+
+    def queue_structured_search_delivery(self, chat_id: int, response: SearchResponse) -> None:
+        model = self.build_presentation_model_for_search(response)
+        self.pending_rendered_messages[chat_id] = self.telegram_response_renderer.render(model)
+
+    def consume_structured_delivery(self, chat_id: int) -> List[str]:
+        return self.pending_rendered_messages.pop(chat_id, [])
+
+    def run_search_orchestrator(
+        self,
+        user_text: str,
+        *,
+        user_id: Optional[int],
+        chat_id: int,
+        chat_type: str,
+    ) -> Optional[SearchResponse]:
+        return self.research_service.research(
+            user_text,
+            user_id=user_id,
+            chat_id=chat_id,
+            chat_type=chat_type,
+        )
 
     def temp_workspace(self):
         return TemporaryWorkspace(self.config.tmp_dir)

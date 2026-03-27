@@ -109,9 +109,13 @@ def has_external_research_signal(text: str, *, normalize_whitespace_func: Callab
         "найди", "поищи", "поиск", "в интернете", "интернет", "изучи", "исследуй",
         "что пишут", "свеж", "новост", "latest", "today", "сегодня", "проверь",
         "погода", "температур", "прогноз", "курс", "доллар", "евро", "битко", "bitcoin",
-        "продаваем",
+        "продаваем", "новинк", "вышло", "вышли", "релиз", "анонс", "актуальн",
     )
-    return any(trigger in lowered for trigger in triggers)
+    if any(trigger in lowered for trigger in triggers):
+        return True
+    product_markers = ("смартфон", "телефон", "ноутбук", "планшет", "камера")
+    freshness_markers = ("новых", "новые", "новый", "вышло", "вышли", "последние", "свежие")
+    return any(marker in lowered for marker in product_markers) and any(marker in lowered for marker in freshness_markers)
 
 
 def is_product_selection_help_request(text: str, *, normalize_whitespace_func: Callable[[str], str]) -> bool:
