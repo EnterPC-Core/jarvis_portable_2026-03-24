@@ -303,6 +303,7 @@ DEFAULT_AUTO_SELF_HEAL_COOLDOWN_SECONDS = 900
 DEFAULT_AUTO_SELF_HEAL_REPORT_COOLDOWN_SECONDS = 1800
 DEFAULT_AUTO_SELF_HEAL_MAX_RETRIES = 2
 DEFAULT_ENTERPRISE_TASK_TIMEOUT = 0
+DEFAULT_ENTERPRISE_WORKSPACE_TIMEOUT = 600  # 10 minutes
 DEFAULT_OWNER_DAILY_DIGEST_HOUR_UTC = 7
 DEFAULT_OWNER_WEEKLY_DIGEST_WEEKDAY_UTC = 0
 DEFAULT_MEMORY_REFRESH_INTERVAL_SECONDS = 1800
@@ -975,12 +976,19 @@ class BridgeState:
             self.db.execute(
                 """CREATE TABLE IF NOT EXISTS chat_runtime_cache (
                     chat_id INTEGER PRIMARY KEY,
+                    chat_title TEXT NOT NULL DEFAULT '',
                     member_count INTEGER NOT NULL DEFAULT 0,
                     admins_synced_at INTEGER NOT NULL DEFAULT 0,
                     member_count_synced_at INTEGER NOT NULL DEFAULT 0,
                     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
                 )"""
             )
+            runtime_cache_columns = {
+                str(row["name"])
+                for row in self.db.execute("PRAGMA table_info(chat_runtime_cache)").fetchall()
+            }
+            if "chat_title" not in runtime_cache_columns:
+                self.db.execute("ALTER TABLE chat_runtime_cache ADD COLUMN chat_title TEXT NOT NULL DEFAULT ''")
             self.db.execute(
                 """CREATE TABLE IF NOT EXISTS relation_memory (
                     chat_id INTEGER NOT NULL,
@@ -1496,6 +1504,21 @@ class BridgeState:
             )
             self.db.commit()
 
+    def save_chat_title(self, chat_id: int, chat_title: str) -> None:
+        normalized_title = normalize_whitespace(chat_title)
+        if not normalized_title:
+            return
+        with self.db_lock:
+            self.db.execute(
+                """INSERT INTO chat_runtime_cache(chat_id, chat_title, updated_at)
+                VALUES(?, ?, strftime('%s','now'))
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    chat_title = excluded.chat_title,
+                    updated_at = excluded.updated_at""",
+                (chat_id, normalized_title),
+            )
+            self.db.commit()
+
     def mark_admins_synced(
         self,
         chat_id: int,
@@ -1543,12 +1566,26 @@ class BridgeState:
     def get_chat_runtime_snapshot(self, chat_id: int) -> sqlite3.Row:
         with self.db_lock:
             row = self.db.execute(
-                """SELECT member_count, admins_synced_at, member_count_synced_at, updated_at
+                """SELECT chat_title, member_count, admins_synced_at, member_count_synced_at, updated_at
                 FROM chat_runtime_cache
                 WHERE chat_id = ?""",
                 (chat_id,),
             ).fetchone()
         return row
+
+    def get_chat_title(self, chat_id: int, fallback_title: str = "") -> str:
+        normalized_fallback = normalize_whitespace(fallback_title)
+        if normalized_fallback:
+            self.save_chat_title(chat_id, normalized_fallback)
+            return normalized_fallback
+        with self.db_lock:
+            row = self.db.execute(
+                "SELECT chat_title FROM chat_runtime_cache WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        if row and row["chat_title"]:
+            return str(row["chat_title"])
+        return f"chat_id={chat_id}"
 
     def get_chat_participants_context(self, chat_id: int, query: str = "", limit: int = 12) -> str:
         lowered = (query or "").lower()
@@ -1571,7 +1608,7 @@ class BridgeState:
                 (chat_id,),
             ).fetchone()
             runtime_row = self.db.execute(
-                "SELECT member_count, admins_synced_at, member_count_synced_at FROM chat_runtime_cache WHERE chat_id = ?",
+                "SELECT chat_title, member_count, admins_synced_at, member_count_synced_at FROM chat_runtime_cache WHERE chat_id = ?",
                 (chat_id,),
             ).fetchone()
             recent_rows = self.db.execute(
@@ -1586,13 +1623,13 @@ class BridgeState:
         known_count = int((stats[0] or 0) if stats else 0)
         admins_count = int((stats[1] or 0) if stats else 0)
         bots_count = int((stats[2] or 0) if stats else 0)
-        member_count = int(runtime_row[0] or 0) if runtime_row else 0
+        member_count = int(runtime_row[1] or 0) if runtime_row else 0
         lines.append(
             f"- known_participants={known_count}; admins_known={admins_count}; bots_known={bots_count}; member_count={member_count}"
         )
         if runtime_row:
             lines.append(
-                f"- admins_synced_at={int(runtime_row[1] or 0)}; member_count_synced_at={int(runtime_row[2] or 0)}"
+                f"- admins_synced_at={int(runtime_row[2] or 0)}; member_count_synced_at={int(runtime_row[3] or 0)}"
             )
         if recent_rows:
             lines.append("recent_known_participants:")
@@ -5554,10 +5591,14 @@ class TelegramBridge:
 
     def record_incoming_event(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
         from_user = message.get("from") or {}
+        chat = message.get("chat") or {}
         message_id = message.get("message_id")
         username = from_user.get("username") or ""
         first_name = from_user.get("first_name") or ""
         last_name = from_user.get("last_name") or ""
+        self.state.save_chat_title(chat_id, chat.get("title") or "")
+        if message.get("new_chat_title"):
+            self.state.save_chat_title(chat_id, message.get("new_chat_title") or "")
         self.state.upsert_chat_participant(
             chat_id,
             user_id,
@@ -5599,7 +5640,7 @@ class TelegramBridge:
                 last_status="left",
                 mark_leave=True,
             )
-        chat_type = ((message.get("chat") or {}).get("type") or "")
+        chat_type = (chat.get("type") or "")
         reply_to = message.get("reply_to_message") or {}
         reply_from = reply_to.get("from") or {}
         reply_to_message_id = reply_to.get("message_id")
@@ -5875,7 +5916,9 @@ class TelegramBridge:
         )
 
     def get_group_rules_text(self, message: Optional[dict]) -> str:
-        chat_title = (((message or {}).get("chat") or {}).get("title") or "")
+        chat = (message or {}).get("chat") or {}
+        chat_id = int(chat.get("id") or 0)
+        chat_title = self.state.get_chat_title(chat_id, chat.get("title") or "") if chat_id else (chat.get("title") or "")
         return _get_group_rules_text(chat_title)
 
     def render_auto_moderation_owner_report(
@@ -5889,7 +5932,7 @@ class TelegramBridge:
         applied_action: str,
     ) -> str:
         chat = message.get("chat") or {}
-        chat_title = chat.get("title") or f"chat_id={chat_id}"
+        chat_title = self.state.get_chat_title(chat_id, chat.get("title") or "")
         raw_text = normalize_whitespace((message.get("text") or "").strip())
         severity_map = {
             "low": "низкая",
@@ -6576,7 +6619,8 @@ class TelegramBridge:
             )
         if not enabled:
             return
-        chat_title = ((message.get("chat") or {}).get("title") or "")
+        chat = message.get("chat") or {}
+        chat_title = self.state.get_chat_title(chat_id, chat.get("title") or "")
         for member in message.get("new_chat_members") or []:
             if member.get("is_bot") and self.bot_user_id is not None and member.get("id") == self.bot_user_id:
                 continue
@@ -7630,13 +7674,7 @@ class TelegramBridge:
         if (
             route_decision.persona == "enterprise"
             and route_decision.use_workspace
-            and any(marker in lowered_user_text for marker in (
-                "restart run_jarvis_supervisor",
-                "рестарт run_jarvis_supervisor",
-                "перезапусти run_jarvis_supervisor",
-                "restart supervisor",
-                "рестарт supervisor",
-            ))
+            and is_explicit_runtime_restart_request(lowered_user_text)
         ):
             restart_result = self.restart_bridge_via_enterprise_server()
             if restart_result:
@@ -7684,6 +7722,11 @@ class TelegramBridge:
             )
 
         if route_decision.use_workspace:
+            workspace_timeout_seconds = (
+                self.config.enterprise_task_timeout
+                if self.config.enterprise_task_timeout is not None
+                else DEFAULT_ENTERPRISE_WORKSPACE_TIMEOUT
+            )
             raw_answer = self.run_codex_with_progress(
                 chat_id,
                 prompt,
@@ -7691,7 +7734,7 @@ class TelegramBridge:
                 sandbox_mode="danger-full-access",
                 approval_policy="never",
                 json_output=True,
-                timeout_seconds=self.config.enterprise_task_timeout if self.config.enterprise_task_timeout is not None else 0,
+                timeout_seconds=workspace_timeout_seconds,
                 progress_style="enterprise",
                 replace_status_with_answer=replace_status_with_answer,
                 status_message_id=early_status_message_id,
@@ -7819,6 +7862,7 @@ class TelegramBridge:
         *,
         chat_id: int,
         prompt_text: str,
+        persona: str,
         message: Optional[dict],
         reply_context: str,
     ) -> ContextBundle:
@@ -7826,6 +7870,7 @@ class TelegramBridge:
             self,
             chat_id=chat_id,
             prompt_text=prompt_text,
+            persona=persona,
             message=message,
             reply_context=reply_context,
         )
@@ -7976,10 +8021,12 @@ class TelegramBridge:
 
     def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str, message: Optional[dict] = None) -> str:
         prompt_text = caption or DEFAULT_IMAGE_PROMPT
+        persona = self.state.get_mode(chat_id)
         reply_context = self.build_reply_context(chat_id, message)
         context_bundle = self.build_attachment_context_bundle(
             chat_id=chat_id,
             prompt_text=prompt_text,
+            persona=persona,
             message=message,
             reply_context=reply_context,
         )
@@ -7994,7 +8041,7 @@ class TelegramBridge:
             truncate_text_func=truncate_text,
         )
         prompt = build_prompt(
-            mode=self.state.get_mode(chat_id),
+            mode=persona,
             history=list(self.state.get_history(chat_id)),
             user_text=prompt_text,
             attachment_note=(
@@ -8008,6 +8055,9 @@ class TelegramBridge:
             event_context=context_bundle.event_context,
             database_context=context_bundle.database_context,
             reply_context=context_bundle.reply_context,
+            discussion_context=context_bundle.discussion_context,
+            route_summary=context_bundle.route_summary,
+            guardrail_note=context_bundle.guardrail_note,
             self_model_text=context_bundle.self_model_text,
             autobiographical_text=context_bundle.autobiographical_text,
             skill_memory_text=context_bundle.skill_memory_text,
@@ -8033,10 +8083,12 @@ class TelegramBridge:
         mime_type = document.get("mime_type") or "application/octet-stream"
         file_size = document.get("file_size") or 0
         prompt_text = caption or f"Разбери документ {file_name} и кратко скажи, что в нём важно."
+        persona = self.state.get_mode(chat_id)
         reply_context = self.build_reply_context(chat_id, message)
         context_bundle = self.build_attachment_context_bundle(
             chat_id=chat_id,
             prompt_text=prompt_text,
+            persona=persona,
             message=message,
             reply_context=reply_context,
         )
@@ -8066,7 +8118,7 @@ class TelegramBridge:
         else:
             attachment_lines.append("Текстовый фрагмент файла недоступен. Анализируй только метаданные, подпись и контекст.")
         prompt = build_prompt(
-            mode=self.state.get_mode(chat_id),
+            mode=persona,
             history=list(self.state.get_history(chat_id)),
             user_text=prompt_text,
             attachment_note="\n".join(attachment_lines),
@@ -8075,6 +8127,9 @@ class TelegramBridge:
             event_context=context_bundle.event_context,
             database_context=context_bundle.database_context,
             reply_context=context_bundle.reply_context,
+            discussion_context=context_bundle.discussion_context,
+            route_summary=context_bundle.route_summary,
+            guardrail_note=context_bundle.guardrail_note,
             self_model_text=context_bundle.self_model_text,
             autobiographical_text=context_bundle.autobiographical_text,
             skill_memory_text=context_bundle.skill_memory_text,
@@ -8983,6 +9038,35 @@ def parse_sd_save_command(text: str) -> Optional[str]:
 
 def extract_assistant_persona(text: str) -> Tuple[str, str]:
     return _extract_assistant_persona(text, normalize_whitespace)
+
+
+def is_explicit_runtime_restart_request(text: str) -> bool:
+    lowered = normalize_whitespace(text).lower()
+    if not lowered:
+        return False
+    direct_markers = (
+        "restart run_jarvis_supervisor",
+        "рестарт run_jarvis_supervisor",
+        "перезапусти run_jarvis_supervisor",
+        "restart supervisor",
+        "рестарт supervisor",
+        "перезапусти supervisor",
+        "перезапусти супервизор",
+        "рестарт супервизор",
+        "рестарт супервизора",
+        "перезапусти бот",
+        "перезапусти бота",
+        "рестарт бота",
+        "сделай рестарт",
+        "сделай перезапуск",
+        "перезапуск бота",
+        "перезапуск супервизора",
+    )
+    if any(marker in lowered for marker in direct_markers):
+        return True
+    if "restart" in lowered and any(token in lowered for token in ("jarvis", "bridge", "bot", "supervisor")):
+        return True
+    return False
 
 
 def parse_who_said_command(text: str) -> Optional[str]:

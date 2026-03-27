@@ -18,6 +18,21 @@ DEFAULT_JOBS_DIR = "enterprise_jobs"
 DEFAULT_SESSIONS_DIR = "enterprise_sessions"
 JOB_RETENTION_SECONDS = 3600
 SESSION_HISTORY_LIMIT = 12
+PROTECTED_SERVER_CORE_PATHS = (
+    ".env",
+    "/home/userland/.profile",
+    "/home/userland/bin/autostart_jarvis_bot.sh",
+    "run_jarvis_supervisor.sh",
+    "restart_jarvis_supervisor.sh",
+    "run_enterprise_supervisor.sh",
+    "start_enterprise_on_userland.sh",
+    "enterprise_server.py",
+    "enterprise_worker.py",
+    ".enterprise_supervisor.pid",
+    "enterprise_server.heartbeat",
+    "tg_codex_bridge.lock",
+    "tg_codex_bridge.heartbeat",
+)
 
 
 def now_ts() -> float:
@@ -454,6 +469,7 @@ class EnterpriseJobManager:
             worker_payload = dict(payload)
             worker_payload["prompt"] = effective_prompt
             worker_payload["progress_path"] = str(progress_path)
+            worker_payload["protected_paths"] = list(PROTECTED_SERVER_CORE_PATHS)
             task_path.write_text(json.dumps(worker_payload, ensure_ascii=False), encoding="utf-8")
             process = subprocess.Popen(
                 ["python3", str(self.worker_path), str(task_path), str(result_path)],

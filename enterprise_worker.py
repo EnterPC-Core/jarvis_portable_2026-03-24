@@ -7,12 +7,20 @@ from pathlib import Path
 from typing import Optional
 
 
-WORKER_PROTECTED_PATHS = (
-    "run_jarvis_supervisor.sh",
-    "enterprise_worker.py",
+DEFAULT_WORKER_PROTECTED_PATHS = (
     ".env",
     "/home/userland/.profile",
     "/home/userland/bin/autostart_jarvis_bot.sh",
+    "run_jarvis_supervisor.sh",
+    "restart_jarvis_supervisor.sh",
+    "run_enterprise_supervisor.sh",
+    "start_enterprise_on_userland.sh",
+    "enterprise_server.py",
+    "enterprise_worker.py",
+    ".enterprise_supervisor.pid",
+    "enterprise_server.heartbeat",
+    "tg_codex_bridge.lock",
+    "tg_codex_bridge.heartbeat",
 )
 
 
@@ -124,22 +132,33 @@ def build_command(payload: dict) -> list:
     return command
 
 
-def protect_prompt(prompt: str) -> str:
-    protected = "\n".join(f"- {path}" for path in WORKER_PROTECTED_PATHS)
+def get_worker_protected_paths(payload: Optional[dict] = None) -> tuple[str, ...]:
+    raw_paths = (payload or {}).get("protected_paths")
+    if isinstance(raw_paths, (list, tuple)):
+        cleaned = tuple(str(path).strip() for path in raw_paths if str(path).strip())
+        if cleaned:
+            return cleaned
+    return DEFAULT_WORKER_PROTECTED_PATHS
+
+
+def protect_prompt(prompt: str, payload: Optional[dict] = None) -> str:
+    protected_paths = get_worker_protected_paths(payload)
+    protected = "\n".join(f"- {path}" for path in protected_paths)
     return (
-        "ВАЖНО: этот worker изолирован от управляющего Telegram bridge.\n"
-        "Запрещено изменять или ломать защищённые файлы управляющего слоя.\n"
-        "Если задача просит трогать их, откажись и объясни, что это защищённый слой.\n\n"
-        "Защищённые пути:\n"
+        "ВАЖНО: этот worker работает почти по всему проекту, но не имеет права менять server-core.\n"
+        "Через задачу можно свободно работать с кодом проекта, тестами, docs, обычными scripts, диагностикой, git-операциями по репо и файлами workspace.\n"
+        "Запрещено изменять только защищённые управляющие пути server-core.\n"
+        "Если задача просит трогать именно их, откажись и объясни, что это server-core и он меняется только через специальные server-side endpoints.\n\n"
+        "Защищённые server-core пути:\n"
         f"{protected}\n\n"
-        "Можно работать по остальному workspace в рамках задачи.\n\n"
+        "Всё остальное в repo/workspace разрешено в рамках задачи.\n\n"
         f"{prompt}"
     )
 
 
 def run_task(task_path: Path, result_path: Path) -> int:
     payload = json.loads(task_path.read_text(encoding="utf-8"))
-    prompt = protect_prompt(payload.get("prompt") or "")
+    prompt = protect_prompt(payload.get("prompt") or "", payload)
     timeout = int(payload.get("codex_timeout") or 180)
     progress_path_raw = str(payload.get("progress_path") or "").strip()
     progress_path = Path(progress_path_raw) if progress_path_raw else None

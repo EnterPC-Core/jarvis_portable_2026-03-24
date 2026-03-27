@@ -1,6 +1,6 @@
 import unittest
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,11 +8,21 @@ from handlers.telegram_handlers import TelegramMessageHandlers
 from handlers.ui_handlers import UIHandlers
 from handlers.command_dispatch import CommandDispatcher
 from handlers.control_panel_renderer import ControlPanelRenderer
-from enterprise_worker import extract_json_answer
+from enterprise_worker import extract_json_answer, get_worker_protected_paths, protect_prompt
+from enterprise_server import PROTECTED_SERVER_CORE_PATHS
 from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
 from services.text_route_service import TextRouteService, TextRouteServiceDeps
-from services.context_assembly import build_text_context_bundle
-from tg_codex_bridge import BridgeState, OWNER_USER_ID, TelegramBridge, has_public_callback_access, has_public_command_access
+from services.context_assembly import build_attachment_context_bundle, build_text_context_bundle
+from tg_codex_bridge import (
+    BridgeState,
+    OWNER_USER_ID,
+    TelegramBridge,
+    has_public_callback_access,
+    has_public_command_access,
+    is_explicit_runtime_restart_request,
+)
+from utils.ops_utils import inspect_runtime_log
+from utils.report_utils import render_bridge_runtime_watch
 
 
 class _FakeState:
@@ -70,6 +80,70 @@ class _FakeState:
 
 
 class RuntimeRegressionTests(unittest.TestCase):
+    def test_runtime_log_treats_status_edit_429_as_warning_not_severe(self):
+        with TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "tg_codex_bridge.log"
+            log_path.write_text(
+                "\n".join(
+                    [
+                        "[2026-03-27 17:39:40] bot started",
+                        "[2026-03-27 17:39:48] instance lock conflict lock_path=/tmp/tg_codex_bridge.lock: Another tg_codex_bridge.py instance is already running.",
+                        "[2026-03-27 17:39:52] failed to edit status message chat=-1003879607896 message_id=13023: telegram http 429: Too Many Requests: retry after 15",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snapshot = inspect_runtime_log(log_path)
+
+        self.assertEqual(snapshot["lock_conflict_count"], 1)
+        self.assertEqual(snapshot["warning_count"], 1)
+        self.assertEqual(snapshot["session_warning_count"], 1)
+        self.assertEqual(snapshot["severe_error_count"], 0)
+        self.assertEqual(snapshot["session_severe_error_count"], 0)
+        self.assertEqual(len(snapshot["recent_session_warning_lines"]), 1)
+        self.assertIn("failed to edit status message", snapshot["recent_session_warning_lines"][0])
+
+    def test_runtime_watch_renders_lock_conflicts(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            heartbeat_path = root / "tg_codex_bridge.heartbeat"
+            bridge_log_path = root / "tg_codex_bridge.log"
+            supervisor_log_path = root / "supervisor_boot.log"
+            heartbeat_path.write_text("", encoding="utf-8")
+            bridge_log_path.write_text("[2026-03-27 17:39:52] failed to edit status message chat=1 message_id=2: telegram http 429: Too Many Requests: retry after 15\n", encoding="utf-8")
+            supervisor_log_path.write_text("[2026-03-27 17:39:47] bridge pid=18004 exited status=75 due to lock conflict; stopping supervisor to avoid restart loop\n", encoding="utf-8")
+
+            report = render_bridge_runtime_watch(
+                psutil_module=None,
+                format_bytes_func=lambda value: f"{value}B",
+                truncate_text_func=lambda text, _limit: text,
+                heartbeat_path=heartbeat_path,
+                bridge_log_path=bridge_log_path,
+                supervisor_log_path=supervisor_log_path,
+                runtime_log_snapshot={
+                    "restart_count": 1,
+                    "session_restart_count": 0,
+                    "lock_conflict_count": 3,
+                    "heartbeat_kill_count": 0,
+                    "termination_signal_count": 0,
+                    "severe_error_count": 0,
+                    "session_severe_error_count": 0,
+                    "warning_count": 1,
+                    "session_warning_count": 1,
+                    "codex_degraded_count": 0,
+                    "codex_error_count": 0,
+                    "network_error_count": 0,
+                    "last_restart_line": "",
+                    "recent_session_error_lines": [],
+                    "recent_error_lines": [],
+                    "recent_session_warning_lines": [],
+                    "recent_warning_lines": [],
+                },
+            )
+
+        self.assertIn("Lock conflicts за 24ч: 3", report)
+
     def test_public_access_lists_keep_rating_and_appeal_entry_points(self):
         self.assertTrue(has_public_command_access("/start"))
         self.assertTrue(has_public_command_access("/rating"))
@@ -530,6 +604,7 @@ class RuntimeRegressionTests(unittest.TestCase):
 
     def test_owner_auto_moderation_report_exposes_recommended_decision(self):
         bridge = TelegramBridge.__new__(TelegramBridge)
+        bridge.state = SimpleNamespace(get_chat_title=lambda _chat_id, fallback_title="": fallback_title or "cached chat")
         message = {"chat": {"title": "Test chat"}, "text": "Тестовое нарушение"}
         decision = SimpleNamespace(
             severity="high",
@@ -551,6 +626,50 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("OWNER REPORT • AUTO MODERATION", report)
         self.assertIn("Решение владельца:", report)
         self.assertIn("Оставить мут и проверить предысторию.", report)
+
+    def test_chat_title_is_cached_and_restored_from_runtime_cache(self):
+        with NamedTemporaryFile(suffix=".db") as tmp:
+            state = BridgeState(history_limit=4, default_mode="jarvis", db_path=tmp.name)
+            try:
+                bridge = TelegramBridge.__new__(TelegramBridge)
+                bridge.state = state
+                bridge.sync_legacy_jarvis = lambda _message: None
+
+                TelegramBridge.record_incoming_event(
+                    bridge,
+                    chat_id=-100123,
+                    user_id=42,
+                    message={
+                        "message_id": 1,
+                        "chat": {"id": -100123, "type": "supergroup", "title": "Все педали!"},
+                        "from": {"id": 42, "username": "tester", "first_name": "Test", "is_bot": False},
+                        "text": "Привет",
+                    },
+                )
+
+                self.assertEqual(state.get_chat_title(-100123), "Все педали!")
+                self.assertEqual(state.get_chat_title(-100123, ""), "Все педали!")
+
+                message_without_title = {"chat": {"id": -100123, "type": "supergroup"}, "text": "Нарушение"}
+                report = TelegramBridge.render_auto_moderation_owner_report(
+                    bridge,
+                    chat_id=-100123,
+                    message=message_without_title,
+                    target_user_id=7,
+                    target_label="@user",
+                    decision=SimpleNamespace(
+                        severity="medium",
+                        public_reason="спам",
+                        code="spam.test",
+                        mute_seconds=0,
+                        suggested_owner_action="Проверить.",
+                    ),
+                    applied_action="warn",
+                )
+
+                self.assertIn("• Чат: Все педали!", report)
+            finally:
+                state.db.close()
 
     def test_json_progress_keeps_only_last_agent_message_as_final_answer(self):
         service = JSEnterpriseService(
@@ -681,6 +800,27 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(bundle["self_model_text"], "self-model")
         self.assertEqual(bundle["database_context"], "database")
 
+    def test_attachment_context_bundle_uses_active_persona_and_discussion_contract(self):
+        bundle = build_attachment_context_bundle(
+            context_bundle_factory=lambda **kwargs: kwargs,
+            state=_FakeState(),
+            chat_id=42,
+            prompt_text="Разбери фото",
+            persona="enterprise",
+            message={"from": {"id": 6102780373}, "reply_to_message": {"from": {"id": 11}}},
+            reply_context="reply",
+            build_current_discussion_context_func=lambda *_args, **_kwargs: "discussion",
+            build_route_summary_text_func=lambda persona: f"route:{persona}",
+            build_guardrail_note_func=lambda persona: f"guard:{persona}",
+            should_include_event_context_func=lambda _text: True,
+            should_include_database_context_func=lambda _text: True,
+        )
+
+        self.assertEqual(bundle["discussion_context"], "discussion")
+        self.assertEqual(bundle["route_summary"], "route:enterprise")
+        self.assertEqual(bundle["guardrail_note"], "guard:enterprise")
+        self.assertEqual(bundle["self_model_text"], "self-model")
+
     def test_webapp_html_accepts_screen_text_and_prompt_value(self):
         html_text = TelegramBridge.build_webapp_html(
             SimpleNamespace(),
@@ -732,6 +872,13 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(sent_messages[0][0], 77)
         self.assertIn("Self-restart отключён", sent_messages[0][1])
 
+    def test_restart_request_detector_accepts_plain_russian_phrases(self):
+        self.assertTrue(is_explicit_runtime_restart_request("сделай рестарт"))
+        self.assertTrue(is_explicit_runtime_restart_request("перезапусти бота"))
+        self.assertTrue(is_explicit_runtime_restart_request("рестарт супервизора"))
+        self.assertTrue(is_explicit_runtime_restart_request("restart supervisor"))
+        self.assertFalse(is_explicit_runtime_restart_request("покажи статус бота"))
+
     def test_pending_enterprise_job_is_persisted_and_cleared(self):
         bridge = TelegramBridge.__new__(TelegramBridge)
         meta = {}
@@ -778,6 +925,27 @@ class RuntimeRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(extract_json_answer(stream), "Рестарт прошёл успешно.")
+
+    def test_enterprise_worker_uses_server_protected_paths_from_payload(self):
+        payload = {"protected_paths": ["enterprise_server.py", "run_jarvis_supervisor.sh"]}
+        self.assertEqual(
+            get_worker_protected_paths(payload),
+            ("enterprise_server.py", "run_jarvis_supervisor.sh"),
+        )
+
+    def test_enterprise_worker_prompt_allows_rest_of_workspace(self):
+        text = protect_prompt("Проверь проект", {"protected_paths": ["enterprise_server.py"]})
+        self.assertIn("не имеет права менять server-core", text)
+        self.assertIn("Всё остальное в repo/workspace разрешено", text)
+        self.assertIn("- enterprise_server.py", text)
+
+    def test_enterprise_server_protected_paths_match_minimal_server_core(self):
+        self.assertIn("enterprise_server.py", PROTECTED_SERVER_CORE_PATHS)
+        self.assertIn("enterprise_worker.py", PROTECTED_SERVER_CORE_PATHS)
+        self.assertIn("run_jarvis_supervisor.sh", PROTECTED_SERVER_CORE_PATHS)
+        self.assertIn("restart_jarvis_supervisor.sh", PROTECTED_SERVER_CORE_PATHS)
+        self.assertNotIn("tests/test_runtime_regressions.py", PROTECTED_SERVER_CORE_PATHS)
+        self.assertNotIn("README.md", PROTECTED_SERVER_CORE_PATHS)
 
 
 if __name__ == "__main__":

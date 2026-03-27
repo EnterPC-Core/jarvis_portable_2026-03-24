@@ -75,21 +75,36 @@ def build_attachment_context_bundle(
     state: Any,
     chat_id: int,
     prompt_text: str,
+    persona: str,
     message: Optional[dict],
     reply_context: str,
+    build_current_discussion_context_func: Callable[..., str],
+    build_route_summary_text_func: Callable[[str], str],
+    build_guardrail_note_func: Callable[[str], str],
     should_include_event_context_func: Callable[[str], bool],
     should_include_database_context_func: Callable[[str], bool],
 ) -> Any:
     from_user = (message or {}).get("from") or {}
     reply_to_user = (((message or {}).get("reply_to_message") or {}).get("from") or {})
     include_entity_context = bool(prompt_text)
+    discussion_context = build_current_discussion_context_func(
+        chat_id,
+        message=message,
+        user_id=from_user.get("id"),
+        active_group_followup=False,
+    )
+    route_summary = build_route_summary_text_func(persona)
+    guardrail_note = build_guardrail_note_func(persona)
     return context_bundle_factory(
         summary_text=state.get_summary(chat_id),
         facts_text=state.render_facts(chat_id, query=prompt_text, limit=10),
         event_context=state.get_event_context(chat_id, prompt_text) if should_include_event_context_func(prompt_text) else "",
         database_context=state.get_database_context(chat_id, prompt_text) if should_include_database_context_func(prompt_text) else "",
         reply_context=reply_context,
-        self_model_text=state.get_self_model_context("jarvis") if include_entity_context else "",
+        discussion_context=discussion_context,
+        route_summary=route_summary,
+        guardrail_note=guardrail_note,
+        self_model_text=state.get_self_model_context(persona) if include_entity_context else "",
         autobiographical_text=state.get_autobiographical_context(chat_id, query=prompt_text, limit=4) if include_entity_context else "",
         skill_memory_text=state.get_skill_memory_context(prompt_text, route_kind="codex_chat", limit=3) if include_entity_context else "",
         world_state_text=state.get_world_state_context(limit=8) if include_entity_context else "",

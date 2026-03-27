@@ -358,6 +358,7 @@ def render_bridge_runtime_watch(
         [
             f"Перезапуски за 24ч: {int(runtime_log_snapshot.get('restart_count', 0))}",
             f"Перезапуски после запуска: {int(runtime_log_snapshot.get('session_restart_count', 0))}",
+            f"Lock conflicts за 24ч: {int(runtime_log_snapshot.get('lock_conflict_count', 0))}",
             f"Принудительные heartbeat-kill за 24ч: {int(runtime_log_snapshot.get('heartbeat_kill_count', 0))}",
             f"Сигналы завершения за 24ч: {int(runtime_log_snapshot.get('termination_signal_count', 0))}",
             f"Серьёзные ошибки за 24ч: {int(runtime_log_snapshot.get('severe_error_count', 0))}",

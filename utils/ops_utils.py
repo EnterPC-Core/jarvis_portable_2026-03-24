@@ -8,6 +8,8 @@ from typing import Callable, Dict, List, Optional
 def is_error_log_line(lowered_line: str) -> bool:
     if not lowered_line:
         return False
+    if "failed to edit status message" in lowered_line and "retry after" in lowered_line:
+        return False
     ignore_markers = (
         "config loaded",
         "bot started",
@@ -123,6 +125,7 @@ def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str
         "exchange yahoo lookup failed",
         "exchange open.er lookup failed",
         "url fetch failed",
+        "failed to edit status message",
     )
     severe_lines: List[str] = []
     warning_lines: List[str] = []

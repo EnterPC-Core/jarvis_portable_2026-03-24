@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Optional
 
 from models.contracts import ContextBundle
@@ -75,6 +76,7 @@ class ContextPipeline:
         *,
         chat_id: int,
         prompt_text: str,
+        persona: str,
         message: Optional[dict],
         reply_context: str,
     ) -> ContextBundle:
@@ -83,8 +85,38 @@ class ContextPipeline:
             state=bridge.state,
             chat_id=chat_id,
             prompt_text=prompt_text,
+            persona=persona,
             message=message,
             reply_context=reply_context,
+            build_current_discussion_context_func=lambda *args, **kwargs: self.build_current_discussion_context(
+                bridge, *args, **kwargs
+            ),
+            build_route_summary_text_func=lambda persona_name: bridge.build_route_summary_text(
+                SimpleNamespace(
+                    intent="attachment_analysis",
+                    persona=persona_name,
+                    chat_type=((message or {}).get("chat") or {}).get("type") or "",
+                    route_kind="attachment_analysis",
+                    use_workspace=False,
+                    use_reply=bool(reply_context.strip()),
+                    use_events=bridge.should_include_event_context(prompt_text),
+                    use_database=bridge.should_include_database_context(prompt_text),
+                    use_web=False,
+                    use_live=False,
+                    guardrails=("respect-enterprise-mode",) if persona_name == "enterprise" else (),
+                )
+            ),
+            build_guardrail_note_func=lambda persona_name: bridge.build_guardrail_note(
+                SimpleNamespace(
+                    persona=persona_name,
+                    use_live=False,
+                    use_web=False,
+                    use_events=bridge.should_include_event_context(prompt_text),
+                    use_database=bridge.should_include_database_context(prompt_text),
+                    use_reply=bool(reply_context.strip()),
+                    guardrails=("respect-enterprise-mode",) if persona_name == "enterprise" else (),
+                )
+            ),
             should_include_event_context_func=bridge.should_include_event_context,
             should_include_database_context_func=bridge.should_include_database_context,
         )
