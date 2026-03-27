@@ -7552,7 +7552,10 @@ class TelegramBridge:
             last_route_kind=route_decision.route_kind,
         )
         early_status_message_id: Optional[int] = None
-        allow_status_message = (not suppress_status_messages) and chat_type not in {"group", "supergroup"}
+        allow_status_message = (not suppress_status_messages) and (
+            chat_type not in {"group", "supergroup"}
+            or (chat_type in {"group", "supergroup"} and user_id == OWNER_USER_ID and assistant_persona == "enterprise")
+        )
         initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
         progress_target_label = build_progress_target_label(message, user_id)
         log(

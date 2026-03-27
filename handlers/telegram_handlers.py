@@ -11,6 +11,8 @@ class TelegramMessageHandlers:
         raw_text = (message.get("text") or "").strip()
         text = bridge.normalize_incoming_text(raw_text, bridge.bot_username)
         assistant_persona, text = bridge.extract_assistant_persona(text)
+        if assistant_persona and not text:
+            text = raw_text
         if chat_type == "private" and user_id == self.owner_user_id:
             assistant_persona = "enterprise"
         spontaneous_group_reply = False
@@ -22,18 +24,6 @@ class TelegramMessageHandlers:
         if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
             bridge.log(
                 f"group non-owner ignored chat={chat_id} user={user_id} "
-                f"text={bridge.shorten_for_log(raw_text)}"
-            )
-            return
-
-        if (
-            chat_type in {"group", "supergroup"}
-            and user_id == self.owner_user_id
-            and assistant_persona not in {"enterprise", "jarvis"}
-            and not raw_text.startswith("/")
-        ):
-            bridge.log(
-                f"owner group message without explicit persona ignored chat={chat_id} user={user_id} "
                 f"text={bridge.shorten_for_log(raw_text)}"
             )
             return
@@ -53,8 +43,21 @@ class TelegramMessageHandlers:
                 return
             active_group_followup = bridge.is_group_followup_message(chat_id, message, raw_text)
             active_group_discussion = bridge.is_group_discussion_continuation(chat_id, message, raw_text)
-            participant_priority = bridge.get_group_participant_priority(chat_id, message)
             should_handle_as_bot = bridge.should_process_group_message(message, raw_text)
+            if (
+                user_id == self.owner_user_id
+                and assistant_persona not in {"enterprise", "jarvis"}
+                and not raw_text.startswith("/")
+                and not active_group_followup
+                and not active_group_discussion
+                and not should_handle_as_bot
+            ):
+                bridge.log(
+                    f"owner group message without explicit persona ignored chat={chat_id} user={user_id} "
+                    f"text={bridge.shorten_for_log(raw_text)}"
+                )
+                return
+            participant_priority = bridge.get_group_participant_priority(chat_id, message)
             meaningful_group_request = bridge.is_meaningful_group_request(message, raw_text)
             ambient_group_chatter = bridge.is_ambient_group_chatter(message, raw_text)
             if ambient_group_chatter and not active_group_followup and not active_group_discussion and user_id != self.owner_user_id:

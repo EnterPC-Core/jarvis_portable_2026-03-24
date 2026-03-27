@@ -7,7 +7,6 @@ def extract_assistant_persona(text: str, normalize_whitespace_func) -> Tuple[str
     cleaned = normalize_whitespace_func(text)
     if not cleaned:
         return "", ""
-    lowered = cleaned.lower()
     prefixes = [
         ("jarvis", "jarvis"),
         ("джарвис", "jarvis"),
@@ -16,13 +15,27 @@ def extract_assistant_persona(text: str, normalize_whitespace_func) -> Tuple[str
         ("энтерапрайз", "enterprise"),
         ("энтерпрайз", "enterprise"),
     ]
-    for prefix, persona in prefixes:
-        if lowered == prefix:
-            return persona, ""
-        if lowered.startswith(f"{prefix} "):
-            return persona, cleaned[len(prefix):].strip()
-        if lowered.startswith(f"{prefix}:") or lowered.startswith(f"{prefix},") or lowered.startswith(f"{prefix}-"):
-            return persona, cleaned[len(prefix) + 1:].strip()
+
+    def _match_persona(candidate: str) -> Tuple[str, str]:
+        lowered = candidate.lower()
+        for prefix, persona in prefixes:
+            if lowered == prefix:
+                return persona, ""
+            if lowered.startswith(f"{prefix} "):
+                return persona, candidate[len(prefix):].strip()
+            if lowered.startswith(f"{prefix}:") or lowered.startswith(f"{prefix},") or lowered.startswith(f"{prefix}-") or lowered.startswith(f"{prefix}?") or lowered.startswith(f"{prefix}!"):
+                return persona, candidate[len(prefix) + 1:].strip()
+        return "", candidate
+
+    persona, remainder = _match_persona(cleaned)
+    if persona:
+        return persona, remainder
+
+    labeled_match = re.match(r"^[^:\n]{1,40}:\s*(.+)$", cleaned)
+    if labeled_match:
+        persona, remainder = _match_persona(labeled_match.group(1).strip())
+        if persona:
+            return persona, remainder
     return "", cleaned
 
 
