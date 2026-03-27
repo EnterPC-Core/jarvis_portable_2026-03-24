@@ -4,7 +4,7 @@ from typing import List
 
 from adapters.telegram.chunking import chunk_text
 from adapters.telegram.message_formatter import bold, bullet, escape_html, italic
-from models.presentation import PresentationModel
+from presentation.presentation_models import PresentationModel
 
 
 class TelegramResponseRenderer:

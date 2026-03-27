@@ -64,7 +64,6 @@ class ContextPipeline:
             build_current_discussion_context_func=lambda *args, **kwargs: self.build_current_discussion_context(
                 bridge, *args, **kwargs
             ),
-            build_external_research_context_func=bridge.build_external_research_context,
             build_route_summary_text_func=bridge.build_route_summary_text,
             build_guardrail_note_func=bridge.build_guardrail_note,
             should_include_entity_context_func=should_include_entity_context,

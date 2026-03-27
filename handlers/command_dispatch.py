@@ -4,6 +4,7 @@ from typing import Optional
 from handlers.command_parsers import (
     parse_autobio_command,
     parse_chat_digest_command,
+    parse_console_command,
     parse_daily_command,
     parse_digest_command,
     parse_drives_command,
@@ -105,9 +106,7 @@ class CommandDispatcher:
             bridge.send_access_denied(chat_id)
             return True
         if text == "/ping":
-            started_at = time.perf_counter()
-            latency_ms = max(1, int((time.perf_counter() - started_at) * 1000))
-            bridge.safe_send_text(chat_id, f"pong\n\n🏓 {latency_ms} ms")
+            bridge.safe_send_text(chat_id, f"pong\n\n🏓 {bridge.get_telegram_ping_text()}")
             return True
         if text == "/restart":
             return bridge.handle_restart_command(chat_id, user_id)
@@ -160,6 +159,9 @@ class CommandDispatcher:
         search_value = parse_search_command(text)
         if search_value is not None:
             return bridge.handle_search_command(chat_id, search_value)
+        console_value = parse_console_command(text)
+        if console_value is not None:
+            return bridge.handle_console_command(chat_id, user_id, console_value)
         if parse_git_status_command(text):
             return bridge.handle_git_status_command(chat_id, user_id)
         git_last_value = parse_git_last_command(text)
@@ -263,7 +265,7 @@ class CommandDispatcher:
             bridge.safe_send_text(chat_id, f"Режим: {bridge.state.get_mode(chat_id)}")
             return True
         if parsed_mode not in self.mode_prompts:
-            bridge.safe_send_text(chat_id, "Используй: /mode jarvis, /mode code или /mode strict")
+            bridge.safe_send_text(chat_id, "Используй: /mode jarvis или /mode enterprise")
             return True
 
         bridge.state.set_mode(chat_id, parsed_mode)

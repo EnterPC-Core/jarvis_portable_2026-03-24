@@ -11,11 +11,32 @@ class TelegramMessageHandlers:
         raw_text = (message.get("text") or "").strip()
         text = bridge.normalize_incoming_text(raw_text, bridge.bot_username)
         assistant_persona, text = bridge.extract_assistant_persona(text)
+        if chat_type == "private" and user_id == self.owner_user_id:
+            assistant_persona = "enterprise"
         spontaneous_group_reply = False
         active_group_followup = False
         active_group_discussion = False
         direct_group_help_request = False
         bridge.log(f"incoming text chat={chat_id} type={chat_type} user={user_id} text={bridge.shorten_for_log(raw_text)}")
+
+        if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
+            bridge.log(
+                f"group non-owner ignored chat={chat_id} user={user_id} "
+                f"text={bridge.shorten_for_log(raw_text)}"
+            )
+            return
+
+        if (
+            chat_type in {"group", "supergroup"}
+            and user_id == self.owner_user_id
+            and assistant_persona != "enterprise"
+            and not raw_text.startswith("/")
+        ):
+            bridge.log(
+                f"owner jarvis suppressed in group chat={chat_id} user={user_id} "
+                f"text={bridge.shorten_for_log(raw_text)}"
+            )
+            return
 
         if (
             chat_type == "private"
@@ -88,6 +109,8 @@ class TelegramMessageHandlers:
             return
 
         if chat_type == "private" and user_id is not None and not raw_text.startswith("/"):
+            if bridge.handle_owner_console_session_input(chat_id, user_id, raw_text):
+                return
             if bridge.handle_ui_pending_input(chat_id, user_id, raw_text):
                 return
 
@@ -121,6 +144,12 @@ class TelegramMessageHandlers:
         photos = message.get("photo") or []
         caption = (message.get("caption") or "").strip()
         bridge.log(f"incoming photo chat={chat_id} user={user_id} caption={bridge.shorten_for_log(caption)}")
+        chat = message.get("chat") or {}
+        chat_type = (chat.get("type") or "private").lower()
+
+        if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
+            bridge.log(f"group non-owner photo ignored chat={chat_id} user={user_id}")
+            return
 
         if not photos:
             bridge.safe_send_text(chat_id, "Изображение не удалось прочитать.")
@@ -150,6 +179,10 @@ class TelegramMessageHandlers:
         caption = (message.get("caption") or "").strip()
         file_name = document.get("file_name") or "document"
         bridge.log(f"incoming document chat={chat_id} user={user_id} file={bridge.shorten_for_log(file_name)} caption={bridge.shorten_for_log(caption)}")
+
+        if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
+            bridge.log(f"group non-owner document ignored chat={chat_id} user={user_id} file={bridge.shorten_for_log(file_name)}")
+            return
 
         if not file_id:
             bridge.safe_send_text(chat_id, "Не удалось получить файл документа.")
@@ -185,6 +218,10 @@ class TelegramMessageHandlers:
             chat = message.get("chat") or {}
             chat_type = (chat.get("type") or "private").lower()
             bridge.log(f"incoming voice chat={chat_id} user={user_id} duration={duration}")
+
+            if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
+                bridge.log(f"group non-owner voice ignored chat={chat_id} user={user_id}")
+                return
 
             if not file_id:
                 bridge.safe_send_text(chat_id, "Не удалось получить голосовое сообщение.")

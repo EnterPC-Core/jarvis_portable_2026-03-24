@@ -325,6 +325,7 @@ def render_bridge_runtime_watch(
     bridge_log_path: Path,
     supervisor_log_path: Path,
     runtime_log_snapshot: Dict[str, object],
+    telegram_ping_text: str = "",
 ) -> str:
     lines = ["Наблюдение за рантаймом bridge"]
     heartbeat_age_text = "отсутствует"
@@ -350,6 +351,8 @@ def render_bridge_runtime_watch(
         lines.append(
             f"- pid={process['pid']} uptime={uptime_text} ram={format_bytes_func(int(process['rss']))} cmd={truncate_text_func(process['cmdline'] or process['name'], 140)}"
         )
+    if telegram_ping_text:
+        lines.append(f"Пинг Telegram API: {telegram_ping_text}")
 
     lines.extend(
         [
@@ -361,8 +364,8 @@ def render_bridge_runtime_watch(
             f"Серьёзные ошибки после запуска: {int(runtime_log_snapshot.get('session_severe_error_count', 0))}",
             f"Восстанавливаемые предупреждения за 24ч: {int(runtime_log_snapshot.get('warning_count', 0))}",
             f"Восстанавливаемые предупреждения после запуска: {int(runtime_log_snapshot.get('session_warning_count', 0))}",
-            f"Деградации Codex за 24ч: {int(runtime_log_snapshot.get('codex_degraded_count', 0))}",
-            f"Жёсткие ошибки Codex за 24ч: {int(runtime_log_snapshot.get('codex_error_count', 0))}",
+            f"Деградации Enterprise Core за 24ч: {int(runtime_log_snapshot.get('codex_degraded_count', 0))}",
+            f"Жёсткие ошибки Enterprise Core за 24ч: {int(runtime_log_snapshot.get('codex_error_count', 0))}",
             f"Ошибки сетевого цикла за 24ч: {int(runtime_log_snapshot.get('network_error_count', 0))}",
         ]
     )

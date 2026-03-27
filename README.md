@@ -84,8 +84,9 @@ sh start_jarvis_on_termux.sh
 - [`pipeline/`](./pipeline) — diagnostics/self-check enrichment и traceable response pipeline
 - [`owner/`](./owner) — owner/admin registry и command handlers для owner-ops
 - [`services/`](./services) — runtime services, memory services, live providers, discussion context, storage/repair helpers и compatibility layer для controlled migration
+- [`presentation/`](./presentation) — presentation contracts и user-facing answer models
 - [`utils/`](./utils) — текстовые, файловые, runtime и reporting helper-функции
-- [`prompts/`](./prompts) — builders для prompt layer
+- [`prompts/`](./prompts) — короткие runtime profiles и prompt loader; prompt layer сведён к `jarvis` и `enterprise`
 - [`tools/`](./tools) — smoke/behavioral checks, runtime-backup export, repo refresh
 - [`data/runtime_backups/`](./data/runtime_backups) — schema и summary snapshot'ы для синхронизации runtime и GitHub
 - [`legacy_jarvis_adapter.py`](./legacy_jarvis_adapter.py) — мост к legacy `jarvis.db`
@@ -163,8 +164,6 @@ sh tools/refresh_repo_state.sh
 - новости и свежие упоминания через `Google News RSS`
 - быстрые current-fact запросы вроде “кто сейчас CEO / президент / глава” через отдельный live-route по внешним источникам
 
-Это нужно для того, чтобы вопросы вида “погода”, “курс доллара”, “цена BTC”, “последние новости”, “кто сейчас президент/CEO” не шли через слабый HTML-поиск.
-
 ### Автовосстановление
 
 Сейчас в проекте уже есть ограниченный safe self-healing слой:
@@ -198,6 +197,19 @@ sh tools/refresh_repo_state.sh
 - любые shell-действия вне allowlist
 
 ## Архитектура
+
+### Three Contours
+
+Теперь проект явнее разделён на три контура:
+
+- `assistant / jarvis`:
+  ответы пользователю, chat-facing логика, Telegram presentation
+- `enterprise / runtime`:
+  owner ops, runtime diagnostics, файлы, код, среда, self-heal
+- `moderation`:
+  anti-abuse, sanctions, warns, appeals, modlog, group guardrails
+
+Moderation enforcement не смешивается с search pipeline и prompt synthesis.
 
 ### Memory Layers
 
@@ -257,6 +269,21 @@ sh tools/refresh_repo_state.sh
 - экран инцидента с причинами и evidence
 - очередь согласования
 - inline-кнопки `Одобрить` / `Отклонить`
+
+### Moderation Layer
+
+Поверх legacy moderation-сервисов теперь есть отдельный слой `moderation/`:
+
+- `moderation/moderation_models.py` — строгие moderation contracts
+- `moderation/anti_abuse.py` — adapter над `AntiAbuseService`
+- `moderation/sanctions.py` — adapter над `SanctionsService`
+- `moderation/warnings.py` — warn adapter над bridge state
+- `moderation/appeals.py` — adapter над `AppealsService`
+- `moderation/modlog.py` — summary/reader для `moderation_journal`
+- `moderation/moderation_orchestrator.py` — compatibility facade для auto-moderation path
+- `moderation/policy.py` — короткие формальные moderator-facing notices
+
+Это не ломает существующие `/ban`, `/mute`, `/kick`, warn flow, `/modlog`, `/appeal` и owner/admin review path, а даёт отдельную архитектурную границу для дальнейшего выноса логики из bridge.
 
 ### Persistent Entity Layer
 
@@ -330,7 +357,6 @@ sh tools/refresh_repo_state.sh
 - runtime-вопросы владельца (`RAM/CPU/disk/processes/network`, наличие monitoring tools, доступность `/proc`) теперь сначала идут в прямой local runtime probe, а не в свободный prompt-ответ
 - также работает через один обновляемый статусный message flow
 - у владельца есть `/ownerreport` для быстрой сводки по runtime и ошибкам: CPU/RAM/disk, heartbeat, bot/supervisor process, рестарты за 24ч, backup и хвосты `tg_codex_bridge.log` / `supervisor_boot.log`
-- архитектура search/research и Telegram presentation layer описаны в [`SEARCH_ARCHITECTURE.md`](./SEARCH_ARCHITECTURE.md)
 - у владельца есть `/qualityreport` для отдельного среза по `verified/inferred/insufficient`, degraded routes, stale live и memory/tool usage
 - у владельца есть `/selfhealstatus` и `/selfhealrun` для bounded self-healing: status/history и dry-run/guarded playbook execution
 - у владельца есть `/selfhealapprove` и `/selfhealdeny` для approval gate по queued self-heal incidents
@@ -343,6 +369,44 @@ Health-слой:
 
 - `runtime_health` опирается на severe runtime-ошибки, restart-pressure и heartbeat-kill, а не на каждый штатный `SIGTERM`
 - `live_source_health` считает dedicated `live_*` маршруты отдельно от web-неопределённости; web-сбои показываются как отдельный внешний сигнал внутри отчётов
+
+## Prompt Architecture
+
+Теперь prompt layer упрощён и держит только два коротких personality/profile режима без бизнес-логики проекта.
+
+- [`prompts/jarvis.py`](./prompts/jarvis.py) — короткий chat-facing профиль Jarvis
+- [`prompts/enterprise.py`](./prompts/enterprise.py) — короткий owner/system-facing профиль Enterprise
+- [`prompts/runtime_profiles.py`](./prompts/runtime_profiles.py) — реестр профилей и legacy aliases
+- [`prompts/profile_loader.py`](./prompts/profile_loader.py) — loader/resolver профиля
+- [`prompts/builders.py`](./prompts/builders.py) — сборка prompt из выбранного профиля и контекстных блоков
+- [`prompts/task_prompts.py`](./prompts/task_prompts.py) — отдельные минимальные service prompts для voice/grammar/memory/upgrade, вынесенные из bridge
+
+Что вынесено из prompt layer в код:
+
+- routing и provider selection
+- search / follow-up rewrite / freshness guard
+- self-check и final answer gating
+- moderation enforcement
+- Telegram presentation, chunking и rendering
+
+Что сокращено или убрано:
+
+- giant base system prompt в `tg_codex_bridge.py`
+- service prompt blobs и локальные prompt wrappers в `tg_codex_bridge.py`
+- legacy режимы `code` и `strict` как отдельные runtime profiles
+- prompt sections `Intent`, `Response shape`, `Route summary`, `Self-check and guardrails`
+
+Сейчас в runtime есть только 2 профиля:
+
+- `jarvis`
+- `enterprise`
+
+Legacy значения режима (`chat`, `code`, `strict`) нормализуются в `jarvis` ради совместимости, но отдельными prompt-профилями больше не считаются.
+
+Смысл профилей:
+
+- `jarvis` — личный ассистент Дмитрия для обычного чата; не рассказывает внутреннюю архитектуру и не превращает ответ в служебный лог
+- `enterprise` — инженерный режим Дмитрия для среды, кода, рантайма, диагностики и операционных задач
 
 ## Где смотреть дальше
 

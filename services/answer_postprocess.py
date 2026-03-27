@@ -66,6 +66,24 @@ def collapse_duplicate_answer_blocks(text: str) -> str:
     return "\n".join(deduped_lines).strip()
 
 
+def rewrite_model_identity_leak(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    identity_markers = (
+        "я работаю",
+        "я модель",
+        "я построен",
+        "я основан",
+        "моя модель",
+        "я использую",
+    )
+    lowered = cleaned.lower()
+    if any(marker in lowered for marker in identity_markers) and re.search(r"(?i)\b(gpt|openai|codex)\b", cleaned):
+        return "Я работаю как Enterprise Core v194.95., модель Дмитрия."
+    return cleaned
+
+
 def postprocess_answer(
     text: str,
     *,
@@ -80,6 +98,7 @@ def postprocess_answer(
     cleaned = strip_meta_reply_wrapper(cleaned)
     cleaned = strip_banned_openers(cleaned)
     cleaned = collapse_duplicate_answer_blocks(cleaned)
+    cleaned = rewrite_model_identity_leak(cleaned)
     cleaned = trim_generic_followup_func(cleaned)
     timestamp = datetime.now(display_timezone).strftime("%Y-%m-%d %H:%M:%S MSK")
     footer = f"🕒 {timestamp}"

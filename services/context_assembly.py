@@ -16,15 +16,13 @@ def build_text_context_bundle(
     should_include_database_context_func: Callable[[str], bool],
     is_owner_private_chat_func: Callable[[Optional[int], int], bool],
     build_current_discussion_context_func: Callable[..., str],
-    build_external_research_context_func: Callable[[str], str],
     build_route_summary_text_func: Callable[[Any], str],
     build_guardrail_note_func: Callable[[Any], str],
     should_include_entity_context_func: Callable[..., bool],
 ) -> Any:
-    web_context = build_external_research_context_func(user_text) if route_decision.use_web else ""
-    event_context = state.get_event_context(chat_id, user_text, limit=40 if detect_local_chat_query_func(user_text) else 24) if route_decision.use_events else ""
-    database_context = state.get_database_context(chat_id, user_text) if route_decision.use_database else ""
     reply_to = ((message or {}).get("reply_to_message") or {}).get("from") or {}
+    include_local_context = detect_local_chat_query_func(user_text)
+    include_database_context = should_include_database_context_func(user_text)
     include_entity_context = should_include_entity_context_func(
         persona=route_decision.persona,
         use_workspace=route_decision.use_workspace,
@@ -32,18 +30,30 @@ def build_text_context_bundle(
         is_owner_chat=is_owner_private_chat_func(user_id, chat_id),
         detect_local_chat_query_func=detect_local_chat_query_func,
     )
+    discussion_context = build_current_discussion_context_func(
+        chat_id,
+        message=message,
+        user_id=user_id,
+        active_group_followup=active_group_followup,
+    )
+    route_summary = build_route_summary_text_func(route_decision)
+    guardrail_note = build_guardrail_note_func(route_decision)
+    history_window = int(getattr(state, "history_limit", 0) or 0)
+    history_rows = list(state.get_history(chat_id))
+    continuity_note = ""
+    if history_window > 0 and len(history_rows) >= history_window:
+        continuity_note = (
+            f"История диалога урезана до последних {history_window} сообщений. "
+            "Для continuity опирайся на summary_memory/chat_memory и не утверждай, что помнишь более ранние детали дословно."
+        )
+        route_summary = f"{route_summary}\n{continuity_note}".strip() if route_summary else continuity_note
     return context_bundle_factory(
         summary_text=state.get_summary(chat_id),
-        facts_text=state.render_facts(chat_id, query=user_text, limit=10),
-        event_context=event_context,
-        database_context=database_context,
+        facts_text=state.render_facts(chat_id, query=user_text, limit=8),
+        event_context=state.get_event_context(chat_id, user_text) if include_local_context else "",
+        database_context=state.get_database_context(chat_id, user_text) if include_database_context else "",
         reply_context=reply_context,
-        discussion_context=build_current_discussion_context_func(
-            chat_id,
-            message=message,
-            user_id=user_id,
-            active_group_followup=active_group_followup,
-        ),
+        discussion_context=discussion_context,
         self_model_text=state.get_self_model_context(route_decision.persona) if include_entity_context else "",
         autobiographical_text=state.get_autobiographical_context(chat_id, query=user_text, limit=4) if include_entity_context else "",
         skill_memory_text=state.get_skill_memory_context(user_text, route_kind=route_decision.route_kind, limit=3) if include_entity_context else "",
@@ -53,9 +63,9 @@ def build_text_context_bundle(
         relation_memory_text=state.get_relation_memory_context(chat_id, user_id=user_id, reply_to_user_id=reply_to.get("id"), query=user_text),
         chat_memory_text=state.get_chat_memory_context(chat_id, query=user_text),
         summary_memory_text=state.get_summary_memory_context(chat_id, limit=3),
-        web_context=web_context,
-        route_summary=build_route_summary_text_func(route_decision),
-        guardrail_note=build_guardrail_note_func(route_decision),
+        web_context="",
+        route_summary=route_summary,
+        guardrail_note=guardrail_note,
     )
 
 

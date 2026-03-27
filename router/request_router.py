@@ -7,9 +7,24 @@ from models.contracts import ROUTER_POLICY_MATRIX, RouteDecision
 
 
 RUNTIME_QUERY_MARKERS = (
-    "статус", "status", "runtime", "health", "процесс", "heartbeat", "лог", "логи", "ошибк",
+    "статус", "status", "runtime", "health", "процесс", "heartbeat", "лог", "логи",
     "cpu", "ram", "mem", "memory", "диск", "disk", "сеть", "network", "проц", "ресурс",
     "uptime", "перезапуск", "restart", "systemctl", "journal", "supervisor", "pid",
+)
+RUNTIME_EXPLICIT_MARKERS = (
+    "проверка enterprise runtime",
+    "runtime report",
+    "runtime status",
+    "status report",
+    "проверь runtime",
+    "проверь рантайм",
+    "диагностика runtime",
+    "диагностика рантайма",
+    "проверка среды",
+    "проверь среду",
+    "покажи среду",
+    "покажи рантайм",
+    "сними runtime probe",
 )
 ROUTER_POLICY_LESSONS = (
     "do-not-claim-unverified-actions",
@@ -184,6 +199,12 @@ def detect_runtime_query(user_text: str, *, normalize_whitespace_func: Callable[
     lowered = normalize_whitespace_func(user_text).lower()
     if not lowered:
         return False
+    if any(marker in lowered for marker in RUNTIME_EXPLICIT_MARKERS):
+        return True
+    if "ошибк" in lowered and not any(marker in lowered for marker in RUNTIME_EXPLICIT_MARKERS):
+        # "что за ошибка" чаще означает разбор сбоя/ответа, а не запрос на прямую
+        # диагностику среды. Иначе Enterprise слишком часто уезжает в runtime-report.
+        lowered = lowered.replace("ошибк", "")
     token_markers = {"ram", "mem", "cpu"}
     text_tokens = set(re.findall(r"[a-zа-яё0-9_+-]+", lowered, flags=re.IGNORECASE))
     for marker in RUNTIME_QUERY_MARKERS:
@@ -274,6 +295,12 @@ def should_use_web_research(text: str, *, normalize_whitespace_func: Callable[[s
         return False
     if detect_runtime_query(lowered, normalize_whitespace_func=normalize_whitespace_func):
         return False
+    if is_comparison_request(lowered, normalize_whitespace_func=normalize_whitespace_func):
+        return True
+    if is_purchase_advice_request(lowered, normalize_whitespace_func=normalize_whitespace_func):
+        return True
+    if is_recommendation_request(lowered, normalize_whitespace_func=normalize_whitespace_func):
+        return True
     if is_product_selection_help_request(lowered, normalize_whitespace_func=normalize_whitespace_func) and not has_external_research_signal(lowered, normalize_whitespace_func=normalize_whitespace_func):
         return False
     local_chat_query = detect_local_chat_query(lowered, normalize_whitespace_func=normalize_whitespace_func)
@@ -290,8 +317,6 @@ def classify_request_kind(user_text: str, *, user_id: Optional[int], assistant_p
         return "runtime"
     if is_local_project_meta_request(lowered, normalize_whitespace_func=deps.normalize_whitespace_func):
         return "project"
-    if detect_local_chat_query(lowered, normalize_whitespace_func=deps.normalize_whitespace_func) or bool(reply_context.strip()):
-        return "chat_local_context"
     if (
         deps.detect_news_query_func(lowered)
         or deps.detect_current_fact_query_func(lowered)
@@ -302,6 +327,8 @@ def classify_request_kind(user_text: str, *, user_id: Optional[int], assistant_p
         or should_use_web_research(lowered, normalize_whitespace_func=deps.normalize_whitespace_func)
     ):
         return "live"
+    if detect_local_chat_query(lowered, normalize_whitespace_func=deps.normalize_whitespace_func) or bool(reply_context.strip()):
+        return "chat_local_context"
     return "chat"
 
 
@@ -359,7 +386,7 @@ def analyze_request_route(user_text: str, assistant_persona: str, chat_type: str
         guardrails.append("runtime-verification")
     if assistant_persona == "enterprise":
         guardrails.append("respect-enterprise-mode")
-    if deps.is_dangerous_request_func(normalized_text):
+    if deps.is_dangerous_request_func(normalized_text) and assistant_persona != "enterprise":
         guardrails.append("no-system-actions")
     decision = RouteDecision(
         persona=assistant_persona or "jarvis",

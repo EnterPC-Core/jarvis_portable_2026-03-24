@@ -44,6 +44,13 @@ def parse_search_command(text: str) -> Optional[str]:
     return _parse_payload_command(text, "/search", "")
 
 
+def parse_console_command(text: str) -> Optional[str]:
+    payload = _parse_payload_command(text, "/console", None)
+    if payload is not None:
+        return payload
+    return _parse_payload_command(text, "/sh", None)
+
+
 def parse_sd_list_command(text: str) -> Optional[str]:
     return _parse_payload_command(text, "/sdls", "")
 

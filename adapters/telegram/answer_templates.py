@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from models.presentation import PresentationModel, PresentationSection
+from presentation.presentation_models import PresentationModel, PresentationSection
 
 
 def build_quick_answer_model(*, title: str, summary: str, bullets: tuple[str, ...] = (), warning: str = "", next_step: str = "", footer: str = "", citations: tuple[str, ...] = ()) -> PresentationModel:

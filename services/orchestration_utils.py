@@ -61,8 +61,6 @@ def build_guardrail_note(route_info: Any) -> str:
     if "runtime-verification" in route_info.guardrails:
         lines.append("- для RAM, CPU, диска, uptime и других метрик среды опирайся только на реальную runtime-проверку; если её не было, честно скажи, что состояние не подтверждено")
         lines.append("- не подменяй проверку среды общими рассуждениями, устаревшими примерами или советом выполнить команду так, будто ответ уже подтверждён")
-    if "no-system-actions" in route_info.guardrails:
-        lines.append("- не выполняй системные действия и не описывай их как выполненные")
     if "heightened-uncertainty" in route_info.guardrails:
         lines.append("- в этом ответе системная неопределённость повышена: держи формулировки консервативными и не сглаживай uncertainty")
     if "runtime-risk-attention" in route_info.guardrails:
@@ -71,7 +69,7 @@ def build_guardrail_note(route_info: Any) -> str:
         lines.append("- есть сигнал doc/runtime drift: не делай вид, что документация точно соответствует состоянию без проверки")
     if "stale-memory-attention" in route_info.guardrails:
         lines.append("- локальная память могла устареть: приоритет у свежих events и recent relation context")
-    lines.append("- если уверенности мало, честно обозначь ограничение и предложи следующий безопасный шаг")
+    lines.append("- если ограничение реально мешает выполнить запрос, коротко обозначь его и сразу предложи следующий рабочий шаг")
     return "\n".join(lines)
 
 
@@ -132,7 +130,7 @@ def apply_self_check_contract(
             uncertain_points.append("current-fact-is-inferred")
             lowered = final_answer.lower()
 
-    if "no-system-actions" in route_decision.guardrails:
+    if "no-system-actions" in route_decision.guardrails and route_decision.persona != "enterprise":
         lowered = final_answer.lower()
         action_markers = ("создал", "удалил", "установил", "запустил", "перезапустил", "выполнил")
         if any(marker in lowered for marker in action_markers):

@@ -225,7 +225,7 @@ def build_voice_transcription_help(
         return (
             "Не удалось распознать голосовое. Дополнительные Android/Telegram-права для этого не нужны. "
             "Проблема, вероятно, в формате аудио, сети или в speech-to-text backend. "
-            "Проверь лог `tg_codex_bridge.py`."
+            "Проверь runtime-лог bridge."
         )
 
     details = "\n".join(f"- {item}" for item in issues)

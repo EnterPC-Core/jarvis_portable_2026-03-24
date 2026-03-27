@@ -14,18 +14,21 @@ def render_user_memory_context(
         return ""
     lines = ["User memory:"]
     for row in rows:
-        label = row[2] or build_actor_name_func(row[0], row[1] or "", "", "", "user")
+        scope_chat_id = int(row[0] or 0)
+        label = row[3] or build_actor_name_func(row[1], row[2] or "", "", "", "user")
         lines.append(f"- {label}")
-        preferred_summary = row[4] or row[3] or ""
+        if scope_chat_id == 0:
+            lines.append("  scope: global owner memory")
+        preferred_summary = row[5] or row[4] or ""
         if preferred_summary:
             lines.append(f"  summary: {truncate_text_func(preferred_summary, 260)}")
-        if row[3] and row[4] and row[4] != row[3]:
-            lines.append(f"  heuristic: {truncate_text_func(row[3], 180)}")
-        if row[5]:
-            lines.append(f"  style: {truncate_text_func(row[5], 180)}")
+        if row[4] and row[5] and row[5] != row[4]:
+            lines.append(f"  heuristic: {truncate_text_func(row[4], 180)}")
         if row[6]:
-            lines.append(f"  topics: {truncate_text_func(row[6], 180)}")
-        participant = participant_map.get(int(row[0])) if row[0] is not None else None
+            lines.append(f"  style: {truncate_text_func(row[6], 180)}")
+        if row[7]:
+            lines.append(f"  topics: {truncate_text_func(row[7], 180)}")
+        participant = participant_map.get(int(row[1])) if row[1] is not None else None
         if participant:
             participant_bits: List[str] = []
             if int(participant[1] or 0):
@@ -41,10 +44,10 @@ def render_user_memory_context(
     if relation_rows:
         lines.append("Reply links:")
         for source_user_id, target_reply_user_id, count in relation_rows[:4]:
-            source_row = next((row for row in rows if row[0] == source_user_id), None)
-            target_row = next((row for row in rows if row[0] == target_reply_user_id), None)
-            source_label = (source_row[2] if source_row else "") or build_actor_name_func(source_user_id, "", "", "", "user")
-            target_label = (target_row[2] if target_row else "") or build_actor_name_func(target_reply_user_id, "", "", "", "user")
+            source_row = next((row for row in rows if row[1] == source_user_id), None)
+            target_row = next((row for row in rows if row[1] == target_reply_user_id), None)
+            source_label = (source_row[3] if source_row else "") or build_actor_name_func(source_user_id, "", "", "", "user")
+            target_label = (target_row[3] if target_row else "") or build_actor_name_func(target_reply_user_id, "", "", "", "user")
             lines.append(f"- {source_label} -> {target_label}: {int(count)}")
     return "\n".join(lines)
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 
-from prompts.builders import build_ai_chat_memory_prompt, build_ai_user_memory_prompt
+from prompts.task_prompts import build_ai_chat_memory_prompt, build_ai_user_memory_prompt
 from utils.text_utils import normalize_whitespace
 
 
@@ -38,7 +38,10 @@ class MemoryService:
             counts[user_id] = counts.get(user_id, 0) + 1
             labels[user_id] = (username or "", first_name or "", last_name or "")
         refreshed = False
-        for user_id, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:2]:
+        prioritized_users = [user_id for user_id, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:4]]
+        if bridge.owner_user_id in counts and bridge.owner_user_id not in prioritized_users:
+            prioritized_users.insert(0, bridge.owner_user_id)
+        for user_id in prioritized_users[:4]:
             user_rows = bridge.state.get_recent_user_rows(chat_id, user_id, limit=18)
             if len(user_rows) < 6:
                 continue
@@ -52,6 +55,18 @@ class MemoryService:
                 continue
             bridge.state.set_user_memory_ai_summary(chat_id, user_id, cleaned)
             refreshed = True
+        if bridge.owner_user_id in counts:
+            owner_rows = bridge.state.get_recent_global_user_rows(bridge.owner_user_id, limit=28)
+            if len(owner_rows) >= 8:
+                username, first_name, last_name = labels.get(bridge.owner_user_id, ("", "", ""))
+                profile_label = self.deps.build_actor_name_func(bridge.owner_user_id, username, first_name, last_name, "user")
+                heuristic_context = bridge.state.get_user_memory_context(chat_id, user_id=bridge.owner_user_id)
+                prompt = build_ai_user_memory_prompt(profile_label, owner_rows, heuristic_context, bridge.truncate_text)
+                ai_summary = bridge.run_codex_short(prompt, timeout_seconds=25)
+                cleaned = normalize_whitespace(ai_summary)
+                if cleaned:
+                    bridge.state.set_user_memory_ai_summary(0, bridge.owner_user_id, cleaned)
+                    refreshed = True
         return refreshed
 
 
