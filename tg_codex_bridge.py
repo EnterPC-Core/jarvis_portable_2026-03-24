@@ -8324,6 +8324,8 @@ class TelegramBridge:
     def run_codex_short(self, prompt: str, timeout_seconds: int = 35) -> str:
         command = self.build_codex_command(sandbox_mode="read-only", approval_policy="never")
         stdin_command = command + ["-"]
+        sandbox_mode = "read-only"
+        approval_policy = "never"
         try:
             with HeartbeatGuard(self):
                 result = subprocess.run(
@@ -8336,12 +8338,21 @@ class TelegramBridge:
                 )
         except (subprocess.TimeoutExpired, OSError) as error:
             log(f"short codex failed: {shorten_for_log(str(error))}")
-            return ""
+            return build_codex_failure_answer(
+                str(error),
+                sandbox_mode=sandbox_mode,
+                approval_policy=approval_policy,
+            )
         stdout = normalize_whitespace(result.stdout or "")
         stderr = normalize_whitespace(result.stderr or "")
         if result.returncode != 0:
-            log(f"short codex error code={result.returncode} stderr={shorten_for_log(stderr)}")
-            return ""
+            details = stderr or stdout or f"Enterprise Core завершился с кодом {result.returncode} без текста ошибки."
+            log(f"short codex error code={result.returncode} stderr={shorten_for_log(details)}")
+            return build_codex_failure_answer(
+                details,
+                sandbox_mode=sandbox_mode,
+                approval_policy=approval_policy,
+            )
         return extract_codex_text_response(stdout)
 
     def cleanup_voice_transcript_with_ai(self, chat_id: int, transcript: str) -> str:

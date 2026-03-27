@@ -1,6 +1,7 @@
 import unittest
 from tempfile import NamedTemporaryFile
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from handlers.telegram_handlers import TelegramMessageHandlers
 from handlers.ui_handlers import UIHandlers
@@ -441,6 +442,21 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("runtime ok", html_text)
         self.assertIn('value="diagnose"', html_text)
         self.assertIn("/enterprise-console/api/jobs/", html_text)
+
+    def test_short_codex_failure_returns_formatted_error_instead_of_empty_text(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        bridge.build_codex_command = lambda **_kwargs: ["codex"]
+
+        with patch("tg_codex_bridge.subprocess.run") as run_mock:
+            run_mock.return_value = SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="OpenAI Codex v0.116.0\nError: model provider unavailable",
+            )
+            answer = TelegramBridge.run_codex_short(bridge, "ping", timeout_seconds=10)
+
+        self.assertTrue(answer.startswith("Ошибка Enterprise Core:\n"))
+        self.assertIn("model provider unavailable", answer)
 
 
 if __name__ == "__main__":
