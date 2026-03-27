@@ -104,10 +104,7 @@ class TextRouteService:
             route_timeout_seconds=route_timeout_seconds,
             replace_status_with_answer=(
                 initial_status_message_id is not None
-                and (
-                    chat_type in {"group", "supergroup"}
-                    or (chat_type == "private" and route_decision.persona == "enterprise")
-                )
+                and chat_type in {"group", "supergroup"}
             ),
             prompt_len=len(prompt),
             history_items=len(history_items),

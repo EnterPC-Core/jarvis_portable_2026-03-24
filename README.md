@@ -12,7 +12,7 @@
 - текущий режим: локальный runtime в `UserLAnd` / `Termux`
 - основной entrypoint: [`tg_codex_bridge.py`](./tg_codex_bridge.py)
 - поддерживаемый способ удержания процесса: [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh)
-- модель доступа по умолчанию: бот отвечает только владельцу `OWNER_USER_ID`
+- модель доступа по умолчанию: owner-only диалог плюс публичный пользовательский контур
 - storage: локальная SQLite-память + legacy SQLite для рейтингов и апелляций
 
 Это не библиотека и не SaaS-сервис. Это рабочий локальный Telegram runtime со своей памятью, маршрутизацией, live-проверками и owner-ops сценариями.
@@ -93,10 +93,11 @@ sh start_jarvis_on_termux.sh
 
 ## Модель Доступа
 
-По умолчанию bridge работает в owner-only режиме:
+По умолчанию bridge работает в owner-only режиме для свободного диалога и runtime-команд:
 
 - владелец с `OWNER_USER_ID` имеет доступ к основному conversational и enterprise flow
-- остальные участники не получают полный доступ к runtime-возможностям
+- остальные участники не получают доступ к runtime-возможностям, owner-командам и свободному диалогу
+- для обычных пользователей остаются публичные экраны: `/start`, `/rating`, `/top`, `/topweek`, `/topday`, `/appeal`, `/appeals`
 - в группах поведение зависит от триггеров, reply-контекста, moderation-политики и текущих guardrails
 
 Если бот "молчит", сначала проверь:
@@ -139,7 +140,7 @@ sh tools/refresh_repo_state.sh
 - память диалога и служебное состояние в SQLite
 - четыре слоя памяти: `user memory`, `relation memory`, `chat memory`, `summary memory`
 - persistent entity-слои: `self-model`, `autobiographical memory`, `reflection loop`, `skill memory`, `world-state registry`, `drive pressures`
-- рейтинги, достижения, топы и апелляции через legacy-базу `jarvis.db`
+- рейтинги, профиль участника, достижения, топы и апелляции через legacy-базу `jarvis.db`
 - команды модерации, warn/welcome, история, поиск по событиям
 - reply-aware контекст: bot понимает reply на сообщение, медиа и короткий тред вокруг него
 - локальный participant registry: bot копит известных участников чата, отдельно знает админов и общее число участников через Bot API

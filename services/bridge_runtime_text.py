@@ -39,7 +39,8 @@ def has_chat_access(_authorized_user_ids: Set[int], user_id: Optional[int], *, o
 
 
 def has_public_command_access(text: str, *, allowed_commands: Set[str]) -> bool:
-    return (text or "").strip() in allowed_commands
+    command = ((text or "").strip().split(maxsplit=1) or [""])[0]
+    return command in allowed_commands
 
 
 def has_public_callback_access(data: str, *, allowed_callbacks: Set[str]) -> bool:

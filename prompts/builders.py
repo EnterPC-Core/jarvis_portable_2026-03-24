@@ -73,6 +73,59 @@ def format_history(
     return "\n".join(lines)
 
 
+def format_enterprise_history(
+    history: List[Tuple[str, str]],
+    user_text: str,
+    truncate_text_func: Callable[[str, int], str],
+    max_history_item_chars: int,
+) -> str:
+    if not history:
+        return "No prior context."
+
+    lowered_query = (user_text or "").lower()
+    heavy_markers = (
+        "проект",
+        "код",
+        "ошиб",
+        "исправ",
+        "рефактор",
+        "debug",
+        "fix",
+        "audit",
+        "traceback",
+        "stack",
+        "лог",
+        "repo",
+        "git",
+        "deploy",
+        "runtime",
+        "модерац",
+        "памят",
+        "архитект",
+    )
+    is_heavy_request = len(user_text or "") >= 140 or any(marker in lowered_query for marker in heavy_markers)
+    expanded_limit = max(max_history_item_chars, 1600 if is_heavy_request else 700)
+    keywords = extract_keywords(user_text)
+    relevant: List[Tuple[str, str]] = []
+    fallback: List[Tuple[str, str]] = history[-16:] if is_heavy_request else history[-6:]
+
+    for role, content in history:
+        shortened = truncate_text_func(content, expanded_limit)
+        lowered = shortened.lower()
+        if not keywords or any(keyword in lowered for keyword in keywords):
+            relevant.append((role, shortened))
+
+    selected = dedupe_history((relevant[-20:] if is_heavy_request else relevant[-8:]) + fallback)
+    if not selected:
+        selected = fallback
+
+    lines: List[str] = []
+    for role, content in selected[-24:] if is_heavy_request else selected[-10:]:
+        label = "User" if role == "user" else "Jarvis"
+        lines.append(f"{label}: {content}")
+    return "\n".join(lines)
+
+
 def build_prompt(
     *,
     mode: str,
@@ -124,8 +177,8 @@ def build_prompt(
             "Ответь естественно и коротко."
         )
     if profile.name == "enterprise":
-        history_block = format_history(history, user_text, truncate_text_func, max_history_item_chars)
-        user_memory_block = f"User profile:\n{truncate_text_func(user_memory_text, 900)}\n\n" if user_memory_text else ""
+        history_block = format_enterprise_history(history, user_text, truncate_text_func, max_history_item_chars)
+        user_memory_block = f"User profile:\n{truncate_text_func(user_memory_text, 320)}\n\n" if user_memory_text else ""
         del (
             attachment_note,
             summary_text,

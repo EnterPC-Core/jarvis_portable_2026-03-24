@@ -72,9 +72,13 @@ class PromptProfileTests(unittest.TestCase):
         self.assertNotIn("Identity:", jarvis_prompt)
 
     def test_enterprise_prompt_only_keeps_dm_context_user_profile_and_message(self):
+        history = []
+        for idx in range(1, 10):
+            history.append(("user", f"старый контекст {idx}"))
+            history.append(("assistant", f"промежуточный ответ {idx}"))
         prompt = build_prompt(
             mode="enterprise",
-            history=[("user", "старый контекст"), ("assistant", "промежуточный ответ")],
+            history=history,
             user_text="Проверь это",
             mode_prompts={},
             default_mode_name="jarvis",
@@ -106,7 +110,8 @@ class PromptProfileTests(unittest.TestCase):
         self.assertIn("Ты Enterprise Core v194.95.", prompt)
         self.assertIn("User profile:\nДмитрий (owner)", prompt)
         self.assertIn("Relevant chat context:", prompt)
-        self.assertIn("User: старый контекст", prompt)
+        self.assertIn("User: старый контекст 9", prompt)
+        self.assertIn("Jarvis: промежуточный ответ 9", prompt)
         self.assertIn("User message:\nПроверь это", prompt)
         self.assertNotIn("Reply context:", prompt)
         self.assertNotIn("Route context:", prompt)
@@ -119,6 +124,68 @@ class PromptProfileTests(unittest.TestCase):
         self.assertNotIn("Relation memory:", prompt)
         self.assertNotIn("Chat memory:", prompt)
         self.assertNotIn("Summary memory:", prompt)
+
+    def test_enterprise_prompt_keeps_wider_dm_history_window(self):
+        history = []
+        for idx in range(1, 15):
+            history.append(("user", f"сообщение пользователя {idx}"))
+            history.append(("assistant", f"ответ ассистента {idx}"))
+        prompt = build_prompt(
+            mode="enterprise",
+            history=history,
+            user_text="Проверь это",
+            mode_prompts={},
+            default_mode_name="jarvis",
+            base_system_prompt="legacy should be ignored",
+            detect_intent_func=lambda _text: "general",
+            response_shape_hint_func=lambda _intent: "short",
+            truncate_text_func=lambda text, limit: text[:limit],
+            max_history_item_chars=120,
+            attachment_note="attachment",
+            summary_text="summary",
+            facts_text="facts",
+            event_context="events",
+            database_context="database",
+            reply_context="reply",
+            discussion_context="discussion",
+            web_context="web",
+            route_summary="route",
+            guardrail_note="guardrail",
+            self_model_text="self-model",
+            autobiographical_text="autobio",
+            skill_memory_text="skills",
+            world_state_text="world",
+            drive_state_text="drives",
+            user_memory_text="Дмитрий (owner)",
+            relation_memory_text="relations",
+            chat_memory_text="chat-memory",
+            summary_memory_text="summary-memory",
+        )
+        self.assertIn("User: сообщение пользователя 14", prompt)
+        self.assertIn("Jarvis: ответ ассистента 14", prompt)
+        self.assertIn("User: сообщение пользователя 12", prompt)
+
+    def test_enterprise_prompt_uses_lighter_context_for_short_requests(self):
+        history = []
+        for idx in range(1, 15):
+            history.append(("user", f"короткий вопрос {idx}"))
+            history.append(("assistant", f"короткий ответ {idx}"))
+        prompt = build_prompt(
+            mode="enterprise",
+            history=history,
+            user_text="ты тут?",
+            mode_prompts={},
+            default_mode_name="jarvis",
+            base_system_prompt="legacy should be ignored",
+            detect_intent_func=lambda _text: "general",
+            response_shape_hint_func=lambda _intent: "short",
+            truncate_text_func=lambda text, limit: text[:limit],
+            max_history_item_chars=120,
+            user_memory_text="Дмитрий (owner): " + ("x" * 1000),
+        )
+        self.assertIn("User: короткий вопрос 14", prompt)
+        self.assertNotIn("User: короткий вопрос 10", prompt)
+        self.assertLess(len(prompt), 1800)
 
     def test_jarvis_prompt_blocks_internal_architecture_talk(self):
         prompt = load_runtime_profile("jarvis").system_prompt

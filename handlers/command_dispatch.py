@@ -60,21 +60,42 @@ class CommandDispatcher:
             if user_id is not None:
                 bridge.open_control_panel(chat_id, user_id, "home")
             return True
-        if text == "/help":
+        if text == "/rating" and user_id is not None:
+            bridge.open_control_panel(chat_id, user_id, "profile")
+            return True
+        if text == "/top":
             if user_id is not None:
+                bridge.open_control_panel(chat_id, user_id, "top_all")
+            return True
+        if text == "/topweek":
+            if user_id is not None:
+                bridge.open_control_panel(chat_id, user_id, "top_week")
+            return True
+        if text == "/topday":
+            if user_id is not None:
+                bridge.open_control_panel(chat_id, user_id, "top_day")
+            return True
+        if text == "/help":
+            if user_id is not None and has_access:
                 bridge.open_control_panel(chat_id, user_id, "home")
-            elif not has_access:
-                bridge.safe_send_text(chat_id, self.public_help_text)
             return True
         if text == "/rules":
-            bridge.safe_send_text(chat_id, bridge.get_group_rules_text(message))
+            if has_access:
+                bridge.safe_send_text(chat_id, bridge.get_group_rules_text(message))
             return True
         if text == "/commands":
             if not has_access:
-                bridge.safe_send_text(chat_id, "Команда недоступна.")
                 return True
             return bridge.handle_commands_command(chat_id, user_id)
-        if text == "/appeals" or text.startswith("/appeal_review") or text.startswith("/appeal_approve") or text.startswith("/appeal_reject"):
+        if text == "/appeals":
+            if has_access:
+                return bridge.handle_appeal_admin_command(chat_id, user_id, text)
+            if user_id is not None:
+                bridge.open_control_panel(chat_id, user_id, "appeals")
+            return True
+        if text.startswith("/appeal_review") or text.startswith("/appeal_approve") or text.startswith("/appeal_reject"):
+            if not has_access:
+                return True
             return bridge.handle_appeal_admin_command(chat_id, user_id, text)
         owner_autofix_payload = parse_owner_autofix_command(text)
         if owner_autofix_payload is not None:
@@ -84,26 +105,8 @@ class CommandDispatcher:
             bridge.safe_send_text(chat_id, f"Вход по паролю отключён. Бот отвечает только владельцу {self.owner_username}.")
             return True
         if not has_access:
-            if allow_followup_text and text and not text.startswith("/"):
-                return False
-            if text == "/rating" and user_id is not None:
-                bridge.open_control_panel(chat_id, user_id, "profile")
-                return True
-            if text == "/top" and user_id is not None:
-                bridge.open_control_panel(chat_id, user_id, "top_all")
-                return True
-            if text == "/topweek" and user_id is not None:
-                bridge.open_control_panel(chat_id, user_id, "top_week")
-                return True
-            if text == "/topday" and user_id is not None:
-                bridge.open_control_panel(chat_id, user_id, "top_day")
-                return True
-            if text == "/stats":
-                bridge.safe_send_text(chat_id, bridge.legacy.render_stats())
-                return True
             if text.startswith("/appeal"):
                 return bridge.handle_appeal_command(chat_id, user_id, text)
-            bridge.send_access_denied(chat_id)
             return True
         if text == "/ping":
             bridge.safe_send_text(chat_id, f"pong\n\n🏓 {bridge.get_telegram_ping_text()}")
@@ -127,21 +130,6 @@ class CommandDispatcher:
             return bridge.handle_self_heal_deny_command(chat_id, user_id, self_heal_deny_value)
         if text == "/qualityreport":
             return bridge.handle_quality_report_command(chat_id, user_id)
-        if text == "/rating" and user_id is not None:
-            bridge.open_control_panel(chat_id, user_id, "profile")
-            return True
-        if text == "/top":
-            if user_id is not None:
-                bridge.open_control_panel(chat_id, user_id, "top_all")
-            return True
-        if text == "/topweek":
-            if user_id is not None:
-                bridge.open_control_panel(chat_id, user_id, "top_week")
-            return True
-        if text == "/topday":
-            if user_id is not None:
-                bridge.open_control_panel(chat_id, user_id, "top_day")
-            return True
         if text == "/stats":
             bridge.safe_send_text(chat_id, bridge.legacy.render_stats())
             return True

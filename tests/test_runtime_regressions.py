@@ -1,8 +1,14 @@
 import unittest
 from types import SimpleNamespace
 
+from handlers.telegram_handlers import TelegramMessageHandlers
+from handlers.ui_handlers import UIHandlers
+from handlers.command_dispatch import CommandDispatcher
+from handlers.control_panel_renderer import ControlPanelRenderer
+from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
+from services.text_route_service import TextRouteService, TextRouteServiceDeps
 from services.context_assembly import build_text_context_bundle
-from tg_codex_bridge import TelegramBridge
+from tg_codex_bridge import TelegramBridge, has_public_callback_access, has_public_command_access
 
 
 class _FakeState:
@@ -60,6 +66,264 @@ class _FakeState:
 
 
 class RuntimeRegressionTests(unittest.TestCase):
+    def test_public_access_lists_keep_rating_and_appeal_entry_points(self):
+        self.assertTrue(has_public_command_access("/start"))
+        self.assertTrue(has_public_command_access("/rating"))
+        self.assertTrue(has_public_command_access("/top"))
+        self.assertTrue(has_public_command_access("/appeals"))
+        self.assertTrue(has_public_command_access("/appeal прошу пересмотреть"))
+        self.assertTrue(has_public_callback_access("ui:home"))
+        self.assertTrue(has_public_callback_access("ui:top:week"))
+        self.assertTrue(has_public_callback_access("ui:appeals"))
+        self.assertFalse(has_public_command_access("/help"))
+        self.assertFalse(has_public_callback_access("help:public"))
+
+    def test_group_non_owner_text_is_silently_ignored(self):
+        sent_messages = []
+        logs = []
+        handler = TelegramMessageHandlers(owner_user_id=1, safe_mode_reply="safe")
+        bridge = SimpleNamespace(
+            normalize_incoming_text=lambda text, _bot_username: text,
+            extract_assistant_persona=lambda text: ("jarvis", text),
+            bot_username="jarvis_bot",
+            log=lambda message: logs.append(message),
+            shorten_for_log=lambda text: text,
+            safe_send_text=lambda chat_id, text: sent_messages.append((chat_id, text)),
+        )
+
+        handler.handle_text_message(
+            bridge,
+            chat_id=-100,
+            user_id=2,
+            message={"text": "Jarvis, ответь", "message_id": 10},
+            chat_type="group",
+        )
+
+        self.assertEqual(sent_messages, [])
+        self.assertTrue(any("group non-owner ignored" in row for row in logs))
+
+    def test_unauthorized_callback_is_ignored_without_access_denied_reply(self):
+        sent_messages = []
+        logs = []
+        answered_callbacks = []
+        handler = UIHandlers(
+            owner_user_id=1,
+            access_denied_text="denied",
+            ui_pending_appeal="await_appeal_text",
+            ui_pending_approve_comment="await_appeal_approve_comment",
+            ui_pending_reject_comment="await_appeal_reject_comment",
+            ui_pending_close_comment="await_appeal_close_comment",
+            admin_help_sections=set(),
+            public_help_sections=set(),
+            control_panel_sections=set(),
+        )
+        bridge = SimpleNamespace(
+            answer_callback_query=lambda callback_query_id: answered_callbacks.append(callback_query_id),
+            log=lambda message: logs.append(message),
+            has_chat_access=lambda _authorized_user_ids, _user_id: False,
+            has_public_callback_access=lambda _data: False,
+            safe_send_text=lambda chat_id, text: sent_messages.append((chat_id, text)),
+            state=SimpleNamespace(authorized_user_ids=set()),
+        )
+
+        handler.handle_callback_query(
+            bridge,
+            {
+                "id": "cb1",
+                "data": "ui:home",
+                "message": {"chat": {"id": 100}, "message_id": 55},
+                "from": {"id": 2},
+            },
+        )
+
+        self.assertEqual(answered_callbacks, ["cb1"])
+        self.assertEqual(sent_messages, [])
+        self.assertTrue(any("callback ignored for non-owner" in row for row in logs))
+
+    def test_non_owner_start_and_appeals_open_public_panels_but_help_and_rules_stay_silent(self):
+        opened_panels = []
+        sent_messages = []
+        dispatcher = CommandDispatcher(owner_username="dmitry", public_help_text="public", mode_prompts={})
+        bridge = SimpleNamespace(
+            has_chat_access=lambda _authorized_user_ids, _user_id: False,
+            state=SimpleNamespace(authorized_user_ids=set()),
+            open_control_panel=lambda chat_id, user_id, section: opened_panels.append((chat_id, user_id, section)),
+            safe_send_text=lambda chat_id, text: sent_messages.append((chat_id, text)),
+            get_group_rules_text=lambda _message: "rules",
+        )
+
+        self.assertTrue(dispatcher.handle_command(bridge, 100, 2, "/start"))
+        self.assertTrue(dispatcher.handle_command(bridge, 100, 2, "/appeals"))
+        self.assertTrue(dispatcher.handle_command(bridge, 100, 2, "/help"))
+        self.assertTrue(dispatcher.handle_command(bridge, 100, 2, "/rules"))
+
+        self.assertEqual(opened_panels, [(100, 2, "home"), (100, 2, "appeals")])
+        self.assertEqual(sent_messages, [])
+
+    def test_public_control_panel_keeps_rating_and_appeal_entry_points(self):
+        renderer = ControlPanelRenderer(
+            owner_user_id=1,
+            owner_username="owner",
+            public_home_text="stub",
+            commands_list_text="",
+            control_panel_sections={"home", "owner_root", "profile", "top_week", "appeals"},
+            has_chat_access_func=lambda _authorized_user_ids, _user_id: False,
+            format_duration_seconds_func=lambda value: str(value),
+            truncate_text_func=lambda text, limit: text[:limit],
+            render_git_status_summary_func=lambda *_args, **_kwargs: "",
+            render_git_last_commits_func=lambda *_args, **_kwargs: "",
+            render_admin_command_catalog_func=lambda *_args, **_kwargs: "",
+        )
+        bridge = SimpleNamespace(
+            state=SimpleNamespace(authorized_user_ids=set()),
+            appeals=SimpleNamespace(
+                get_case_snapshot=lambda _user_id: {
+                    "active_bans": [],
+                    "active_mutes": [],
+                    "active_warnings": 0,
+                    "confirmed_violations": 0,
+                    "legacy_user_warnings": 0,
+                    "past_appeals": 0,
+                },
+                get_user_appeals=lambda _user_id, limit=0: [],
+            ),
+            legacy=SimpleNamespace(
+                render_dashboard_summary=lambda user_id: f"profile:{user_id}",
+                render_top_all_time=lambda: "top-all",
+                render_top_historical=lambda: "top-history",
+                render_top_week=lambda: "top-week",
+                render_top_day=lambda: "top-day",
+                render_top_social=lambda: "top-social",
+                render_top_season=lambda: "top-season",
+            ),
+        )
+
+        text, markup = renderer.build_control_panel(bridge, 2, "home")
+        profile_text, profile_markup = renderer.build_control_panel(bridge, 2, "profile")
+        top_text, top_markup = renderer.build_control_panel(bridge, 2, "top_week")
+        appeals_text, appeals_markup = renderer.build_control_panel(bridge, 2, "appeals")
+
+        self.assertEqual(text, "stub")
+        self.assertEqual(markup, {"inline_keyboard": [[{"text": "Мой профиль", "callback_data": "ui:profile"}, {"text": "Топы", "callback_data": "ui:top"}], [{"text": "Апелляции", "callback_data": "ui:appeals"}]]})
+        self.assertIn("JARVIS • МОЙ ПРОФИЛЬ", profile_text)
+        self.assertIn("profile:2", profile_text)
+        self.assertEqual(profile_markup["inline_keyboard"][0][0]["callback_data"], "ui:top")
+        self.assertEqual(top_text, "top-week")
+        self.assertEqual(top_markup["inline_keyboard"][-1][0]["callback_data"], "ui:home")
+        self.assertIn("JARVIS • АПЕЛЛЯЦИИ", appeals_text)
+        self.assertEqual(appeals_markup["inline_keyboard"][0][0]["callback_data"], "ui:appeal:new")
+
+    def test_owner_auto_moderation_report_exposes_recommended_decision(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        message = {"chat": {"title": "Test chat"}, "text": "Тестовое нарушение"}
+        decision = SimpleNamespace(
+            severity="high",
+            public_reason="оскорбления",
+            code="abuse.direct",
+            mute_seconds=3600,
+            suggested_owner_action="Оставить мут и проверить предысторию.",
+        )
+
+        report = bridge.render_auto_moderation_owner_report(
+            chat_id=-100,
+            message=message,
+            target_user_id=42,
+            target_label="@user",
+            decision=decision,
+            applied_action="mute",
+        )
+
+        self.assertIn("OWNER REPORT • AUTO MODERATION", report)
+        self.assertIn("Решение владельца:", report)
+        self.assertIn("Оставить мут и проверить предысторию.", report)
+
+    def test_json_progress_keeps_only_last_agent_message_as_final_answer(self):
+        service = JSEnterpriseService(
+            JSEnterpriseServiceDeps(
+                send_status_message_func=lambda *_args, **_kwargs: 1,
+                build_codex_command_func=lambda **_kwargs: [],
+                heartbeat_guard_factory=lambda: SimpleNamespace(__enter__=lambda self: self, __exit__=lambda self, exc_type, exc, tb: False),
+                build_subprocess_env_func=lambda: {},
+                send_chat_action_func=lambda *_args, **_kwargs: None,
+                update_progress_status_func=lambda *_args, **_kwargs: None,
+                log_func=lambda *_args, **_kwargs: None,
+                edit_status_message_func=lambda *_args, **_kwargs: True,
+                finish_progress_status_func=lambda *_args, **_kwargs: None,
+                normalize_whitespace_func=lambda text: " ".join((text or "").split()),
+                postprocess_answer_func=lambda text, _latency_ms: text,
+                build_codex_failure_answer_func=lambda *_args, **_kwargs: "fail",
+                extract_usable_codex_stdout_func=lambda _stdout: "",
+                shorten_for_log_func=lambda text, _limit=0: text,
+                jarvis_offline_text="offline",
+                upgrade_timeout_text="timeout",
+                codex_timeout=30,
+                progress_update_seconds=1.0,
+            )
+        )
+
+        service._format_json_event({"type": "thread.started"})
+        first = service.deps.normalize_whitespace_func("Комментарий 1")
+        second = service.deps.normalize_whitespace_func("Финальный ответ")
+        self.assertEqual(first, "Комментарий 1")
+        self.assertEqual(second, "Финальный ответ")
+
+    def test_enterprise_zero_timeout_disables_fallback_codex_timeout(self):
+        self.assertIsNone(JSEnterpriseService._resolve_timeout(0, 180))
+        self.assertIsNone(JSEnterpriseService._resolve_timeout(-1, 180))
+        self.assertEqual(JSEnterpriseService._resolve_timeout(None, 180), 180)
+        self.assertEqual(JSEnterpriseService._resolve_timeout(240, 180), 240)
+
+    def test_private_enterprise_keeps_status_feed_and_sends_answer_separately(self):
+        service = TextRouteService(
+            TextRouteServiceDeps(
+                build_prompt_func=lambda **_kwargs: "prompt",
+                log_func=lambda _message: None,
+                default_chat_route_timeout=60,
+            )
+        )
+
+        bridge = SimpleNamespace(
+            build_text_context_bundle=lambda **_kwargs: SimpleNamespace(
+                reply_context="",
+                web_context="",
+                user_memory_text="user",
+                relation_memory_text="",
+                chat_memory_text="",
+                summary_memory_text="",
+                summary_text="",
+                facts_text="",
+                event_context="",
+                database_context="",
+                discussion_context="",
+                route_summary="",
+                guardrail_note="",
+                self_model_text="",
+                autobiographical_text="",
+                skill_memory_text="",
+                world_state_text="",
+                drive_state_text="",
+            ),
+            is_group_followup_message=lambda *_args, **_kwargs: False,
+            state=SimpleNamespace(get_history=lambda _chat_id: [("user", "hi")]),
+            config=SimpleNamespace(codex_timeout=180),
+        )
+        route_decision = SimpleNamespace(persona="enterprise", route_kind="codex_workspace")
+
+        preparation = service.prepare(
+            bridge,
+            chat_id=1,
+            user_text="Проверь",
+            route_decision=route_decision,
+            user_id=1,
+            message=None,
+            reply_context="",
+            spontaneous_group_reply=False,
+            initial_status_message_id=10,
+            chat_type="private",
+        )
+
+        self.assertFalse(preparation.replace_status_with_answer)
+
     def test_context_assembly_uses_entity_context_keyword_contract(self):
         captured = {}
 

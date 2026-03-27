@@ -131,7 +131,7 @@ class UIHandlers:
         user_has_full_access = bridge.has_chat_access(bridge.state.authorized_user_ids, user_id)
         if user_id is not None and not user_has_full_access:
             if not bridge.has_public_callback_access(data):
-                bridge.safe_send_text(chat_id, self.access_denied_text)
+                bridge.log(f"callback ignored for non-owner user={user_id} chat={chat_id} data={data}")
                 return
         if data.startswith("ui:") and user_id is not None:
             parts = data.split(":")

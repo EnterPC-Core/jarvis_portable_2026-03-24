@@ -322,19 +322,20 @@ class ControlPanelRenderer:
         return text, markup
 
     def build_public_control_panel(self, bridge: "TelegramBridge", user_id: int, section: str, payload: str = "") -> Tuple[str, dict]:
+        del payload
         if section == "profile":
-            return (
-                bridge.legacy.render_rating(user_id),
-                {
-                    "inline_keyboard": [
-                        [{"text": "Обновить рейтинг", "callback_data": "ui:profile"}],
-                        [{"text": "Топы", "callback_data": "ui:top"}],
-                        [{"text": "Ачивки: как работает", "callback_data": "help:public_achievements"}],
-                        [{"text": "Апелляция: как подать", "callback_data": "help:public_appeal"}],
-                        [{"text": "Главная", "callback_data": "ui:home"}],
-                    ]
-                },
+            text = (
+                "JARVIS • МОЙ ПРОФИЛЬ\n\n"
+                "Ваши текущие показатели в рейтинговой системе:\n\n"
+                f"{bridge.legacy.render_dashboard_summary(user_id)}"
             )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Топы", "callback_data": "ui:top"}, {"text": "Апелляции", "callback_data": "ui:appeals"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
         if section in {"top_all", "top_history", "top_week", "top_day", "top_social", "top_season"}:
             mapping = {
                 "top_all": bridge.legacy.render_top_all_time(),
@@ -344,7 +345,8 @@ class ControlPanelRenderer:
                 "top_social": bridge.legacy.render_top_social(),
                 "top_season": bridge.legacy.render_top_season(),
             }
-            return mapping[section], {
+            text = mapping[section]
+            markup = {
                 "inline_keyboard": [
                     [
                         {"text": "Новый", "callback_data": "ui:top:all"},
@@ -358,35 +360,93 @@ class ControlPanelRenderer:
                         {"text": "Вклад", "callback_data": "ui:top:social"},
                         {"text": "Сезон", "callback_data": "ui:top:season"},
                     ],
-                    [{"text": "Рейтинг", "callback_data": "ui:profile"}, {"text": "Главная", "callback_data": "ui:home"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
+            return text, markup
         if section == "top_menu":
-            return (
-                "JARVIS • РЕЙТИНГИ\n\nВыберите нужный срез рейтинга.",
-                {
-                    "inline_keyboard": [
-                        [
-                            {"text": "Новый", "callback_data": "ui:top:all"},
-                            {"text": "История", "callback_data": "ui:top:history"},
-                        ],
-                        [
-                            {"text": "Неделя", "callback_data": "ui:top:week"},
-                            {"text": "День", "callback_data": "ui:top:day"},
-                        ],
-                        [
-                            {"text": "Вклад", "callback_data": "ui:top:social"},
-                            {"text": "Сезон", "callback_data": "ui:top:season"},
-                        ],
-                        [{"text": "Рейтинг", "callback_data": "ui:profile"}, {"text": "Главная", "callback_data": "ui:home"}],
-                    ]
-                },
+            text = (
+                "JARVIS • РЕЙТИНГИ\n\n"
+                "Выберите нужный срез рейтинга.\n\n"
+                "Доступны общий рейтинг, исторический архив, неделя, день, вклад в сообщество и сезон."
             )
+            markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": "Новый", "callback_data": "ui:top:all"},
+                        {"text": "История", "callback_data": "ui:top:history"},
+                    ],
+                    [
+                        {"text": "Неделя", "callback_data": "ui:top:week"},
+                        {"text": "День", "callback_data": "ui:top:day"},
+                    ],
+                    [
+                        {"text": "Вклад", "callback_data": "ui:top:social"},
+                        {"text": "Сезон", "callback_data": "ui:top:season"},
+                    ],
+                    [{"text": "Профиль", "callback_data": "ui:profile"}, {"text": "Апелляции", "callback_data": "ui:appeals"}],
+                ]
+            }
+            return text, markup
+        if section == "appeals":
+            snapshot = bridge.appeals.get_case_snapshot(user_id)
+            rows = bridge.appeals.get_user_appeals(user_id, limit=4)
+            lines = [
+                "JARVIS • АПЕЛЛЯЦИИ",
+                "",
+                "Проверка строится по активным санкциям, предупреждениям и истории решений.",
+                "",
+                "Текущее состояние:",
+                f"• Активные баны: {len(snapshot.get('active_bans', []))}",
+                f"• Активные муты: {len(snapshot.get('active_mutes', []))}",
+                f"• Активные предупреждения: {snapshot.get('active_warnings', 0)}",
+                f"• Подтвержденные нарушения: {snapshot.get('confirmed_violations', 0)}",
+                f"• Прошлые апелляции: {snapshot.get('past_appeals', 0)}",
+                "",
+                "Если оснований для ограничения уже нет, апелляция может быть одобрена автоматически.",
+            ]
+            if rows:
+                lines.extend(["", "Последние апелляции:"])
+                for row in rows:
+                    lines.append(f"• #{int(row['id'])} {row['status']} — {self.truncate_text(row['reason'] or '', 70)}")
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Подать апелляцию", "callback_data": "ui:appeal:new"}],
+                    [{"text": "История", "callback_data": "ui:appeal:history"}, {"text": "Мой профиль", "callback_data": "ui:profile"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return "\n".join(lines), markup
+        if section == "appeal_history":
+            rows = bridge.appeals.get_user_appeals(user_id, limit=12)
+            lines = [
+                "JARVIS • ИСТОРИЯ АПЕЛЛЯЦИЙ",
+                "",
+            ]
+            if not rows:
+                lines.append("Апелляций пока нет.")
+            else:
+                for row in rows:
+                    stamp = datetime.fromtimestamp(int(row["created_at"])).strftime("%Y-%m-%d %H:%M")
+                    lines.append(f"#{int(row['id'])} • {row['status']} • {stamp}")
+                    if row["decision_type"]:
+                        lines.append(f"Решение: {row['decision_type']}")
+                    if row["review_comment"]:
+                        lines.append(f"Комментарий: {self.truncate_text(row['review_comment'], 120)}")
+                    lines.append(self.truncate_text(row["reason"] or "", 120))
+                    lines.append("")
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Подать апелляцию", "callback_data": "ui:appeal:new"}],
+                    [{"text": "Назад", "callback_data": "ui:appeals"}, {"text": "Мой профиль", "callback_data": "ui:profile"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return "\n".join(lines).strip(), markup
         return self.public_home_text, {
             "inline_keyboard": [
-                [{"text": "Рейтинг", "callback_data": "ui:profile"}],
-                [{"text": "Ачивки: инструкция", "callback_data": "help:public_achievements"}],
-                [{"text": "Апелляция: инструкция", "callback_data": "help:public_appeal"}],
+                [{"text": "Мой профиль", "callback_data": "ui:profile"}, {"text": "Топы", "callback_data": "ui:top"}],
+                [{"text": "Апелляции", "callback_data": "ui:appeals"}],
             ]
         }
 
@@ -460,30 +520,24 @@ class ControlPanelRenderer:
         if section == "owner_root" and user_id == self.owner_user_id:
             text = (
                 "JARVIS • ПАНЕЛЬ ВЛАДЕЛЬЦА\n\n"
-                "Это центральная админ-панель проекта.\n"
-                "Здесь собраны все owner-команды, runtime-сводки, git/logs сценарии, работа с памятью чатов, файлами и live-data.\n\n"
+                "Это короткая owner-only панель без публичного и декоративного слоя.\n"
+                "Здесь оставлены только рабочие контуры: runtime, git/logs, память, модерация и автовосстановление.\n\n"
                 "Как пользоваться:\n"
                 "• разделы ниже открывают экраны с пояснениями и быстрыми сводками\n"
-                "• команды без параметров можно запускать прямо как отдельные команды из чата\n"
-                "• команды с параметрами здесь описаны с примерами и usage-шаблонами\n"
-                "• если нужен полный справочник без сокращений, открывай раздел «Все команды»\n\n"
+                "• команды с параметрами запускай текстом из owner-чата\n"
+                "• панель больше не пытается быть публичным help/меню для остальных\n\n"
                 "Разделы:\n"
-                "• Среда и рантайм: здоровье процесса, ресурсы, перезапуск, owner report\n"
-                "• Git и логи: ветка, коммиты, ошибки, upgrade\n"
-                "• Память и чаты: history, digest, recall, portraits, export\n"
-                "• Файлы и медиа: sdcard-команды, файлы, документы, media-context\n"
-                "• Live-данные: погода, курсы, новости, current-facts\n"
-                "• Автовосстановление: инциденты, статус, безопасные repair playbooks\n"
-                "• Модерация: санкции, предупреждения, welcome, appeals\n"
-                "• Все команды: полный текстовый реестр проекта"
+                "• Среда и рантайм: здоровье процесса, ресурсы, owner-report\n"
+                "• Git и логи: состояние дерева, хвост ошибок, последние коммиты\n"
+                "• Память: history, recall, digest, portraits, export\n"
+                "• Модерация: санкции, warnings, welcome, owner-report\n"
+                "• Автовосстановление: инциденты, статус, bounded repair playbooks"
             )
             markup = {
                 "inline_keyboard": [
                     [{"text": "Среда и рантайм", "callback_data": "ui:panel:owner_runtime"}, {"text": "Git и логи", "callback_data": "ui:panel:owner_git"}],
-                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}],
-                    [{"text": "Live-данные", "callback_data": "ui:panel:owner_live"}, {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
-                    [{"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
-                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
+                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
+                    [{"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
                     [{"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
@@ -497,8 +551,8 @@ class ControlPanelRenderer:
         if section == "owner_memory" and user_id == self.owner_user_id:
             text = (
                 "JARVIS • ПАМЯТЬ И ЧАТЫ\n\n"
-                "Раздел для памяти, поиска по событиям и анализа конкретных чатов/участников.\n"
-                "Подходит, когда нужно поднять историю, найти автора фразы, собрать digest или посмотреть профиль участника.\n\n"
+                "Owner-only контур памяти и поиска по истории.\n"
+                "Здесь только инженерные инструменты: поднять контекст, проверить память, собрать digest, найти источник фразы.\n\n"
                 "Команды раздела:\n"
                 "• /remember <факт> — записать факт в память чата\n"
                 "• /recall [запрос] — поднять релевантные факты и события\n"
@@ -516,11 +570,11 @@ class ControlPanelRenderer:
                 "• /reset — очистка контекста текущего чата\n\n"
                 "Подсказки:\n"
                 "• /history и /portrait можно вызывать через reply на сообщение\n"
-                "• /chatdigest полезен для групп, куда ты не хочешь писать команды прямо в чат"
+                "• это owner-инструменты, публичный memory/help слой для остальных отключён"
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}, {"text": "Live-данные", "callback_data": "ui:panel:owner_live"}],
+                    [{"text": "Среда и рантайм", "callback_data": "ui:panel:owner_runtime"}, {"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
                     [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
@@ -551,36 +605,7 @@ class ControlPanelRenderer:
             }
             return text, markup
         if section == "owner_live" and user_id == self.owner_user_id:
-            text = (
-                "JARVIS • LIVE-ДАННЫЕ\n\n"
-                "Раздел для всех live-data маршрутов.\n"
-                "Сюда относятся запросы, где важна свежесть данных: погода, курсы, рынок, новости, current facts.\n\n"
-                "Live-маршруты:\n"
-                "• погода\n"
-                "• курсы валют\n"
-                "• крипта\n"
-                "• акции\n"
-                "• новости\n"
-                "• current-facts по должностям и ролям\n\n"
-                "Как это работает:\n"
-                "• такие запросы идут не в обычный prompt, а в отдельные live-источники\n"
-                "• если источник не ответил, бот должен писать это честно\n"
-                "• current-fact запросы пытаются собрать короткий вывод по найденным источникам\n\n"
-                "Примеры:\n"
-                "• Погода в Брянске\n"
-                "• курс доллара\n"
-                "• цена btc\n"
-                "• последние новости по Apple\n"
-                "• кто сейчас президент Франции\n"
-                "• CEO OpenAI"
-            )
-            markup = {
-                "inline_keyboard": [
-                    [{"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}, {"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
-                    [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
-                ]
-            }
-            return text, markup
+            return self._build_owner_runtime_summary(bridge)
         if section == "owner_selfheal" and user_id == self.owner_user_id:
             owner_autofix_enabled = bridge.owner_autofix_enabled()
             owner_autofix_status = "включено" if owner_autofix_enabled else "выключено"
@@ -688,15 +713,15 @@ class ControlPanelRenderer:
             return "\n".join(lines), {"inline_keyboard": keyboard}
         if section == "owner_moderation" and user_id == self.owner_user_id:
             text = (
-                "JARVIS • МОДЕРАЦИЯ И АПЕЛЛЯЦИИ\n\n"
-                "Раздел для администрирования групп: санкции, auto-moderation, warns, welcome и appeals.\n"
-                "Здесь собраны команды и правила, которые сейчас реально действуют в runtime.\n\n"
+                "JARVIS • МОДЕРАЦИЯ\n\n"
+                "Owner-only контур модерации. Бот не ведёт публичный диалог и не обслуживает пользовательский help/UI.\n"
+                "Здесь только реальные санкции, предупреждения, welcome и owner-report по спорным кейсам.\n\n"
                 "Auto-moderation сейчас:\n"
                 "• auto-ban отключён\n"
                 "• бот сам даёт только warn или временный mute\n"
                 "• тяжёлые кейсы отправляются владельцу отдельным owner-report в ЛС\n"
-                "• бот не должен спорить с серией адресных оскорблений, а должен переходить к санкции\n"
-                "• /rules отдаёт правила группы\n\n"
+                "• owner-report должен содержать факт, контекст и предлагаемое решение\n"
+                "• бот не спорит с явными нарушениями, а переходит к санкции\n\n"
                 "Санкции:\n"
                 "• /ban /unban /mute /unmute /kick /tban /tmute\n"
                 "• цель можно задавать reply, @username или user_id\n"
@@ -708,24 +733,14 @@ class ControlPanelRenderer:
                 "• /setwarnmode\n"
                 "• /warntime\n"
                 "• /modlog\n\n"
-                "Reply UX:\n"
-                "• групповые ответы бота теперь по возможности идут reply на исходное сообщение\n"
-                "• это же касается обычных текстовых ответов, фото, документов и голосовых\n\n"
                 "Welcome:\n"
                 "• /welcome on|off|status\n"
                 "• /setwelcome <текст>\n"
-                "• /resetwelcome\n\n"
-                "Appeals:\n"
-                "• /appeals\n"
-                "• /appeal_review <id>\n"
-                "• /appeal_approve <id> [решение]\n"
-                "• /appeal_reject <id> [решение]\n\n"
-                "Если нужен UI-режим по appeals и moderation, используй кнопки ниже."
+                "• /resetwelcome"
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Кабинет модерации", "callback_data": "ui:adm:moderation"}, {"text": "Очередь апелляций", "callback_data": "ui:adm:queue"}],
-                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}],
+                    [{"text": "Кабинет модерации", "callback_data": "ui:adm:moderation"}, {"text": "Настройки warn", "callback_data": "ui:adm:warns"}],
                     [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
@@ -733,13 +748,9 @@ class ControlPanelRenderer:
         if section == "owner_commands" and user_id == self.owner_user_id:
             return self._build_owner_commands_panel(payload)
         if section == "profile":
-            text = bridge.legacy.render_rating(user_id)
-            keyboard = [[{"text": "Обновить", "callback_data": "ui:profile"}]]
-            if has_full_access:
-                keyboard.append([{"text": "Ачивки", "callback_data": "ui:achievements"}, {"text": "Топы", "callback_data": "ui:top"}])
-            keyboard.append([{"text": "Апелляции", "callback_data": "ui:appeals"}, {"text": "Главная", "callback_data": "ui:home"}])
-            markup = {"inline_keyboard": keyboard}
-            return text, markup
+            if user_id == self.owner_user_id:
+                return self.build_control_panel(bridge, user_id, "owner_root")
+            return self.build_public_control_panel(bridge, user_id, section, payload)
         if section == "achievements":
             text = "JARVIS • ДОСТИЖЕНИЯ\n\n" + bridge.legacy.render_achievements(user_id)
             markup = {
@@ -813,7 +824,9 @@ class ControlPanelRenderer:
             lines = [
                 "JARVIS • АПЕЛЛЯЦИИ",
                 "",
-                "Текущая проверка оснований:",
+                "Проверка строится по активным санкциям, предупреждениям и истории решений.",
+                "",
+                "Текущее состояние:",
                 f"• Активные баны: {len(snapshot.get('active_bans', []))}",
                 f"• Активные муты: {len(snapshot.get('active_mutes', []))}",
                 f"• Активные предупреждения: {snapshot.get('active_warnings', 0)}",
@@ -821,7 +834,7 @@ class ControlPanelRenderer:
                 f"• Legacy warnings: {snapshot.get('legacy_user_warnings', 0)}",
                 f"• Прошлые апелляции: {snapshot.get('past_appeals', 0)}",
                 "",
-                "Если активных оснований нет или срок санкции истек, система снимет ограничение автоматически.",
+                "Если активных оснований нет или срок санкции уже истёк, ограничение может быть снято автоматически.",
             ]
             if rows:
                 lines.extend(["", "Последние апелляции:"])
@@ -913,21 +926,9 @@ class ControlPanelRenderer:
                 ]
             }
             return "\n".join(lines), markup
-        text = (
-            "JARVIS • ЕДИНОЕ ОКНО\n\n"
-            "Все основные сценарии вынесены в кнопки и обновляются в одном сообщении.\n\n"
-            + bridge.legacy.render_dashboard_summary(user_id)
-        )
-        keyboard = [
-            [{"text": "Профиль", "callback_data": "ui:profile"}, {"text": "Ачивки", "callback_data": "ui:achievements"}],
-            [{"text": "Топы", "callback_data": "ui:top"}, {"text": "Апелляции", "callback_data": "ui:appeals"}],
-            [{"text": "Справка", "callback_data": "help:main"}],
-        ]
         if user_id == self.owner_user_id:
-            keyboard.insert(2, [{"text": "Модерация апелляций", "callback_data": "ui:adm:queue"}])
-            keyboard.insert(3, [{"text": "Кабинет модерации", "callback_data": "ui:adm:moderation"}])
-            keyboard.insert(4, [{"text": "Owner Panel", "callback_data": "ui:panel:owner_root"}])
-        return text, {"inline_keyboard": keyboard}
+            return self.build_control_panel(bridge, user_id, "owner_root")
+        return self.build_public_control_panel(bridge, user_id, section, payload)
 
 
 from typing import TYPE_CHECKING

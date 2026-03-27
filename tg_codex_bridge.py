@@ -260,13 +260,15 @@ GET_UPDATES_TIMEOUT = 25
 ERROR_BACKOFF_SECONDS = 3
 DEFAULT_CODEX_TIMEOUT = 180
 DEFAULT_CHAT_ROUTE_TIMEOUT = 60
-DEFAULT_HISTORY_LIMIT = 40
+DEFAULT_HISTORY_LIMIT = 120
 MIN_HISTORY_LIMIT = 10
-MAX_HISTORY_LIMIT = 64
+MAX_HISTORY_LIMIT = 512
 DEFAULT_MODE_NAME = "jarvis"
 MAX_SEEN_MESSAGES = 500
 MAX_HISTORY_ITEM_CHARS = 900
 MAX_CODEX_OUTPUT_CHARS = 12000
+DEFAULT_BRIDGE_CONTEXT_SOFT_LIMIT = 200000
+MAX_BRIDGE_CONTEXT_SOFT_LIMIT = 400000
 CODEX_PROGRESS_UPDATE_SECONDS = 6
 DEFAULT_STT_BACKEND = "disabled"
 DEFAULT_AUDIO_TRANSCRIBE_MODEL = ""
@@ -728,61 +730,37 @@ BASE_SYSTEM_PROMPT = ""
 
 HELP_TEXT = COMMANDS_LIST_TEXT
 PUBLIC_HELP_TEXT = (
-    "JARVIS • ИНСТРУКЦИЯ ДЛЯ ПОЛЬЗОВАТЕЛЯ\n\n"
-    "Доступно:\n"
-    "• весь рейтинг\n"
-    "• инструкция по ачивкам\n"
-    "• инструкция по апелляции\n\n"
-    "Для открытия инструкций используйте кнопки ниже."
+    "JARVIS • PUBLIC ENTRY\n\n"
+    "Открыт пользовательский контур: профиль, рейтинги и апелляции.\n"
+    "Доступно: /start, /rating, /top, /topweek, /topday, /appeal, /appeals.\n"
+    "Обычный диалог с Jarvis доступен только владельцу."
 )
 
 START_TEXT = (
-    "Jarvis online. Beta mode. /help"
+    "JARVIS online. Открыты профиль, рейтинги и апелляции. /start"
 )
 
 PUBLIC_HOME_TEXT = (
-    "JARVIS • ПОЛЬЗОВАТЕЛЬСКОЕ МЕНЮ\n\n"
-    "Статус: beta. Ответы полезные, но не абсолютная истина.\n\n"
-    "Доступно:\n"
-    "• рейтинг\n"
-    "• инструкция по ачивкам\n"
-    "• инструкция по апелляции"
+    "JARVIS • PUBLIC ENTRY\n\n"
+    "Здесь открыт пользовательский контур проекта:\n"
+    "• личный профиль и текущий рейтинг\n"
+    "• общие топы и срезы по времени\n"
+    "• подача и просмотр апелляций\n\n"
+    "Рейтинг помогает видеть динамику участия и вклад в сообщество.\n\n"
+    "Свободный диалог с Jarvis доступен только владельцу."
 )
 
-PUBLIC_ACHIEVEMENTS_HELP_TEXT = (
-    "JARVIS • ИНСТРУКЦИЯ ПО АЧИВКАМ\n\n"
-    "Что влияет на достижения:\n"
-    "• активность и количество сообщений\n"
-    "• полезность и качество сообщений\n"
-    "• участие в обсуждениях\n"
-    "• вклад в сообщество\n"
-    "• хорошее поведение и периоды без нарушений\n\n"
-    "Типы достижений:\n"
-    "• обычные\n"
-    "• редкие\n"
-    "• скрытые\n"
-    "• сезонные\n"
-    "• статусные\n"
-    "• престижные\n\n"
-    "Открытие и прогресс считаются автоматически."
-)
+PUBLIC_ACHIEVEMENTS_HELP_TEXT = PUBLIC_HOME_TEXT
 
 PUBLIC_APPEAL_HELP_TEXT = (
-    "JARVIS • ИНСТРУКЦИЯ ПО АПЕЛЛЯЦИИ\n\n"
-    "Чтобы подать апелляцию, используйте:\n"
-    "• /appeal <текст>\n\n"
-    "Что проверяет бот:\n"
-    "• активные баны и муты\n"
-    "• предупреждения\n"
-    "• подтверждённые нарушения\n"
-    "• срок наказания\n"
-    "• прошлые апелляции\n\n"
-    "Если оснований для ограничения нет, решение может пройти автоматически.\n"
-    "Если нужна ручная проверка, апелляция передаётся на рассмотрение."
+    "JARVIS • АПЕЛЛЯЦИИ\n\n"
+    "Если вы считаете санкцию ошибочной или уже неактуальной, используйте /appeal <текст> "
+    "или откройте экран апелляций через /appeals.\n"
+    "Система покажет текущие основания и историю прошлых решений."
 )
 
-PUBLIC_ALLOWED_COMMANDS = {"/start", "/help", "/rules", "/rating", "/top", "/topweek", "/topday", "/stats"}
-PUBLIC_ALLOWED_CALLBACKS = {
+PUBLIC_ALLOWED_COMMANDS: Set[str] = {"/start", "/rating", "/top", "/topweek", "/topday", "/appeal", "/appeals"}
+PUBLIC_ALLOWED_CALLBACKS: Set[str] = {
     "ui:home",
     "ui:profile",
     "ui:top",
@@ -792,9 +770,9 @@ PUBLIC_ALLOWED_CALLBACKS = {
     "ui:top:day",
     "ui:top:social",
     "ui:top:season",
-    "help:public",
-    "help:public_appeal",
-    "help:public_achievements",
+    "ui:appeals",
+    "ui:appeal:history",
+    "ui:appeal:new",
 }
 
 
@@ -813,6 +791,12 @@ class BotConfig:
             DEFAULT_HISTORY_LIMIT,
             minimum=MIN_HISTORY_LIMIT,
             maximum=MAX_HISTORY_LIMIT,
+        )
+        self.bridge_context_soft_limit = read_int_env(
+            "BRIDGE_CONTEXT_SOFT_LIMIT",
+            DEFAULT_BRIDGE_CONTEXT_SOFT_LIMIT,
+            minimum=16000,
+            maximum=MAX_BRIDGE_CONTEXT_SOFT_LIMIT,
         )
         self.default_mode = normalize_mode(os.getenv("DEFAULT_MODE", DEFAULT_MODE_NAME))
         self.safe_chat_only = read_bool_env("SAFE_CHAT_ONLY", DEFAULT_SAFE_CHAT_ONLY)
@@ -5667,9 +5651,6 @@ class TelegramBridge:
                 pass
             else:
                 log(f"blocked user_id={user_id} chat_id={chat_id}")
-                if chat_type in {"group", "supergroup"}:
-                    return
-                self.send_access_denied(chat_id)
                 return
 
         try:
@@ -6046,25 +6027,27 @@ class TelegramBridge:
             "ban": "бан",
         }
         lines = [
-            "AUTO MODERATION REPORT",
-            f"Чат: {chat_title}",
-            f"chat_id={chat_id}",
-            f"Участник: {target_label}",
-            f"user_id={target_user_id}",
-            f"Серьёзность: {severity_map.get(decision.severity, decision.severity)}",
-            f"Нарушение: {decision.public_reason}",
-            f"Код: {decision.code}",
-            f"Автодействие: {applied_map.get(applied_action, applied_action)}",
+            "OWNER REPORT • AUTO MODERATION",
             "",
-            "Текст сообщения:",
+            "Что произошло:",
+            f"• Чат: {chat_title}",
+            f"• chat_id={chat_id}",
+            f"• Участник: {target_label}",
+            f"• user_id={target_user_id}",
+            f"• Серьёзность: {severity_map.get(decision.severity, decision.severity)}",
+            f"• Нарушение: {decision.public_reason}",
+            f"• Код: {decision.code}",
+            f"• Автодействие: {applied_map.get(applied_action, applied_action)}",
+            "",
+            "Основание:",
             truncate_text(raw_text, 700),
             "",
-            "Что делать дальше:",
-            decision.suggested_owner_action or "Посмотреть контекст и принять ручное решение.",
+            "Решение владельца:",
+            f"• {decision.suggested_owner_action or 'Посмотреть контекст и принять ручное решение.'}",
             "",
-            "Быстрые варианты:",
-            "• ответить на сообщение участника: «сними мут»",
-            "• или использовать /mute /ban /unmute /unban вручную",
+            "Быстрые действия:",
+            "• reply в группе: «сними», «сними мут», «сними бан»",
+            "• вручную: /warn /mute /ban /unmute /unban",
         ]
         return "\n".join(lines)
 
@@ -7573,7 +7556,7 @@ class TelegramBridge:
                 initial_status=UPGRADE_RUNNING_TEXT,
                 sandbox_mode="danger-full-access",
                 approval_policy="never",
-                timeout_seconds=self.config.enterprise_task_timeout,
+                timeout_seconds=self.config.enterprise_task_timeout if self.config.enterprise_task_timeout is not None else 0,
             )
             self.state.append_history(chat_id, "user", f"[Upgrade request: {task}]")
             self.state.append_history(chat_id, "assistant", answer)
@@ -7740,8 +7723,12 @@ class TelegramBridge:
                 status_message_id = early_status_message_id
                 if status_message_id is None:
                     status_message_id = self.send_status_message(chat_id, f"{OWNER_AGENT_RUNNING_TEXT}\n\nСнимаю прямой runtime probe...")
-                if status_message_id is not None and self.edit_status_message(chat_id, status_message_id, report.answer):
-                    self.mark_answer_delivered_via_status(chat_id)
+                if status_message_id is not None:
+                    self.edit_status_message(
+                        chat_id,
+                        status_message_id,
+                        f"{OWNER_AGENT_RUNNING_TEXT}\n\n✔ Готово.\nРезультат отправлен отдельным сообщением.",
+                    )
             self.record_route_diagnostic(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -7779,7 +7766,7 @@ class TelegramBridge:
         if chat_type == "private" and route_decision.persona == "enterprise":
             effective_initial_status = (
                 f"{initial_status}\n\n"
-                f"{build_context_budget_status(prompt_len=preparation.prompt_len, history_items=preparation.history_items, history_limit=self.config.history_limit)}"
+                f"{build_context_budget_status(prompt_len=preparation.prompt_len, history_items=preparation.history_items, history_limit=self.config.history_limit, soft_limit=self.config.bridge_context_soft_limit)}"
             )
 
         if route_decision.use_workspace:
@@ -7790,7 +7777,7 @@ class TelegramBridge:
                 sandbox_mode="danger-full-access",
                 approval_policy="never",
                 json_output=True,
-                timeout_seconds=self.config.enterprise_task_timeout,
+                timeout_seconds=self.config.enterprise_task_timeout if self.config.enterprise_task_timeout is not None else 0,
                 progress_style="enterprise",
                 replace_status_with_answer=replace_status_with_answer,
                 status_message_id=early_status_message_id,
@@ -7840,8 +7827,6 @@ class TelegramBridge:
             started_at=started_at,
             query_text=user_text,
         )
-        if early_status_message_id is not None and self.edit_status_message(chat_id, early_status_message_id, report.answer):
-            self.mark_answer_delivered_via_status(chat_id)
         return report.answer
 
     def build_reply_context(self, chat_id: int, message: Optional[dict]) -> str:
@@ -9712,7 +9697,7 @@ def build_context_budget_status(
     prompt_len: int,
     history_items: int,
     history_limit: int,
-    soft_limit: int = 14000,
+    soft_limit: int = DEFAULT_BRIDGE_CONTEXT_SOFT_LIMIT,
 ) -> str:
     bounded_prompt = max(0, int(prompt_len))
     bounded_history = max(0, int(history_items))

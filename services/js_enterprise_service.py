@@ -38,6 +38,14 @@ class JSEnterpriseService:
     def __init__(self, deps: JSEnterpriseServiceDeps) -> None:
         self.deps = deps
 
+    @staticmethod
+    def _resolve_timeout(timeout_seconds: Optional[int], fallback_timeout: Optional[int]) -> Optional[int]:
+        if timeout_seconds is None:
+            return fallback_timeout
+        if timeout_seconds <= 0:
+            return None
+        return timeout_seconds
+
     def run(
         self,
         prompt: str,
@@ -140,7 +148,7 @@ class JSEnterpriseService:
         )
         stdin_command = command + ["-"]
         started_at = time.perf_counter()
-        effective_timeout = timeout_seconds if timeout_seconds is not None else self.deps.codex_timeout
+        effective_timeout = self._resolve_timeout(timeout_seconds, self.deps.codex_timeout)
 
         try:
             with self.deps.heartbeat_guard_factory():
@@ -253,6 +261,16 @@ class JSEnterpriseService:
         body = "\n".join(events[-24:])
         return f"{initial_status}\n\n{body}"
 
+    def _render_live_completion_text(self, initial_status: str, events: List[str], answer: str) -> str:
+        base = self._render_live_event_text(initial_status, events)
+        if answer in {self.deps.jarvis_offline_text, self.deps.upgrade_timeout_text}:
+            tail = "✖ Завершено с проблемой."
+        elif answer.startswith("Слишком долгий ответ.") or answer.startswith("Ошибка Enterprise Core:"):
+            tail = "⚠ Завершено с ошибкой."
+        else:
+            tail = "✔ Выполнение завершено."
+        return f"{base}\n\n{tail}".strip()
+
     def _append_live_event(self, events: List[str], text: str) -> None:
         clean = self.deps.normalize_whitespace_func(text)
         if not clean:
@@ -320,9 +338,9 @@ class JSEnterpriseService:
             json_output=True,
         )
         started_at = time.perf_counter()
-        effective_timeout = timeout_seconds if timeout_seconds is not None else self.deps.codex_timeout
+        effective_timeout = self._resolve_timeout(timeout_seconds, self.deps.codex_timeout)
         events: List[str] = []
-        answer_parts: List[str] = []
+        final_answer_text = ""
         stderr_parts: List[str] = []
         try:
             with self.deps.heartbeat_guard_factory():
@@ -370,7 +388,7 @@ class JSEnterpriseService:
                     if str(payload.get("type") or "") == "item.completed" and str(item.get("type") or "") == "agent_message":
                         text = self.deps.normalize_whitespace_func(str(item.get("text") or ""))
                         if text:
-                            answer_parts.append(text)
+                            final_answer_text = text
                     now = time.perf_counter()
                     if status_message_id is not None and now >= next_edit_at:
                         self.deps.edit_status_message_func(chat_id, status_message_id, self._render_live_event_text(initial_status, events))
@@ -382,7 +400,7 @@ class JSEnterpriseService:
                     if stderr_text:
                         stderr_parts.append(stderr_text)
                 process.wait()
-                stdout = "\n".join(answer_parts).strip()
+                stdout = final_answer_text.strip()
                 stderr = "\n".join(stderr_parts).strip()
                 answer = self._finalize_result(
                     stdout=stdout,
@@ -399,15 +417,22 @@ class JSEnterpriseService:
                 self.deps.edit_status_message_func(chat_id, status_message_id, f"{initial_status}\n\nНе удалось запустить Enterprise Core.")
             return self.deps.jarvis_offline_text
 
-        self.deps.finish_progress_status_func(
-            chat_id,
-            status_message_id,
-            initial_status,
-            answer,
-            "enterprise",
-            replace_status_with_answer,
-            "",
-        )
+        if status_message_id is not None and not replace_status_with_answer:
+            self.deps.edit_status_message_func(
+                chat_id,
+                status_message_id,
+                self._render_live_completion_text(initial_status, events, answer),
+            )
+        else:
+            self.deps.finish_progress_status_func(
+                chat_id,
+                status_message_id,
+                initial_status,
+                answer,
+                "enterprise",
+                replace_status_with_answer,
+                "",
+            )
         return answer
 
     def _retry_with_progress(
