@@ -13,6 +13,13 @@ if str(ROOT) not in sys.path:
 
 def main() -> int:
     os.environ.setdefault("BOT_TOKEN", "smoke-check-token")
+    smoke_tmpdir = TemporaryDirectory()
+    smoke_tmp_path = Path(smoke_tmpdir.name)
+    smoke_db_path = smoke_tmp_path / "smoke_check_memory.db"
+    smoke_legacy_db_path = smoke_tmp_path / "smoke_check_legacy.db"
+    os.environ["DB_PATH"] = str(smoke_db_path)
+    os.environ["LEGACY_JARVIS_DB_PATH"] = str(smoke_legacy_db_path)
+
     import tg_codex_bridge as bridge
     from handlers.ui_handlers import PANEL_TEXT_SAFE_LIMIT, fit_panel_text
     from services.auto_moderation import detect_auto_moderation_decision, get_group_rules_text
@@ -26,7 +33,7 @@ def main() -> int:
     state = bridge.BridgeState(
         bridge.DEFAULT_HISTORY_LIMIT,
         bridge.DEFAULT_MODE_NAME,
-        str(ROOT / bridge.DEFAULT_DB_PATH),
+        str(smoke_db_path),
     )
     try:
         snapshot = state.get_status_snapshot(bridge.OWNER_USER_ID)
@@ -188,8 +195,8 @@ def main() -> int:
         startup_playbook = next((playbook for playbook in playbooks if playbook.playbook_id == "restart_runtime"), None)
         if startup_playbook is None:
             raise RuntimeError("restart_runtime playbook missing for verifier checks")
-        with TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
+        with TemporaryDirectory() as verifier_tmpdir:
+            tmp_path = Path(verifier_tmpdir)
             log_path = tmp_path / "tg_codex_bridge.log"
             heartbeat_path = tmp_path / "tg_codex_bridge.heartbeat"
             heartbeat_path.write_text("ok", encoding="utf-8")
@@ -558,6 +565,7 @@ def main() -> int:
         return 0
     finally:
         state.db.close()
+        smoke_tmpdir.cleanup()
 
 
 if __name__ == "__main__":
