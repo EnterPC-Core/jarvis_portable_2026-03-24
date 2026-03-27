@@ -3,6 +3,7 @@
 *.db-shm
 *.db-wal
 *.log
+*.log.*.bak
 *.lock
 __pycache__/
 *.pyc
@@ -10,7 +11,10 @@ tools/__pycache__/
 node_modules/
 local/__pycache__/
 tg_supervisor.out
+tg_supervisor.out.*.bak
 tg_codex_bridge.heartbeat
 tg_manual.out
 .jarvis_supervisor.pid
 data/local-state.json
+supervisor_boot.log.*.bak
+data/runtime_backups/local_archives/
