@@ -50,7 +50,7 @@ OWNER_USERNAME=@...
 ### 3. Проверка синтаксиса
 
 ```bash
-python3 -m py_compile tg_codex_bridge.py
+python3 -m py_compile tg_codex_bridge.py enterprise_server.py services/*.py handlers/*.py
 python3 tools/smoke_check.py
 python3 tools/behavioral_check.py
 ```
@@ -84,21 +84,41 @@ sh start_jarvis_on_termux.sh
 
 ## Структура Репозитория
 
-- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — Telegram bridge: polling, Telegram handlers, orchestration и presentation
+- [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной runtime coordinator; здесь ещё живут `BridgeState`, media/task flow и часть orchestration
 - [`enterprise_server.py`](./enterprise_server.py) — отдельный локальный server для Enterprise jobs, session memory, runtime-control и persistent job storage
 - [`enterprise_worker.py`](./enterprise_worker.py) — отдельный worker-процесс, который исполняет конкретную Enterprise-задачу вне bridge-runtime
-- [`handlers/`](./handlers) — Telegram message handlers, command dispatch и command parsers
+- [`handlers/`](./handlers) — Telegram message handlers, callback transport, панели и dispatcher
+- [`services/`](./services) — основная зона декомпозиции монолита
+- [`services/bridge_state_schema.py`](./services/bridge_state_schema.py) — bootstrap схемы и миграции `BridgeState`
+- [`services/bridge_chat_state.py`](./services/bridge_chat_state.py) — chat history, facts, summaries, chat events
+- [`services/bridge_memory_profiles.py`](./services/bridge_memory_profiles.py) — participant/user memory, visual signals, message subjects, active subject
+- [`services/bridge_moderation_state.py`](./services/bridge_moderation_state.py) — moderation state, warnings, welcome, upgrade/task locks, dedupe
+- [`services/bridge_diagnostics_state.py`](./services/bridge_diagnostics_state.py) — request diagnostics, repair journal, self-heal incidents, world-state rows
+- [`services/ask_codex_service.py`](./services/ask_codex_service.py) — LLM orchestration wrapper, вынесенный из bridge
+- [`services/text_task_service.py`](./services/text_task_service.py) — text-task execution и recent chat report flow
+- [`services/reply_context_service.py`](./services/reply_context_service.py) — reply-context и active-subject resolver
+- [`services/enterprise_console_webapp.py`](./services/enterprise_console_webapp.py) — owner webapp/console HTML и server
+- [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — Telegram ingress/update dispatch вне monolith entrypoint
+- [`handlers/control_panel_renderer.py`](./handlers/control_panel_renderer.py) — owner/public inline UI и `Jarvis Control`
 - [`models/`](./models) — типизированные контракты: `RouteDecision`, `ContextBundle`, `SelfCheckReport`, `AttachmentBundle`, live records
 - [`router/`](./router) — deterministic routing policy и request classification без Telegram I/O
 - [`pipeline/`](./pipeline) — diagnostics/self-check enrichment и traceable response pipeline
 - [`owner/`](./owner) — owner/admin registry и command handlers для owner-ops
-- [`services/`](./services) — runtime services, memory services, live providers, discussion context, storage/repair helpers и compatibility layer для controlled migration
 - [`presentation/`](./presentation) — presentation contracts и user-facing answer models
 - [`utils/`](./utils) — текстовые, файловые, runtime и reporting helper-функции
 - [`prompts/`](./prompts) — короткие runtime profiles и prompt loader; prompt layer сведён к `jarvis` и `enterprise`
 - [`tools/`](./tools) — smoke/behavioral checks, runtime-backup export, repo refresh
 - [`data/runtime_backups/`](./data/runtime_backups) — schema и summary snapshot'ы для синхронизации runtime и GitHub
 - [`legacy_jarvis_adapter.py`](./legacy_jarvis_adapter.py) — мост к legacy `jarvis.db`
+
+## Текущее Состояние Декомпозиции
+
+Фактическое состояние проекта на сейчас:
+
+- `tg_codex_bridge.py` уже не единственный носитель state/orchestration; часть storage и task-flow вынесена в `services/bridge_*`, `ask_codex_service`, `text_task_service`, `reply_context_service`, `enterprise_console_webapp`, `handlers/update_dispatcher`
+- owner-only `Jarvis Control` живёт в inline owner-панели и не выводится в обычную пользовательскую панель
+- публичный контур ограничен рейтингами, профилем, топами и апелляциями; свободный диалог и runtime-команды остаются owner-only
+- главный остаточный монолит сейчас: часть `BridgeState`, media-task orchestration, `control_panel_renderer.py` и крупный regression suite
 
 ## Модель Доступа
 
@@ -209,7 +229,7 @@ sh tools/refresh_repo_state.sh
 
 ## Архитектура
 
-### Three Contours
+### Four Contours
 
 Теперь проект явнее разделён на четыре контура:
 

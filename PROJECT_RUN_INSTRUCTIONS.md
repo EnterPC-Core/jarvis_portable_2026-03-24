@@ -9,6 +9,15 @@
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной Telegram ↔ Enterprise Core bridge
 - [`enterprise_server.py`](./enterprise_server.py) — отдельный локальный сервер Enterprise
 - [`enterprise_worker.py`](./enterprise_worker.py) — отдельный worker для конкретной Enterprise-задачи
+- [`services/bridge_state_schema.py`](./services/bridge_state_schema.py) — schema/bootstrap `BridgeState`
+- [`services/bridge_chat_state.py`](./services/bridge_chat_state.py) — history/facts/summary/events
+- [`services/bridge_memory_profiles.py`](./services/bridge_memory_profiles.py) — participant memory, visual signals, active subject
+- [`services/bridge_moderation_state.py`](./services/bridge_moderation_state.py) — moderation/warn/welcome/task locks
+- [`services/bridge_diagnostics_state.py`](./services/bridge_diagnostics_state.py) — diagnostics, repair journal, self-heal state
+- [`services/text_task_service.py`](./services/text_task_service.py) — text-task execution
+- [`services/ask_codex_service.py`](./services/ask_codex_service.py) — codex orchestration wrapper
+- [`services/reply_context_service.py`](./services/reply_context_service.py) — reply-context and subject resolver
+- [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — Telegram ingress/update dispatch
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — supervisor для постоянного процесса
 - [`run_enterprise_supervisor.sh`](./run_enterprise_supervisor.sh) — supervisor для `enterprise_server.py`
 - [`restart_jarvis_supervisor.sh`](./restart_jarvis_supervisor.sh) — безопасный single-flight рестарт bridge-supervisor
@@ -208,7 +217,7 @@ pkill -f 'run_enterprise_supervisor.sh'
 ### Синтаксис
 
 ```bash
-python3 -m py_compile tg_codex_bridge.py
+python3 -m py_compile tg_codex_bridge.py enterprise_server.py services/*.py handlers/*.py
 ```
 
 ### Обновить runtime-backups для GitHub

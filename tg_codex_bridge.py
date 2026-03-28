@@ -322,6 +322,24 @@ from services.bridge_moderation_state import (
     try_start_chat_task as _try_start_chat_task_service,
     try_start_upgrade as _try_start_upgrade_service,
 )
+from services.bridge_diagnostics_state import (
+    count_self_heal_attempts as _count_self_heal_attempts_service,
+    find_recent_self_heal_incident as _find_recent_self_heal_incident_service,
+    get_recent_repair_journal as _get_recent_repair_journal_service,
+    get_recent_request_diagnostics as _get_recent_request_diagnostics_service,
+    get_recent_self_heal_incidents as _get_recent_self_heal_incidents_service,
+    get_self_heal_incident as _get_self_heal_incident_service,
+    get_world_state_rows as _get_world_state_rows_service,
+    has_recent_self_heal_incident as _has_recent_self_heal_incident_service,
+    record_repair_journal as _record_repair_journal_service,
+    record_request_diagnostic as _record_request_diagnostic_service,
+    record_self_heal_attempt as _record_self_heal_attempt_service,
+    record_self_heal_incident as _record_self_heal_incident_service,
+    record_self_heal_lesson as _record_self_heal_lesson_service,
+    record_self_heal_verification as _record_self_heal_verification_service,
+    update_self_heal_attempt as _update_self_heal_attempt_service,
+    update_self_heal_incident_state as _update_self_heal_incident_state_service,
+)
 from services.text_task_service import (
     run_recent_chat_report_task as _run_recent_chat_report_task_service,
     run_text_task as _run_text_task_service,
@@ -3191,69 +3209,39 @@ class BridgeState:
         latency_ms: int,
         query_text: str,
     ) -> None:
-        with self.db_lock:
-            self.db.execute(
-                """INSERT INTO request_diagnostics(
-                    chat_id, user_id, chat_type, persona, intent, route_kind, source_label,
-                    used_live, used_web, used_events, used_database, used_reply, used_workspace,
-                    guardrails, outcome, request_kind, response_mode, sources, tools_used, memory_used,
-                    confidence, freshness, notes, latency_ms, query_text
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    chat_id,
-                    user_id,
-                    chat_type,
-                    persona,
-                    intent,
-                    route_kind,
-                    source_label,
-                    1 if used_live else 0,
-                    1 if used_web else 0,
-                    1 if used_events else 0,
-                    1 if used_database else 0,
-                    1 if used_reply else 0,
-                    1 if used_workspace else 0,
-                    guardrails,
-                    outcome,
-                    truncate_text(request_kind, 40),
-                    truncate_text(response_mode, 40),
-                    truncate_text(sources, 400),
-                    truncate_text(tools_used, 400),
-                    truncate_text(memory_used, 400),
-                    max(0.0, min(1.0, float(confidence))),
-                    truncate_text(freshness, 80),
-                    truncate_text(normalize_whitespace(notes), 600),
-                    max(0, int(latency_ms)),
-                    truncate_text(normalize_whitespace(query_text), 900),
-                ),
-            )
-            self.db.commit()
+        _record_request_diagnostic_service(
+            self,
+            chat_id,
+            user_id,
+            chat_type,
+            persona,
+            intent,
+            route_kind,
+            source_label,
+            request_kind,
+            used_live,
+            used_web,
+            used_events,
+            used_database,
+            used_reply,
+            used_workspace,
+            guardrails,
+            outcome,
+            response_mode,
+            sources,
+            tools_used,
+            memory_used,
+            confidence,
+            freshness,
+            notes,
+            latency_ms,
+            query_text,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
 
     def get_recent_request_diagnostics(self, limit: int = 8, chat_id: Optional[int] = None) -> List[sqlite3.Row]:
-        effective_limit = max(1, min(30, int(limit)))
-        with self.db_lock:
-            if chat_id is None:
-                rows = self.db.execute(
-                    """SELECT created_at, chat_id, user_id, chat_type, persona, intent, route_kind, source_label,
-                              used_live, used_web, used_events, used_database, used_reply, used_workspace,
-                              guardrails, outcome, latency_ms, query_text
-                       FROM request_diagnostics
-                       ORDER BY id DESC
-                       LIMIT ?""",
-                    (effective_limit,),
-                ).fetchall()
-            else:
-                rows = self.db.execute(
-                    """SELECT created_at, chat_id, user_id, chat_type, persona, intent, route_kind, source_label,
-                              used_live, used_web, used_events, used_database, used_reply, used_workspace,
-                              guardrails, outcome, latency_ms, query_text
-                       FROM request_diagnostics
-                       WHERE chat_id = ?
-                       ORDER BY id DESC
-                       LIMIT ?""",
-                    (chat_id, effective_limit),
-                ).fetchall()
-        return rows
+        return _get_recent_request_diagnostics_service(self, limit, chat_id)
 
     def record_repair_journal(
         self,
@@ -3266,45 +3254,24 @@ class BridgeState:
         verification_result: str = "",
         notes: str = "",
     ) -> None:
-        with self.db_lock:
-            self.db.execute(
-                """INSERT INTO repair_journal(
-                    signal_code, playbook_id, status, summary, evidence, verification_result, notes
-                ) VALUES(?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    truncate_text(signal_code, 80),
-                    truncate_text(playbook_id, 120),
-                    truncate_text(status, 40),
-                    truncate_text(normalize_whitespace(summary), 300),
-                    truncate_text(normalize_whitespace(evidence), 500),
-                    truncate_text(normalize_whitespace(verification_result), 300),
-                    truncate_text(normalize_whitespace(notes), 500),
-                ),
-            )
-            self.db.commit()
+        _record_repair_journal_service(
+            self,
+            signal_code=signal_code,
+            playbook_id=playbook_id,
+            status=status,
+            summary=summary,
+            evidence=evidence,
+            verification_result=verification_result,
+            notes=notes,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
 
     def get_recent_repair_journal(self, limit: int = 8) -> List[sqlite3.Row]:
-        effective_limit = max(1, min(20, int(limit)))
-        with self.db_lock:
-            return self.db.execute(
-                """SELECT created_at, signal_code, playbook_id, status, summary, evidence, verification_result, notes
-                   FROM repair_journal
-                   ORDER BY id DESC
-                   LIMIT ?""",
-                (effective_limit,),
-            ).fetchall()
+        return _get_recent_repair_journal_service(self, limit)
 
     def has_recent_self_heal_incident(self, problem_type: str, signal_code: str, window_seconds: int = 900) -> bool:
-        with self.db_lock:
-            row = self.db.execute(
-                """SELECT 1 FROM self_heal_incidents
-                   WHERE problem_type = ? AND signal_code = ?
-                     AND updated_at >= strftime('%s','now') - ?
-                   ORDER BY id DESC
-                   LIMIT 1""",
-                (problem_type, signal_code, max(60, int(window_seconds))),
-            ).fetchone()
-        return row is not None
+        return _has_recent_self_heal_incident_service(self, problem_type, signal_code, window_seconds)
 
     def record_self_heal_incident(
         self,
@@ -3321,34 +3288,22 @@ class BridgeState:
         confidence: float,
         suggested_playbook: str = "",
     ) -> int:
-        with self.db_lock:
-            cursor = self.db.execute(
-                """INSERT INTO self_heal_incidents(
-                    problem_type, signal_code, state, severity, summary, evidence, risk_level, autonomy_level,
-                    source, confidence, suggested_playbook
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    truncate_text(problem_type, 80),
-                    truncate_text(signal_code, 80),
-                    truncate_text(state, 40),
-                    truncate_text(severity, 40),
-                    truncate_text(normalize_whitespace(summary), 300),
-                    truncate_text(normalize_whitespace(evidence), 600),
-                    truncate_text(risk_level, 40),
-                    truncate_text(autonomy_level, 40),
-                    truncate_text(source, 80),
-                    max(0.0, min(1.0, float(confidence))),
-                    truncate_text(suggested_playbook, 120),
-                ),
-            )
-            incident_id = int(cursor.lastrowid or 0)
-            self.db.execute(
-                """INSERT INTO self_heal_transitions(incident_id, from_state, to_state, note)
-                   VALUES(?, ?, ?, ?)""",
-                (incident_id, "", truncate_text(state, 40), "incident detected"),
-            )
-            self.db.commit()
-        return incident_id
+        return _record_self_heal_incident_service(
+            self,
+            problem_type=problem_type,
+            signal_code=signal_code,
+            state_value=state,
+            severity=severity,
+            summary=summary,
+            evidence=evidence,
+            risk_level=risk_level,
+            autonomy_level=autonomy_level,
+            source=source,
+            confidence=confidence,
+            suggested_playbook=suggested_playbook,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
 
     def update_self_heal_incident_state(
         self,
@@ -3359,38 +3314,16 @@ class BridgeState:
         verification_status: str = "",
         lesson_text: str = "",
     ) -> None:
-        with self.db_lock:
-            current = self.db.execute(
-                "SELECT state FROM self_heal_incidents WHERE id = ?",
-                (incident_id,),
-            ).fetchone()
-            previous_state = str(current["state"] or "") if current else ""
-            self.db.execute(
-                """UPDATE self_heal_incidents
-                   SET state = ?, verification_status = CASE WHEN ? != '' THEN ? ELSE verification_status END,
-                       lesson_text = CASE WHEN ? != '' THEN ? ELSE lesson_text END,
-                       updated_at = strftime('%s','now')
-                   WHERE id = ?""",
-                (
-                    truncate_text(new_state, 40),
-                    verification_status,
-                    truncate_text(verification_status, 80),
-                    lesson_text,
-                    truncate_text(normalize_whitespace(lesson_text), 600),
-                    incident_id,
-                ),
-            )
-            self.db.execute(
-                """INSERT INTO self_heal_transitions(incident_id, from_state, to_state, note)
-                   VALUES(?, ?, ?, ?)""",
-                (
-                    incident_id,
-                    truncate_text(previous_state, 40),
-                    truncate_text(new_state, 40),
-                    truncate_text(normalize_whitespace(note), 300),
-                ),
-            )
-            self.db.commit()
+        _update_self_heal_incident_state_service(
+            self,
+            incident_id,
+            new_state=new_state,
+            note=note,
+            verification_status=verification_status,
+            lesson_text=lesson_text,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
 
     def record_self_heal_attempt(
         self,
@@ -3408,29 +3341,22 @@ class BridgeState:
         stdout_log: Sequence[str] = (),
         stderr_log: Sequence[str] = (),
     ) -> int:
-        with self.db_lock:
-            cursor = self.db.execute(
-                """INSERT INTO self_heal_attempts(
-                    incident_id, playbook_id, state, status, execution_summary, executed_steps_json, failed_step,
-                    artifacts_changed_json, verification_required, notes, stdout_json, stderr_json
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    incident_id,
-                    truncate_text(playbook_id, 120),
-                    truncate_text(state, 40),
-                    truncate_text(status, 40),
-                    truncate_text(normalize_whitespace(execution_summary), 400),
-                    truncate_text(json.dumps(list(executed_steps), ensure_ascii=False), 4000),
-                    truncate_text(failed_step, 120),
-                    truncate_text(json.dumps(list(artifacts_changed), ensure_ascii=False), 2000),
-                    1 if verification_required else 0,
-                    truncate_text(normalize_whitespace(notes), 800),
-                    truncate_text(json.dumps(list(stdout_log), ensure_ascii=False), 4000),
-                    truncate_text(json.dumps(list(stderr_log), ensure_ascii=False), 4000),
-                ),
-            )
-            self.db.commit()
-        return int(cursor.lastrowid or 0)
+        return _record_self_heal_attempt_service(
+            self,
+            incident_id=incident_id,
+            playbook_id=playbook_id,
+            state_value=state,
+            status=status,
+            execution_summary=normalize_whitespace(execution_summary),
+            executed_steps=executed_steps,
+            failed_step=failed_step,
+            artifacts_changed=artifacts_changed,
+            verification_required=verification_required,
+            notes=normalize_whitespace(notes),
+            stdout_log=stdout_log,
+            stderr_log=stderr_log,
+            truncate_text_func=truncate_text,
+        )
 
     def update_self_heal_attempt(
         self,
@@ -3441,28 +3367,16 @@ class BridgeState:
         execution_summary: str = "",
         notes: str = "",
     ) -> None:
-        with self.db_lock:
-            current = self.db.execute(
-                """SELECT state, status, execution_summary, notes
-                   FROM self_heal_attempts
-                   WHERE id = ?""",
-                (attempt_id,),
-            ).fetchone()
-            if current is None:
-                return
-            self.db.execute(
-                """UPDATE self_heal_attempts
-                   SET state = ?, status = ?, execution_summary = ?, notes = ?
-                   WHERE id = ?""",
-                (
-                    truncate_text(state or str(current["state"] or ""), 40),
-                    truncate_text(status or str(current["status"] or ""), 40),
-                    truncate_text(normalize_whitespace(execution_summary or str(current["execution_summary"] or "")), 400),
-                    truncate_text(normalize_whitespace(notes or str(current["notes"] or "")), 800),
-                    attempt_id,
-                ),
-            )
-            self.db.commit()
+        _update_self_heal_attempt_service(
+            self,
+            attempt_id,
+            state_value=state,
+            status=status,
+            execution_summary=execution_summary,
+            notes=notes,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
 
     def record_self_heal_verification(
         self,
@@ -3477,110 +3391,46 @@ class BridgeState:
         regressions_detected: Sequence[str] = (),
         notes: str = "",
     ) -> int:
-        with self.db_lock:
-            cursor = self.db.execute(
-                """INSERT INTO self_heal_verifications(
-                    incident_id, attempt_id, verified, before_state_json, after_state_json, confidence,
-                    remaining_issues_json, regressions_json, notes
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    incident_id,
-                    attempt_id,
-                    1 if verified else 0,
-                    truncate_text(json.dumps(before_state, ensure_ascii=False, sort_keys=True), 4000),
-                    truncate_text(json.dumps(after_state, ensure_ascii=False, sort_keys=True), 4000),
-                    max(0.0, min(1.0, float(confidence))),
-                    truncate_text(json.dumps(list(remaining_issues), ensure_ascii=False), 2000),
-                    truncate_text(json.dumps(list(regressions_detected), ensure_ascii=False), 2000),
-                    truncate_text(normalize_whitespace(notes), 800),
-                ),
-            )
-            self.db.commit()
-        return int(cursor.lastrowid or 0)
+        return _record_self_heal_verification_service(
+            self,
+            incident_id=incident_id,
+            attempt_id=attempt_id,
+            verified=verified,
+            before_state=before_state,
+            after_state=after_state,
+            confidence=confidence,
+            remaining_issues=remaining_issues,
+            regressions_detected=regressions_detected,
+            notes=notes,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
 
     def record_self_heal_lesson(self, *, incident_id: int, lesson_key: str, lesson_text: str, confidence: float = 0.5) -> int:
-        with self.db_lock:
-            cursor = self.db.execute(
-                """INSERT INTO self_heal_lessons(incident_id, lesson_key, lesson_text, confidence)
-                   VALUES(?, ?, ?, ?)""",
-                (
-                    incident_id,
-                    truncate_text(lesson_key, 120),
-                    truncate_text(normalize_whitespace(lesson_text), 800),
-                    max(0.0, min(1.0, float(confidence))),
-                ),
-            )
-            self.db.commit()
-        return int(cursor.lastrowid or 0)
+        return _record_self_heal_lesson_service(
+            self,
+            incident_id=incident_id,
+            lesson_key=lesson_key,
+            lesson_text=lesson_text,
+            confidence=confidence,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
 
     def get_recent_self_heal_incidents(self, limit: int = 8) -> List[sqlite3.Row]:
-        effective_limit = max(1, min(20, int(limit)))
-        with self.db_lock:
-            return self.db.execute(
-                """SELECT id, problem_type, signal_code, state, severity, summary, evidence, risk_level,
-                          autonomy_level, source, confidence, suggested_playbook, verification_status, lesson_text, created_at, updated_at
-                   FROM self_heal_incidents
-                   ORDER BY id DESC
-                   LIMIT ?""",
-                (effective_limit,),
-            ).fetchall()
+        return _get_recent_self_heal_incidents_service(self, limit)
 
     def get_self_heal_incident(self, incident_id: int) -> Optional[sqlite3.Row]:
-        with self.db_lock:
-            row = self.db.execute(
-                """SELECT id, problem_type, signal_code, state, severity, summary, evidence, risk_level,
-                          autonomy_level, source, confidence, suggested_playbook, verification_status, lesson_text, created_at, updated_at
-                   FROM self_heal_incidents
-                   WHERE id = ?""",
-                (incident_id,),
-            ).fetchone()
-        return row
+        return _get_self_heal_incident_service(self, incident_id)
 
     def find_recent_self_heal_incident(self, problem_type: str, signal_code: str, window_seconds: int = 3600) -> Optional[sqlite3.Row]:
-        with self.db_lock:
-            row = self.db.execute(
-                """SELECT id, problem_type, signal_code, state, severity, summary, evidence, risk_level,
-                          autonomy_level, source, confidence, suggested_playbook, verification_status, lesson_text, created_at, updated_at
-                   FROM self_heal_incidents
-                   WHERE problem_type = ? AND signal_code = ?
-                     AND updated_at >= strftime('%s','now') - ?
-                   ORDER BY id DESC
-                   LIMIT 1""",
-                (problem_type, signal_code, max(60, int(window_seconds))),
-            ).fetchone()
-        return row
+        return _find_recent_self_heal_incident_service(self, problem_type, signal_code, window_seconds)
 
     def count_self_heal_attempts(self, incident_id: int) -> int:
-        with self.db_lock:
-            row = self.db.execute(
-                "SELECT COUNT(*) FROM self_heal_attempts WHERE incident_id = ?",
-                (incident_id,),
-            ).fetchone()
-        return int(row[0] or 0) if row else 0
+        return _count_self_heal_attempts_service(self, incident_id)
 
     def get_world_state_rows(self, category: str = "", limit: int = 10) -> List[sqlite3.Row]:
-        effective_limit = max(1, min(30, int(limit)))
-        with self.db_lock:
-            if category:
-                rows = self.db.execute(
-                    """SELECT state_key, category, status, value_text, value_number, source, confidence,
-                              ttl_seconds, verification_method, stale_flag, updated_at
-                       FROM world_state_registry
-                       WHERE category = ?
-                       ORDER BY updated_at DESC
-                       LIMIT ?""",
-                    (category, effective_limit),
-                ).fetchall()
-            else:
-                rows = self.db.execute(
-                    """SELECT state_key, category, status, value_text, value_number, source, confidence,
-                              ttl_seconds, verification_method, stale_flag, updated_at
-                       FROM world_state_registry
-                       ORDER BY updated_at DESC
-                       LIMIT ?""",
-                    (effective_limit,),
-                ).fetchall()
-        return rows
+        return _get_world_state_rows_service(self, category, limit)
 
     def get_meta(self, key: str, default: str = "") -> str:
         with self.db_lock:

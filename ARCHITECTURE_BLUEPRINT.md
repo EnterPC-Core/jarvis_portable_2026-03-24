@@ -27,10 +27,32 @@ Primary routing domains:
 
 This keeps source permissions explicit instead of relying on stacked heuristics.
 
+## 2.1 Current Extraction Status
+
+This blueprint is no longer purely aspirational. The following slices are already extracted from the legacy monolith:
+
+- `handlers/update_dispatcher.py`
+- `services/bridge_state_schema.py`
+- `services/bridge_chat_state.py`
+- `services/bridge_memory_profiles.py`
+- `services/bridge_moderation_state.py`
+- `services/bridge_diagnostics_state.py`
+- `services/reply_context_service.py`
+- `services/text_task_service.py`
+- `services/ask_codex_service.py`
+- `services/enterprise_console_webapp.py`
+
+Current residual monolith areas:
+
+- `BridgeState` still owns a meaningful amount of repository/state wiring
+- media-task orchestration still lives in `tg_codex_bridge.py`
+- `handlers/control_panel_renderer.py` remains a large UI renderer
+- `tests/test_runtime_regressions.py` remains a large regression umbrella file
+
 ## 3. Module Responsibilities
 
 - `tg_codex_bridge.py`
-  runtime entrypoint and coordinator only: Telegram polling, orchestration, process lifecycle, module wiring
+  runtime entrypoint and coordinator; now progressively reduced toward Telegram polling, process lifecycle and module wiring
 - `models/contracts.py`
   canonical typed contracts for `RouteDecision`, `ContextBundle`, `SelfCheckReport`, `AttachmentBundle`, `LiveProviderRecord`
 - `router/request_router.py`
@@ -46,7 +68,9 @@ This keeps source permissions explicit instead of relying on stacked heuristics.
 - `handlers/`
   Telegram message handlers, callback/UI flow, command dispatch and parser normalization
 - `handlers/control_panel_renderer.py`
-  owner/public panel rendering separated from callback transport and bridge lifecycle
+  owner/public panel rendering separated from callback transport and bridge lifecycle; still a candidate for further split
+- `handlers/update_dispatcher.py`
+  Telegram update ingress and dispatch separated from bridge lifecycle
 - `services/live_gateway.py`
   normalized live-provider access, provider status, live route execution surface
 - `services/runtime_service.py`
@@ -55,6 +79,16 @@ This keeps source permissions explicit instead of relying on stacked heuristics.
   AI-assisted refresh for chat memory summaries and user memory summaries
 - `services/bridge_runtime_text.py`
   stateless text/access/help/group-trigger helpers used by bridge compatibility wrappers
+- `services/bridge_state_schema.py`
+  `BridgeState` schema bootstrap, compatibility migrations and seed helpers
+- `services/bridge_chat_state.py`
+  chat history, events, summary and fact persistence extracted from `BridgeState`
+- `services/bridge_memory_profiles.py`
+  user/participant memory, visual signals, message subjects and active subject state
+- `services/bridge_moderation_state.py`
+  moderation/warn/welcome/task lock persistence extracted from `BridgeState`
+- `services/bridge_diagnostics_state.py`
+  request diagnostics, repair journal, self-heal state and world-state row access
 - `services/bridge_file_helpers.py`
   stateless sdcard/file/media helper wrappers used by bridge compatibility wrappers
 - `services/bridge_ops_helpers.py`
@@ -86,6 +120,7 @@ Controlled migration note:
 - `services/route_contracts.py`, `services/diagnostics_pipeline.py` and `services/admin_registry.py`
   remain as compatibility layers that re-export or bridge to the new package layout
 - bridge helper wrappers are now progressively backed by `services/bridge_runtime_text.py`, `services/bridge_file_helpers.py` and `services/bridge_ops_helpers.py`
+- storage/state compatibility wrappers are now progressively backed by `services/bridge_state_schema.py`, `services/bridge_chat_state.py`, `services/bridge_memory_profiles.py`, `services/bridge_moderation_state.py` and `services/bridge_diagnostics_state.py`
 - this keeps behavior stable while reducing the legacy file incrementally instead of rewriting it in one pass
 
 ## 4. Improved Data Contracts

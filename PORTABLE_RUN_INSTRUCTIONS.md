@@ -18,6 +18,15 @@
 - [`tg_codex_bridge.py`](./tg_codex_bridge.py) — основной runtime
 - [`enterprise_server.py`](./enterprise_server.py) — отдельный server для Enterprise-задач
 - [`enterprise_worker.py`](./enterprise_worker.py) — worker для выполнения конкретной задачи
+- [`services/bridge_state_schema.py`](./services/bridge_state_schema.py) — schema/bootstrap state
+- [`services/bridge_chat_state.py`](./services/bridge_chat_state.py) — chat-state storage
+- [`services/bridge_memory_profiles.py`](./services/bridge_memory_profiles.py) — memory/visual/subject storage
+- [`services/bridge_moderation_state.py`](./services/bridge_moderation_state.py) — moderation state
+- [`services/bridge_diagnostics_state.py`](./services/bridge_diagnostics_state.py) — diagnostics and self-heal state
+- [`services/ask_codex_service.py`](./services/ask_codex_service.py) — codex orchestration
+- [`services/text_task_service.py`](./services/text_task_service.py) — text-task flow
+- [`services/reply_context_service.py`](./services/reply_context_service.py) — reply and active-subject context
+- [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — update ingress
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — удержание процесса
 - [`run_enterprise_supervisor.sh`](./run_enterprise_supervisor.sh) — удержание `enterprise_server.py`
 - [`restart_jarvis_supervisor.sh`](./restart_jarvis_supervisor.sh) — безопасный рестарт bridge
@@ -64,7 +73,7 @@ cp .env.example .env
 ```bash
 codex --help
 node -v
-python3 -m py_compile tg_codex_bridge.py
+python3 -m py_compile tg_codex_bridge.py enterprise_server.py services/*.py handlers/*.py
 ```
 
 ## Запуск
