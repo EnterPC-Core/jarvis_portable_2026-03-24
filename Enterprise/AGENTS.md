@@ -7,7 +7,7 @@
 - живёт только в `projects/bots/jarvis_portable_2026-03-24/Enterprise`
 - повторяет только подтверждённые официальными открытыми исходниками UI и behavior patterns
 - использует только `Enterprise Core` как runtime backend для ИИ
-- собирает APK только через GitLab CI/CD
+- собирает APK через GitHub Actions и GitLab CI/CD
 
 ## Жёсткий рабочий путь
 
@@ -99,7 +99,7 @@ PATH=/home/userland/.nvm/versions/node/v18.20.8/bin:$PATH \
 - сначала `typecheck`
 - потом `vite build`
 - потом `cap sync android`
-- тяжёлую APK-сборку считать GitLab-задачей, а не обязательным локальным шагом
+- тяжёлую APK-сборку считать CI-задачей, а не обязательным локальным шагом
 
 ## Правила коммитов
 
@@ -108,14 +108,14 @@ PATH=/home/userland/.nvm/versions/node/v18.20.8/bin:$PATH \
 - `chore: initialize Enterprise workspace`
 - `docs: add source map and dependency audit`
 - `feat: scaffold Enterprise app shell and adapter`
-- `ci: add GitLab APK pipelines`
+- `ci: add Enterprise APK pipelines`
 
 Не смешивать несвязанные изменения.
 
-## Правила GitLab CI/CD
+## Правила CI/CD
 
-- только GitLab pipeline
-- не добавлять GitHub Actions
+- GitHub Actions workflow в корне репозитория собирает APK из `Enterprise`
+- GitLab pipeline внутри `Enterprise` остаётся валидным альтернативным путём
 - debug APK как artifact
 - release APK как artifact, либо явный blocker artifact при отсутствии signing variables
 

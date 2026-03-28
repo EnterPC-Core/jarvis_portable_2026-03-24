@@ -15,7 +15,7 @@ Android-приложение `Enterprise`, целиком расположенн
 
 - `React + Vite + TypeScript`
 - `Capacitor Android`
-- `GitLab CI/CD` для APK
+- `GitHub Actions` и `GitLab CI/CD` для APK
 
 Это минимальное отклонение от официальных web reference-проектов `openai-chatkit-starter-app` и `openai-chatkit-advanced-samples`: UI остаётся максимально близким к подтверждённым React/Vite паттернам, а Android APK получается через стандартный Capacitor wrapper.
 
@@ -27,7 +27,8 @@ Android-приложение `Enterprise`, целиком расположенн
 - Enterprise Core adapter с реальным `POST /api/jobs` и polling `GET /api/jobs/{id}`
 - runtime health panel поверх `/health` и `/api/runtime/status`
 - Android wrapper в `android/`
-- GitLab pipeline для debug APK и release APK/signing flow
+- GitHub Actions workflow для debug APK и release APK/signing flow
+- GitLab pipeline для того же Android tree
 
 ## Что намеренно не выдумывается
 
@@ -79,19 +80,37 @@ PATH=/home/userland/.nvm/versions/node/v18.20.8/bin:$PATH \
 /home/userland/.nvm/versions/node/v18.20.8/lib/node_modules/npm/bin/npm-cli.js run android:sync
 ```
 
-Локальная полноценная APK-сборка не является обязательной. Основной сценарий сборки APK вынесен в GitLab CI/CD.
+Локальная полноценная APK-сборка не является обязательной. Основной сценарий сборки APK вынесен в CI.
 
-## GitLab CI/CD
+## CI/CD
 
-Файл pipeline: [`.gitlab-ci.yml`](/home/userland/projects/bots/jarvis_portable_2026-03-24/Enterprise/.gitlab-ci.yml)
+Файлы:
 
-Pipeline делает:
+- [enterprise-android.yml](/home/userland/projects/bots/jarvis_portable_2026-03-24/.github/workflows/enterprise-android.yml)
+- [`.gitlab-ci.yml`](/home/userland/projects/bots/jarvis_portable_2026-03-24/Enterprise/.gitlab-ci.yml)
+
+GitHub Actions делает:
+
+- `verify_web` — `npm ci`, `typecheck`, `build`, `cap sync android`
+- `build_debug_apk` — собирает `app-debug.apk`
+- `build_release_apk` — либо собирает signed `app-release.apk`, либо кладёт blocker artifact
+
+GitLab делает:
 
 - `verify_web` — `npm ci`, `typecheck`, `build`, `cap sync android`
 - `build_debug_apk` — собирает `app-debug.apk`
 - `build_release_apk` — либо собирает signed `app-release.apk`, либо кладёт в artifacts явный файл с отсутствующими переменными
 
-## GitLab variables для release signing
+## Secrets / Variables для release signing
+
+GitHub secrets:
+
+- `ENTERPRISE_RELEASE_KEYSTORE_BASE64`
+- `ENTERPRISE_RELEASE_STORE_PASSWORD`
+- `ENTERPRISE_RELEASE_KEY_ALIAS`
+- `ENTERPRISE_RELEASE_KEY_PASSWORD`
+
+GitLab variables:
 
 - `ENTERPRISE_RELEASE_KEYSTORE_BASE64`
 - `ENTERPRISE_RELEASE_STORE_PASSWORD`
