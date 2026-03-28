@@ -115,6 +115,7 @@ Portable-сборка не делает за тебя:
 
 - бот стартует без traceback
 - heartbeat обновляется
+- supervisor не запускает второй bridge поверх уже живого healthy процесса
 - `enterprise_server` жив отдельно от bridge
 - `/restart` не делает self-restart и не роняет runtime
 - `Jarvis` отвечает в личке

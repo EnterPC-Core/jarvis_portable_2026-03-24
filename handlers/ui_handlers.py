@@ -181,7 +181,7 @@ class UIHandlers:
                 if data == "ui:top":
                     self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "top_menu")
                     return
-                if len(parts) == 3 and parts[1] == "top":
+                if len(parts) >= 3 and parts[1] == "top":
                     mapping = {
                         "all": "top_all",
                         "history": "top_history",
@@ -189,9 +189,18 @@ class UIHandlers:
                         "day": "top_day",
                         "social": "top_social",
                         "season": "top_season",
+                        "reactions": "top_reactions_received",
+                        "given": "top_reactions_given",
+                        "activity": "top_activity",
+                        "behavior": "top_behavior",
+                        "achievements": "top_achievements",
+                        "messages": "top_messages",
+                        "helpful": "top_helpful",
+                        "streak": "top_streak",
                     }
                     section = mapping.get(parts[2], "top_menu")
-                    self.edit_control_panel(bridge, chat_id, user_id, int(message_id), section)
+                    payload = parts[3] if len(parts) >= 4 else ""
+                    self.edit_control_panel(bridge, chat_id, user_id, int(message_id), section, payload)
                     return
                 if data == "ui:appeals":
                     self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "appeals")
@@ -217,6 +226,35 @@ class UIHandlers:
                 if user_id == self.owner_user_id and data == "ui:adm:moderation":
                     self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "admin_moderation")
                     return
+                if user_id == self.owner_user_id and data == "ui:adm:warns":
+                    self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "admin_warns")
+                    return
+                if user_id == self.owner_user_id and len(parts) >= 4 and parts[1] == "warncfg":
+                    action = parts[2].strip().lower()
+                    if action == "chat" and len(parts) >= 4:
+                        self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "admin_warns", parts[3])
+                        return
+                    if action == "limit" and len(parts) >= 5:
+                        target_chat_id = int(parts[3])
+                        warn_limit = int(parts[4])
+                        bridge.state.set_warn_limit(target_chat_id, warn_limit)
+                        self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "admin_warns", str(target_chat_id))
+                        return
+                    if action == "mode" and len(parts) >= 5:
+                        target_chat_id = int(parts[3])
+                        if len(parts) >= 6:
+                            warn_mode = f"{parts[4]}:{parts[5]}"
+                        else:
+                            warn_mode = parts[4]
+                        bridge.state.set_warn_mode(target_chat_id, warn_mode)
+                        self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "admin_warns", str(target_chat_id))
+                        return
+                    if action == "ttl" and len(parts) >= 5:
+                        target_chat_id = int(parts[3])
+                        warn_ttl = int(parts[4])
+                        bridge.state.set_warn_time(target_chat_id, warn_ttl)
+                        self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "admin_warns", str(target_chat_id))
+                        return
                 if user_id == self.owner_user_id and len(parts) == 4 and parts[1] == "adm" and parts[2] == "view":
                     self.edit_control_panel(bridge, chat_id, user_id, int(message_id), "admin_appeal_detail", parts[3])
                     return

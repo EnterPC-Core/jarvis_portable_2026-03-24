@@ -44,7 +44,10 @@ def has_public_command_access(text: str, *, allowed_commands: Set[str]) -> bool:
 
 
 def has_public_callback_access(data: str, *, allowed_callbacks: Set[str]) -> bool:
-    return (data or "").strip() in allowed_callbacks
+    normalized = (data or "").strip()
+    if normalized in allowed_callbacks:
+        return True
+    return any(normalized.startswith(f"{allowed}:") for allowed in allowed_callbacks)
 
 
 def contains_profanity(text: str) -> bool:

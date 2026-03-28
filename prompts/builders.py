@@ -162,14 +162,11 @@ def build_prompt(
     chat_memory_text: str = "",
     summary_memory_text: str = "",
 ) -> str:
-    del (
-        mode_prompts,
-        detect_intent_func,
-        response_shape_hint_func,
-        base_system_prompt,
-    )
+    del mode_prompts, base_system_prompt
     profile = load_runtime_profile(mode, default=default_mode_name)
     system_prefix = f"{profile.system_prompt}\n\n" if profile.system_prompt else ""
+    intent = detect_intent_func(user_text)
+    response_shape_hint = response_shape_hint_func(intent)
     if is_simple_greeting(user_text):
         return (
             f"{system_prefix}"
@@ -207,6 +204,7 @@ def build_prompt(
         )
         return (
             f"{system_prefix}"
+            f"Response contract:\n{response_shape_hint}\n\n"
             f"{user_memory_block}"
             f"Relevant chat context:\n{history_block}\n\n"
             f"User message:\n{user_text}"
@@ -214,14 +212,27 @@ def build_prompt(
     history_block = format_history(history, user_text, truncate_text_func, max_history_item_chars)
     attachment_block = f"Attachment note:\n{attachment_note}\n\n" if attachment_note else ""
     reply_block = f"Reply context:\n{truncate_text_func(reply_context, 2200)}\n\n" if reply_context else ""
+    discussion_block = f"Discussion context:\n{truncate_text_func(discussion_context, 2600)}\n\n" if discussion_context else ""
     user_memory_block = f"User profile:\n{truncate_text_func(user_memory_text, 900)}\n\n" if user_memory_text else ""
+    relation_memory_block = (
+        f"Relation memory:\n{truncate_text_func(relation_memory_text, 1400)}\n\n" if relation_memory_text else ""
+    )
+    chat_memory_block = f"Chat memory:\n{truncate_text_func(chat_memory_text, 1800)}\n\n" if chat_memory_text else ""
+    summary_memory_block = (
+        f"Summary memory:\n{truncate_text_func(summary_memory_text, 1000)}\n\n" if summary_memory_text else ""
+    )
     del route_summary, guardrail_note
     del identity_label, include_identity_prompt, persona_note, owner_note
     return (
         f"{system_prefix}"
+        f"Response contract:\n{response_shape_hint}\n\n"
         f"{attachment_block}"
         f"{reply_block}"
+        f"{discussion_block}"
         f"{user_memory_block}"
+        f"{relation_memory_block}"
+        f"{chat_memory_block}"
+        f"{summary_memory_block}"
         f"Relevant chat context:\n{history_block}\n\n"
         f"User message:\n{user_text}\n\n"
         "Ответь пользователю."

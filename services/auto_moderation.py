@@ -99,6 +99,32 @@ TOXIC_TONE_PATTERNS = (
     r"\bобласкать\b",
 )
 
+SOFT_CONFLICT_PATTERNS = (
+    r"\bбред\b",
+    r"\bчуш(?:ь)?\b",
+    r"\bерунда\b",
+    r"\bфигня\b",
+    r"\bсказки\b",
+    r"\bчепуха\b",
+    r"\bне\s+свисти\b",
+    r"\bпургу\b",
+    r"\bпритянуто\b",
+)
+
+UNVERIFIED_FACT_PATTERNS = (
+    r"\bэто\s+факт\b",
+    r"\b100%\b",
+    r"\bсто\s+процент",
+    r"\bточно\b",
+    r"\bбез\s+вариантов\b",
+    r"\bгарантир",
+    r"\bдоказано\b",
+    r"\bочевидно\b",
+    r"\bполучит\s+доступ\s+к\s+руту\b",
+    r"\bпрошивк\w+\s+под\s+себя\b",
+    r"\bвсе\s+данные\s+давно\s+есть\b",
+)
+
 MODERATION_CHALLENGE_PATTERNS = (
     r"\bразве\s+это\s+оскорблен",
     r"\bэто\s+разве\s+оскорблен",
@@ -237,8 +263,11 @@ def detect_auto_moderation_decision(
     has_targeted_abuse = _contains_pattern(normalized_text, TARGETED_ABUSE_PATTERNS)
     has_severe_abuse = _contains_pattern(normalized_text, SEVERE_ABUSE_PATTERNS)
     has_toxic_tone = _contains_pattern(normalized_text, TOXIC_TONE_PATTERNS)
+    has_soft_conflict = _contains_pattern(normalized_text, SOFT_CONFLICT_PATTERNS)
+    has_unverified_fact = _contains_pattern(normalized_text, UNVERIFIED_FACT_PATTERNS)
     challenges_moderation = _contains_pattern(normalized_text, MODERATION_CHALLENGE_PATTERNS)
     recent_toxic_count = _recent_toxic_count(recent_texts, contains_profanity_func)
+    recent_conflict_count = sum(1 for item in recent_texts[-5:] if _contains_pattern(item, SOFT_CONFLICT_PATTERNS))
 
     if targets_user and (has_severe_abuse or (has_profanity and has_targeted_abuse)):
         return AutoModerationDecision(
@@ -326,6 +355,26 @@ def detect_auto_moderation_decision(
             suggested_owner_action="Если это разовый срыв, хватит мута. Если паттерн повторяется, решать вручную.",
             mute_seconds=30 * 60,
             add_warning=True,
+        )
+    if has_unverified_fact and (has_soft_conflict or recent_conflict_count >= 1):
+        return AutoModerationDecision(
+            code="disinfo_risk_deescalation",
+            action="deescalate",
+            reason="мягкое вмешательство: спорные утверждения без подтверждения в разогретом споре",
+            public_reason="стоп, отделяем личный опыт от проверяемых фактов. Спорные утверждения без подтверждения не подаем как установленную истину; если есть источник, приносите его.",
+            severity="low",
+            suggested_owner_action="Наблюдать. Если спор уйдёт в личные выпады или навязчивую дезинформацию, уже включать санкции.",
+            delete_message=False,
+        )
+    if (targets_user or recent_conflict_count >= 2) and has_soft_conflict and not has_profanity and not has_targeted_abuse:
+        return AutoModerationDecision(
+            code="soft_conflict_deescalation",
+            action="deescalate",
+            reason="мягкое вмешательство: спор разогревается и уходит в пикировку",
+            public_reason="сбавим температуру. Спорьте по сути, без подколов и перехода на личности; сначала формулируем тезис, потом аргумент.",
+            severity="low",
+            suggested_owner_action="Обычно хватает короткого охлаждения диалога. Если после этого начнутся адресные выпады, тогда уже warn/mute.",
+            delete_message=False,
         )
     if is_all_pedals_chat(chat_title) and has_profanity:
         return AutoModerationDecision(

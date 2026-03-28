@@ -177,17 +177,24 @@ class JSEnterpriseService:
         limited_snapshot["events"] = displayed_events[-24:]
         return limited_snapshot
 
+    def _wrap_rerouted_answer(self, *, source_chat_id: int, delivery_chat_id: Optional[int], answer: str) -> str:
+        if delivery_chat_id in {None, 0, source_chat_id}:
+            return answer
+        return f"Отчёт из чата {source_chat_id}:\n\n{answer}"
+
     def wait_for_job(
         self,
         *,
         job_id: str,
         chat_id: int,
+        progress_chat_id: int,
         initial_status: str,
         status_message_id: Optional[int],
         effective_timeout: Optional[int],
         progress_style: str,
         replace_status_with_answer: bool,
         target_label: str,
+        delivery_chat_id: Optional[int],
         postprocess: bool,
         approval_policy: Optional[str],
         sandbox_mode: Optional[str],
@@ -208,9 +215,14 @@ class JSEnterpriseService:
                         "Задача оборвалась во время рестарта: Enterprise больше не видит этот job_id. "
                         "Нужен повторный запуск."
                     )
+                    lost_answer = self._wrap_rerouted_answer(
+                        source_chat_id=chat_id,
+                        delivery_chat_id=delivery_chat_id,
+                        answer=lost_answer,
+                    )
                     if status_message_id is not None:
                         self.deps.edit_status_message_func(
-                            chat_id,
+                            progress_chat_id,
                             status_message_id,
                             f"{initial_status}\n\n⚠ Завершение\n└ Задача потеряна после рестарта",
                         )
@@ -222,11 +234,11 @@ class JSEnterpriseService:
                 break
             now = time.perf_counter()
             if now >= next_update_at:
-                self.deps.send_chat_action_func(chat_id, "typing")
+                self.deps.send_chat_action_func(progress_chat_id, "typing")
                 if status_message_id is not None:
                     render_snapshot = self._stepwise_events_snapshot(snapshot, displayed_events)
                     self.deps.edit_status_message_func(
-                        chat_id,
+                        progress_chat_id,
                         status_message_id,
                         self._render_remote_events_text(initial_status, render_snapshot),
                     )
@@ -235,11 +247,11 @@ class JSEnterpriseService:
             if effective_timeout is not None and elapsed >= effective_timeout:
                 self.deps.log_func(
                     "таймаут ожидания Enterprise "
-                    f"chat={chat_id} timeout={effective_timeout} style={progress_style}"
+                    f"chat={chat_id} progress_chat={progress_chat_id} timeout={effective_timeout} style={progress_style}"
                 )
                 if status_message_id is not None:
                     self.deps.edit_status_message_func(
-                        chat_id,
+                        progress_chat_id,
                         status_message_id,
                         f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.",
                     )
@@ -269,13 +281,13 @@ class JSEnterpriseService:
                     if self.deps.normalize_whitespace_func(str(item))
                 ][-24:]
             self.deps.edit_status_message_func(
-                chat_id,
+                progress_chat_id,
                 status_message_id,
                 self._render_remote_completion_text(initial_status, final_snapshot, answer),
             )
         else:
             self.deps.finish_progress_status_func(
-                chat_id,
+                progress_chat_id,
                 status_message_id,
                 initial_status,
                 answer,
@@ -344,9 +356,13 @@ class JSEnterpriseService:
         replace_status_with_answer: bool = False,
         show_status_message: bool = True,
         target_label: str = "",
+        delivery_chat_id: Optional[int] = None,
     ) -> str:
+        progress_chat_id = int(delivery_chat_id or chat_id or 0)
+        if progress_chat_id == 0:
+            progress_chat_id = chat_id
         if show_status_message and status_message_id is None:
-            status_message_id = self.deps.send_status_message_func(chat_id, initial_status)
+            status_message_id = self.deps.send_status_message_func(progress_chat_id, initial_status)
         effective_timeout = self._resolve_timeout(timeout_seconds, self.deps.codex_timeout)
 
         try:
@@ -372,11 +388,13 @@ class JSEnterpriseService:
                         {
                             "job_id": job_id,
                             "chat_id": chat_id,
+                            "progress_chat_id": progress_chat_id,
                             "status_message_id": status_message_id,
                             "initial_status": initial_status,
                             "progress_style": progress_style,
                             "replace_status_with_answer": replace_status_with_answer,
                             "target_label": target_label,
+                            "delivery_chat_id": int(delivery_chat_id or 0),
                             "postprocess": postprocess,
                             "approval_policy": approval_policy or "",
                             "sandbox_mode": sandbox_mode or "",
@@ -386,12 +404,14 @@ class JSEnterpriseService:
                 return self.wait_for_job(
                     job_id=job_id,
                     chat_id=chat_id,
+                    progress_chat_id=progress_chat_id,
                     initial_status=initial_status,
                     status_message_id=status_message_id,
                     effective_timeout=effective_timeout,
                     progress_style=progress_style,
                     replace_status_with_answer=replace_status_with_answer,
                     target_label=target_label,
+                    delivery_chat_id=delivery_chat_id,
                     postprocess=postprocess,
                     approval_policy=approval_policy,
                     sandbox_mode=sandbox_mode,
@@ -400,7 +420,7 @@ class JSEnterpriseService:
             self.deps.log_func(f"не удалось связаться с Enterprise во время выполнения: {error}")
             if status_message_id is not None:
                 self.deps.edit_status_message_func(
-                    chat_id,
+                    progress_chat_id,
                     status_message_id,
                     f"{initial_status}\n\nНе удалось запустить Enterprise Core.",
                 )

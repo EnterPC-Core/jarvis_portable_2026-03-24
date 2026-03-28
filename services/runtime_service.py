@@ -77,8 +77,10 @@ class RuntimeService:
         heartbeat_kill_age_seconds = max(0, now_ts - last_heartbeat_kill_at) if last_heartbeat_kill_at else -1
         state_payload = {
             "git_dirty_count": len(dirty_lines),
-            "recent_errors_count": severe_errors_count,
-            "recent_warning_count": warning_count,
+            "recent_errors_count": int(runtime_snapshot.get("session_severe_error_count", 0)),
+            "recent_warning_count": int(runtime_snapshot.get("session_warning_count", 0)),
+            "window_errors_count": severe_errors_count,
+            "window_warning_count": warning_count,
             "recent_events_count": len(recent_events),
             "live_failures_count": int(live_failures or 0),
             "web_failures_count": int(web_failures or 0),
@@ -120,7 +122,9 @@ class RuntimeService:
             category="runtime",
             status=runtime_status,
             value_text=(
-                f"errors={severe_errors_count}; warnings={warning_count}; restarts={restart_count}; "
+                f"errors_session={int(runtime_snapshot.get('session_severe_error_count', 0))}; "
+                f"warnings_session={int(runtime_snapshot.get('session_warning_count', 0))}; "
+                f"errors_24h={severe_errors_count}; warnings_24h={warning_count}; restarts={restart_count}; "
                 f"heartbeat_kills={heartbeat_kill_count}; events={len(recent_events)}; memory_due={memory_due}; "
                 f"last_error_age_s={severe_error_age_seconds if severe_error_age_seconds >= 0 else 'n/a'}; "
                 f"upgrade_active={'yes' if bridge.state.global_upgrade_active else 'no'}"
@@ -248,8 +252,10 @@ class RuntimeService:
             "unresolved_task_pressure": f"open tasks={int(state_payload.get('unresolved_tasks_count', 0))}; active_chat_tasks={len(bridge.state.chat_tasks_in_progress)}",
             "doc_sync_pressure": f"docs/runtime drift entries={int(state_payload.get('docs_drift_count', 0))}",
             "runtime_risk_pressure": (
-                f"errors={int(state_payload.get('recent_errors_count', 0))}; "
-                f"warnings={int(state_payload.get('recent_warning_count', 0))}; "
+                f"errors_session={int(state_payload.get('recent_errors_count', 0))}; "
+                f"warnings_session={int(state_payload.get('recent_warning_count', 0))}; "
+                f"errors_24h={int(state_payload.get('window_errors_count', 0))}; "
+                f"warnings_24h={int(state_payload.get('window_warning_count', 0))}; "
                 f"live_failures={int(state_payload.get('live_failures_count', 0))}; "
                 f"heartbeat_kills={int(state_payload.get('heartbeat_kill_count', 0))}; "
                 f"upgrade_active={int(state_payload.get('upgrade_active', 0))}"

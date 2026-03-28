@@ -16,6 +16,7 @@ DEFAULT_HEARTBEAT_PATH = "enterprise_server.heartbeat"
 DEFAULT_LOG_PATH = "enterprise_server.log"
 DEFAULT_JOBS_DIR = "enterprise_jobs"
 DEFAULT_SESSIONS_DIR = "enterprise_sessions"
+DEFAULT_RUNTIME_CONFIG_PATH = "enterprise_runtime_config.json"
 JOB_RETENTION_SECONDS = 3600
 SESSION_HISTORY_LIMIT = 12
 PROTECTED_SERVER_CORE_PATHS = (
@@ -130,6 +131,63 @@ def load_env(script_dir: Path) -> None:
     if nvm_node_bin.joinpath("node").exists():
         current_path = os.environ.get("PATH", "")
         os.environ["PATH"] = f"{nvm_node_bin}:{current_path}" if current_path else str(nvm_node_bin)
+
+
+class EnterpriseRuntimeConfigStore:
+    def __init__(self, config_path: Path) -> None:
+        self.config_path = config_path
+        self.lock = threading.RLock()
+        self._config = self._load()
+
+    def _default_config(self) -> dict:
+        return {
+            "model": normalize_whitespace(os.getenv("ENTERPRISE_RUNTIME_MODEL", "")),
+            "runtime_prompt": normalize_whitespace(os.getenv("ENTERPRISE_RUNTIME_PROMPT", "")),
+            "updated_at": now_ts(),
+        }
+
+    def _load(self) -> dict:
+        default_config = self._default_config()
+        if not self.config_path.exists():
+            self._persist(default_config)
+            return default_config
+        try:
+            payload = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self._persist(default_config)
+            return default_config
+        if not isinstance(payload, dict):
+            self._persist(default_config)
+            return default_config
+        return {
+            "model": truncate_text(normalize_whitespace(str(payload.get("model") or default_config["model"])), 120),
+            "runtime_prompt": truncate_text(
+                normalize_whitespace(str(payload.get("runtime_prompt") or default_config["runtime_prompt"])),
+                12000,
+            ),
+            "updated_at": float(payload.get("updated_at") or default_config["updated_at"]),
+        }
+
+    def _persist(self, payload: dict) -> None:
+        self.config_path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return dict(self._config)
+
+    def update(self, payload: dict) -> dict:
+        with self.lock:
+            next_config = {
+                "model": truncate_text(normalize_whitespace(str(payload.get("model") or "")), 120),
+                "runtime_prompt": truncate_text(normalize_whitespace(str(payload.get("runtime_prompt") or "")), 12000),
+                "updated_at": now_ts(),
+            }
+            self._config = next_config
+            self._persist(next_config)
+            return dict(next_config)
 
 
 class RuntimeControl:

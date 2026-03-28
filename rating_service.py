@@ -80,7 +80,7 @@ def clean_display_name(value: object, fallback: str = "Участник", limit:
 
 
 def top_limit() -> int:
-    return 100
+    return 10000
 
 
 def block(title: str, lines: Sequence[str]) -> str:
@@ -106,6 +106,7 @@ def compact_metric(label: str, value: int) -> str:
 
 
 MAX_TELEGRAM_TEXT = 3900
+TOP_PAGE_SIZE = 10
 
 
 class RatingService:
@@ -273,21 +274,71 @@ class RatingService:
                 return index, len(ordered)
         return len(ordered), len(ordered)
 
-    def _render_top(self, title: str, key: str, value_label: str, secondary_key: str = "total_score", secondary_label: str = "Рейтинг") -> str:
+    def _paginate_rows(self, rows: Sequence[object], page: int) -> Tuple[List[object], int, int]:
+        total_rows = len(rows)
+        total_pages = max(1, (total_rows + TOP_PAGE_SIZE - 1) // TOP_PAGE_SIZE)
+        current_page = max(1, min(page, total_pages))
+        start = (current_page - 1) * TOP_PAGE_SIZE
+        return list(rows[start:start + TOP_PAGE_SIZE]), current_page, total_pages
+
+    def _render_paginated_rows(
+        self,
+        rows: Sequence[object],
+        *,
+        title: str,
+        page: int,
+        line_builder,
+        empty_text: str,
+    ) -> str:
+        if not rows:
+            return empty_text
+        page_rows, current_page, total_pages = self._paginate_rows(rows, page)
+        start_index = (current_page - 1) * TOP_PAGE_SIZE
+        lines: List[str] = [f"{title} • {current_page}/{total_pages}", ""]
+        for offset, row in enumerate(page_rows, start=start_index):
+            lines.extend(line_builder(offset, row))
+        lines.extend([
+            "",
+            f"Показано {start_index + 1}-{start_index + len(page_rows)} из {len(rows)}.",
+            "Листай кнопками ниже.",
+        ])
+        return self._fit_telegram_text(lines)
+
+    def _render_top(
+        self,
+        title: str,
+        key: str,
+        value_label: str,
+        secondary_key: str = "total_score",
+        secondary_label: str = "Рейтинг",
+        page: int = 1,
+    ) -> str:
+        selected_columns = [
+            "user_id",
+            "first_name",
+            "username",
+            "level",
+            "prestige",
+            "rank_name",
+            "rank_badge",
+            "total_score",
+            "season_score",
+            key,
+        ]
+        if secondary_key and secondary_key not in selected_columns:
+            selected_columns.append(secondary_key)
         with self.repository.connect() as conn:
             rows = conn.execute(
-                f"""SELECT user_id, first_name, username, level, prestige, rank_name, rank_badge, total_score, season_score, {key}
+                f"""SELECT {", ".join(selected_columns)}
                 FROM progression_profiles
+                WHERE {key} > 0
                 ORDER BY {key} DESC, total_score DESC
                 LIMIT {top_limit()}"""
             ).fetchall()
-        if not rows:
-            return "📊 Топ пока пуст."
-        lines: List[str] = [title, ""]
-        for idx, row in enumerate(rows):
+        def build_line(idx: int, row: object) -> List[str]:
             label = clean_display_name(row["first_name"] or row["username"] or str(row["user_id"]), limit=22)
             rank_marker = ordinal_marker(idx)
-            lines.append(f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}")
+            lines = [f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}"]
             primary_value = safe_int(row[key])
             meta_parts = [compact_metric(value_label, primary_value)]
             if secondary_key and secondary_key != key:
@@ -298,7 +349,14 @@ class RatingService:
             if key != "season_score" and secondary_key != "season_score" and season_value not in {primary_value, 0}:
                 meta_parts.append(compact_metric("Сезон", season_value))
             lines.append("   " + " • ".join(meta_parts))
-        return self._fit_telegram_text(lines)
+            return lines
+        return self._render_paginated_rows(
+            rows,
+            title=title,
+            page=page,
+            line_builder=build_line,
+            empty_text="📊 Топ пока пуст.",
+        )
 
     def _fit_telegram_text(self, lines: Sequence[str], max_len: int = MAX_TELEGRAM_TEXT) -> str:
         if not lines:
@@ -316,14 +374,14 @@ class RatingService:
         if trimmed:
             suffix = ""
             if result:
-                suffix = "\n\nПоказана верхняя часть списка. Полный ТОП-100 лучше выводить страницами."
+                suffix = "\n\nПоказана верхняя часть списка. Полный рейтинг лучше выводить страницами."
                 while result and current_len + len(suffix) > max_len:
                     removed = result.pop()
                     current_len -= len(removed) + (1 if result else 0)
             return "\n".join(result) + suffix
         return "\n".join(result)
 
-    def render_top_current(self) -> str:
+    def render_top_current(self, page: int = 1) -> str:
         with self.repository.connect() as conn:
             rows = conn.execute(
                 f"""SELECT p.user_id, p.first_name, p.username, p.level, p.total_score,
@@ -332,57 +390,61 @@ class RatingService:
                 LEFT JOIN score_events se ON se.user_id = p.user_id AND {self._non_legacy_filter_sql('se')}
                 GROUP BY p.user_id
                 HAVING current_score > 0
-                ORDER BY current_score DESC, p.total_score DESC
-                LIMIT ?""",
-                (top_limit(),),
+                ORDER BY current_score DESC, p.total_score DESC"""
             ).fetchall()
-        if not rows:
-            return "📊 Новый топ пока пуст."
-        lines: List[str] = ["🚀 ТОП-100 • НОВЫЙ РЕЙТИНГ", ""]
-        for idx, row in enumerate(rows):
+        def build_line(idx: int, row: object) -> List[str]:
             label = clean_display_name(row["first_name"] or row["username"] or str(row["user_id"]), limit=22)
             rank_marker = ordinal_marker(idx)
-            lines.append(f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}")
+            lines = [f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}"]
             current_score = safe_int(row["current_score"])
             total_score = safe_int(row["total_score"])
             meta_parts = [compact_metric("Новый рейтинг", current_score)]
             if total_score != current_score:
                 meta_parts.append(compact_metric("Исторический рейтинг", total_score))
             lines.append("   " + " • ".join(meta_parts))
-        return self._fit_telegram_text(lines)
+            return lines
+        return self._render_paginated_rows(
+            rows,
+            title="🚀 ТОП • НОВЫЙ РЕЙТИНГ",
+            page=page,
+            line_builder=build_line,
+            empty_text="📊 Новый топ пока пуст.",
+        )
 
-    def render_top_historical(self) -> str:
-        return self._render_top("🏛️ ТОП-100 • ИСТОРИЧЕСКИЙ РЕЙТИНГ", "total_score", "Исторический рейтинг", secondary_key="", secondary_label="")
+    def render_top_historical(self, page: int = 1) -> str:
+        return self._render_top("🏛️ ТОП • ИСТОРИЧЕСКИЙ РЕЙТИНГ", "total_score", "Исторический рейтинг", secondary_key="", secondary_label="", page=page)
 
-    def render_top_all_time(self) -> str:
-        return self.render_top_current()
+    def render_top_all_time(self, page: int = 1) -> str:
+        return self.render_top_current(page=page)
 
-    def render_top_week(self) -> str:
+    def render_top_week(self, page: int = 1) -> str:
         with self.repository.connect() as conn:
             rows = conn.execute(
                 """SELECT user_id, first_name, username, level, prestige, rank_name, rank_badge, total_score, season_score, weekly_score
                 FROM progression_profiles
                 WHERE weekly_score > 0
-                ORDER BY weekly_score DESC, total_score DESC
-                LIMIT ?""",
-                (top_limit(),),
+                ORDER BY weekly_score DESC, total_score DESC"""
             ).fetchall()
-        if not rows:
-            return "📊 За неделю пока нет новой активности."
-        lines: List[str] = ["⭐ ТОП-100 • НЕДЕЛЯ", ""]
-        for idx, row in enumerate(rows):
+        def build_line(idx: int, row: object) -> List[str]:
             label = clean_display_name(row["first_name"] or row["username"] or str(row["user_id"]), limit=22)
             rank_marker = ordinal_marker(idx)
-            lines.append(f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}")
+            lines = [f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}"]
             primary_value = safe_int(row["weekly_score"])
             total_score = safe_int(row["total_score"])
             meta_parts = [compact_metric("Очки за неделю", primary_value)]
             if total_score != primary_value:
                 meta_parts.append(compact_metric("Исторический рейтинг", total_score))
             lines.append("   " + " • ".join(meta_parts))
-        return self._fit_telegram_text(lines)
+            return lines
+        return self._render_paginated_rows(
+            rows,
+            title="⭐ ТОП • НЕДЕЛЯ",
+            page=page,
+            line_builder=build_line,
+            empty_text="📊 За неделю пока нет новой активности.",
+        )
 
-    def render_top_day(self) -> str:
+    def render_top_day(self, page: int = 1) -> str:
         with self.repository.connect() as conn:
             since_ts = int(time.time()) - 86400
             rows = conn.execute(
@@ -392,52 +454,185 @@ class RatingService:
                 LEFT JOIN score_events se ON se.user_id = p.user_id AND se.created_at >= ? AND se.event_type != 'legacy_import' AND instr(COALESCE(se.metadata_json, '{}'), 'legacy_bootstrap') = 0
                 GROUP BY p.user_id
                 HAVING day_score > 0
-                ORDER BY day_score DESC, p.total_score DESC
-                LIMIT ?""",
-                (since_ts, top_limit()),
+                ORDER BY day_score DESC, p.total_score DESC""",
+                (since_ts,),
             ).fetchall()
-        if not rows:
-            return "📊 Топ пока пуст."
-        lines = ["🔥 ТОП-100 • СЕГОДНЯ", ""]
-        for idx, row in enumerate(rows):
+        def build_line(idx: int, row: object) -> List[str]:
             label = clean_display_name(row["first_name"] or row["username"] or row["user_id"], limit=22)
             rank_marker = ordinal_marker(idx)
-            lines.append(f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}")
+            lines = [f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}"]
             day_score = safe_int(row["day_score"])
             total_score = safe_int(row["total_score"])
             meta_parts = [compact_metric("Очки за день", day_score)]
             if total_score != day_score:
                 meta_parts.append(compact_metric("Исторический рейтинг", total_score))
             lines.append("   " + " • ".join(meta_parts))
-        return self._fit_telegram_text(lines)
+            return lines
+        return self._render_paginated_rows(
+            rows,
+            title="🔥 ТОП • СЕГОДНЯ",
+            page=page,
+            line_builder=build_line,
+            empty_text="📊 Топ пока пуст.",
+        )
 
-    def render_top_social(self) -> str:
-        return self._render_top("🤝 ТОП-100 • ВКЛАД", "contribution_score", "Очки вклада", secondary_key="total_score", secondary_label="Исторический рейтинг")
+    def render_top_social(self, page: int = 1) -> str:
+        return self._render_top("🤝 ТОП • ВКЛАД", "contribution_score", "Очки вклада", secondary_key="total_score", secondary_label="Исторический рейтинг", page=page)
 
-    def render_top_season(self) -> str:
+    def render_top_season(self, page: int = 1) -> str:
         with self.repository.connect() as conn:
             rows = conn.execute(
                 """SELECT user_id, first_name, username, level, prestige, rank_name, rank_badge, total_score, season_score
                 FROM progression_profiles
                 WHERE season_score > 0
-                ORDER BY season_score DESC, total_score DESC
-                LIMIT ?""",
-                (top_limit(),),
+                ORDER BY season_score DESC, total_score DESC"""
             ).fetchall()
-        if not rows:
-            return "📊 За сезон пока нет новой активности."
-        lines: List[str] = ["🏁 ТОП-100 • СЕЗОН", ""]
-        for idx, row in enumerate(rows):
+        def build_line(idx: int, row: object) -> List[str]:
             label = clean_display_name(row["first_name"] or row["username"] or str(row["user_id"]), limit=22)
             rank_marker = ordinal_marker(idx)
-            lines.append(f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}")
+            lines = [f"{rank_marker} {label} {get_level_medal(safe_int(row['level']))}"]
             season_score = safe_int(row["season_score"])
             total_score = safe_int(row["total_score"])
             meta_parts = [compact_metric("Очки сезона", season_score)]
             if total_score != season_score:
                 meta_parts.append(compact_metric("Исторический рейтинг", total_score))
             lines.append("   " + " • ".join(meta_parts))
-        return self._fit_telegram_text(lines)
+            return lines
+        return self._render_paginated_rows(
+            rows,
+            title="🏁 ТОП • СЕЗОН",
+            page=page,
+            line_builder=build_line,
+            empty_text="📊 За сезон пока нет новой активности.",
+        )
+
+    def render_top_reactions_received(self, page: int = 1) -> str:
+        return self._render_top(
+            "✨ ТОП • РЕАКЦИИ ПОЛУЧЕНО",
+            "reactions_received",
+            "Получено",
+            secondary_key="total_score",
+            secondary_label="Исторический рейтинг",
+            page=page,
+        )
+
+    def render_top_reactions_given(self, page: int = 1) -> str:
+        return self._render_top(
+            "🫶 ТОП • РЕАКЦИИ ОТПРАВЛЕНО",
+            "reactions_given",
+            "Отправлено",
+            secondary_key="total_score",
+            secondary_label="Исторический рейтинг",
+            page=page,
+        )
+
+    def render_top_activity(self, page: int = 1) -> str:
+        return self._render_top(
+            "⚡ ТОП • АКТИВНОСТЬ",
+            "activity_score",
+            "Активность",
+            secondary_key="msg_count",
+            secondary_label="Сообщения",
+            page=page,
+        )
+
+    def render_top_behavior(self, page: int = 1) -> str:
+        return self._render_top(
+            "🛡️ ТОП • ПОВЕДЕНИЕ",
+            "behavior_score",
+            "Поведение",
+            secondary_key="total_score",
+            secondary_label="Исторический рейтинг",
+            page=page,
+        )
+
+    def render_top_achievements(self, page: int = 1) -> str:
+        return self._render_top(
+            "🏅 ТОП • ДОСТИЖЕНИЯ",
+            "achievement_score",
+            "Ачивки",
+            secondary_key="total_score",
+            secondary_label="Исторический рейтинг",
+            page=page,
+        )
+
+    def render_top_messages(self, page: int = 1) -> str:
+        return self._render_top(
+            "💬 ТОП • СООБЩЕНИЯ",
+            "msg_count",
+            "Сообщения",
+            secondary_key="activity_score",
+            secondary_label="Активность",
+            page=page,
+        )
+
+    def render_top_helpful(self, page: int = 1) -> str:
+        return self._render_top(
+            "🧠 ТОП • ПОЛЕЗНОСТЬ",
+            "helpful_messages",
+            "Полезные",
+            secondary_key="contribution_score",
+            secondary_label="Вклад",
+            page=page,
+        )
+
+    def render_top_streak(self, page: int = 1) -> str:
+        return self._render_top(
+            "📅 ТОП • СТРИК",
+            "best_streak",
+            "Стрик",
+            secondary_key="unique_days",
+            secondary_label="Уникальные дни",
+            page=page,
+        )
+
+    def render_profile_card(self, user_id: int) -> str:
+        snapshot = self.recalculate_profile(user_id)
+        if not snapshot:
+            return "Профиль еще не сформирован. Напишите несколько сообщений в чате."
+        with self.repository.connect() as conn:
+            total_rows = conn.execute(
+                "SELECT user_id, total_score FROM progression_profiles ORDER BY total_score DESC"
+            ).fetchall()
+            current_rows = conn.execute(
+                f"""SELECT p.user_id, COALESCE(SUM(se.score_delta), 0) AS current_score
+                FROM progression_profiles p
+                LEFT JOIN score_events se ON se.user_id = p.user_id AND {self._non_legacy_filter_sql('se')}
+                GROUP BY p.user_id
+                ORDER BY current_score DESC, p.total_score DESC"""
+            ).fetchall()
+        level = safe_int(snapshot["level"])
+        total_pos = self._rank_position(total_rows, user_id, "total_score")
+        current_pos = self._rank_position(current_rows, user_id, "current_score")
+        display_name = clean_display_name(snapshot.get("first_name") or snapshot.get("username") or str(user_id), fallback=str(user_id), limit=30)
+        total_xp = safe_int(snapshot["total_xp"])
+        current_threshold = LEVEL_THRESHOLDS[min(level, len(LEVEL_THRESHOLDS) - 1)]
+        next_level = min(level + 1, len(LEVEL_THRESHOLDS) - 1)
+        next_threshold = LEVEL_THRESHOLDS[next_level]
+        need_xp = max(0, next_threshold - total_xp)
+        progress = 100 if next_threshold <= current_threshold else int(
+            max(0.0, min(1.0, (total_xp - current_threshold) / (next_threshold - current_threshold))) * 100
+        )
+        return "\n".join(
+            [
+                f"{get_level_medal(level)} {display_name}",
+                f"{snapshot['rank_badge']} {snapshot['rank_name']} • {get_level_name(level)} • уровень {level}",
+                "",
+                f"🏆 Новый рейтинг: {place_label(current_pos[0], current_pos[1])}",
+                f"🏛️ Исторический рейтинг: {place_label(total_pos[0], total_pos[1])}",
+                f"⭐ XP: {compact_number(total_xp)} • Престиж: {snapshot['prestige']}",
+                f"📈 Прогресс: [{progress_bar(progress, 100)}] {progress}%",
+                f"🎯 До уровня: {compact_number(need_xp)} XP",
+                "",
+                f"💬 Сообщения: {compact_number(snapshot['msg_count'])}",
+                f"✨ Реакции получено: {compact_number(snapshot['reactions_received'])}",
+                f"🫶 Реакции отправлено: {compact_number(snapshot['reactions_given'])}",
+                f"🤝 Вклад: {compact_number(snapshot['contribution_score'])}",
+                f"⚡ Активность: {compact_number(snapshot['activity_score'])}",
+                f"🛡️ Поведение: {snapshot['behavior_score']}/100",
+                f"🏅 Ачивки: {compact_number(snapshot['achievement_score'])}",
+            ]
+        )
 
     def render_stats(self) -> str:
         with self.repository.connect() as conn:

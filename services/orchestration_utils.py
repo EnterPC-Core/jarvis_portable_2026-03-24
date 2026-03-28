@@ -138,12 +138,6 @@ def apply_self_check_contract(
             flags.append("added-no-action-disclaimer")
             uncertain_points.append("action-claim-without-tool-proof")
 
-    if "runtime-verification" in route_decision.guardrails and not route_decision.use_workspace:
-        lowered = final_answer.lower()
-        if all(marker not in lowered for marker in ("не подтверж", "не удалось", "ограничен", "недоступ", "нельзя проверить")):
-            final_answer += "\n\nПроверка: этот маршрут не подтверждает реальные метрики среды. Для точных RAM/CPU/disk/uptime данных нужен runtime/workspace маршрут."
-            flags.append("added-runtime-verification-disclaimer")
-            uncertain_points.append("runtime-not-verified")
     if route_decision.use_workspace:
         observed_basis.append("workspace-runtime")
     if route_decision.use_events or route_decision.use_database or route_decision.use_reply:

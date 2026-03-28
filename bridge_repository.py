@@ -130,6 +130,18 @@ class BridgeRepository:
             )"""
             )
             conn.execute(
+                """CREATE TABLE IF NOT EXISTS reaction_links (
+                actor_user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                target_user_id INTEGER,
+                reaction_count INTEGER NOT NULL DEFAULT 1,
+                first_reacted_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                last_updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                PRIMARY KEY (actor_user_id, chat_id, message_id)
+            )"""
+            )
+            conn.execute(
                 """CREATE TABLE IF NOT EXISTS moderation_journal (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,

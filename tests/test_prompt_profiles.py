@@ -5,6 +5,7 @@ from prompts.builders import build_prompt
 from prompts.profile_loader import load_runtime_profile, normalize_prompt_profile_name
 from services.answer_postprocess import postprocess_answer
 from tg_codex_bridge import build_owner_contact_reply
+from utils.text_utils import trim_generic_followup
 
 
 class PromptProfileTests(unittest.TestCase):
@@ -23,7 +24,9 @@ class PromptProfileTests(unittest.TestCase):
         self.assertIn("Ты личный ассистент Дмитрия.", prompt)
         self.assertIn("Не выдавай сырую поисковую выдачу как финальный ответ.", prompt)
         self.assertIn("Если сообщение — простое приветствие", prompt)
-        self.assertLess(len(prompt), 1200)
+        self.assertIn("Не дописывай в конце \"Следующий шаг\"", prompt)
+        self.assertNotIn("один понятный следующий шаг", prompt)
+        self.assertLess(len(prompt), 1250)
 
     def test_enterprise_prompt_stays_separate(self):
         jarvis = load_runtime_profile("jarvis").system_prompt
@@ -215,6 +218,25 @@ class PromptProfileTests(unittest.TestCase):
         self.assertNotIn("Response shape:\n", prompt)
         self.assertNotIn("Route summary:\n", prompt)
         self.assertNotIn("Self-check and guardrails:\n", prompt)
+        self.assertIn("Response contract:\n", prompt)
+
+    def test_chat_dynamics_prompt_includes_stronger_response_contract(self):
+        prompt = build_prompt(
+            mode="jarvis",
+            history=[("user", "Что происходит в чате?")],
+            user_text="Расскажи про чат подробнее",
+            mode_prompts={},
+            default_mode_name="jarvis",
+            base_system_prompt="legacy should be ignored",
+            detect_intent_func=lambda _text: "chat_dynamics",
+            response_shape_hint_func=lambda _intent: "Сначала коротко, потом блоки по участникам и динамике.",
+            truncate_text_func=lambda text, limit: text[:limit],
+            max_history_item_chars=120,
+            discussion_context="Discussion summary: ...",
+            chat_memory_text="Chat memory: ...",
+        )
+        self.assertIn("Response contract:\nСначала коротко, потом блоки по участникам и динамике.", prompt)
+        self.assertIn("Discussion context:\nDiscussion summary: ...", prompt)
 
     def test_prompt_builder_ignores_owner_and_persona_fragments(self):
         prompt = build_prompt(
@@ -287,6 +309,31 @@ class PromptProfileTests(unittest.TestCase):
         self.assertIn("User profile:", prompt)
         self.assertIn("Дмитрий (owner)", prompt)
 
+    def test_prompt_builder_includes_discussion_and_memory_blocks_for_jarvis(self):
+        prompt = build_prompt(
+            mode="jarvis",
+            history=[("user", "Что тут происходит"), ("assistant", "Смотрю контекст")],
+            user_text="Jarvis, разложи по полочкам",
+            mode_prompts={},
+            default_mode_name="jarvis",
+            base_system_prompt="legacy should be ignored",
+            detect_intent_func=lambda _text: "general",
+            response_shape_hint_func=lambda _intent: "short",
+            truncate_text_func=lambda text, limit: text[:limit],
+            max_history_item_chars=120,
+            reply_context="Ответ на сообщение Дмитрия (owner)",
+            discussion_context="current_speaker: Дмитрий (owner)",
+            relation_memory_text="Дмитрий (owner) часто инициирует техпроверки.",
+            chat_memory_text="В чате тестируют Jarvis и проверяют память.",
+            summary_memory_text="ai_rollup: owner тестирует reply-aware поведение.",
+        )
+        self.assertIn("Reply context:", prompt)
+        self.assertIn("Discussion context:", prompt)
+        self.assertIn("Relation memory:", prompt)
+        self.assertIn("Chat memory:", prompt)
+        self.assertIn("Summary memory:", prompt)
+        self.assertIn("Дмитрий (owner)", prompt)
+
     def test_postprocess_rewrites_gpt_identity_leak(self):
         result = postprocess_answer(
             "Я работаю на современной GPT-модели, настроенной под роль Jarvis для Дмитрия.",
@@ -314,6 +361,19 @@ class PromptProfileTests(unittest.TestCase):
         )
         self.assertIn("Codex session", result)
         self.assertIn("bridge не упал", result)
+
+    def test_postprocess_trims_next_step_followup_paragraph(self):
+        result = postprocess_answer(
+            "Лучше без такого.\n\nЛёгкая шутка ещё ок.\n\nСледующий шаг: если хочешь, сформулирую короткий ответ в чат.",
+            latency_ms=None,
+            normalize_whitespace_func=lambda text: text.strip(),
+            trim_generic_followup_func=trim_generic_followup,
+            truncate_text_func=lambda text, limit: text[:limit],
+            display_timezone=__import__("zoneinfo").ZoneInfo("Europe/Moscow"),
+            max_output_chars=4000,
+        )
+        self.assertIn("Лучше без такого.", result)
+        self.assertNotIn("Следующий шаг:", result)
 
     def test_owner_contact_reply_is_personalized(self):
         reply = build_owner_contact_reply("Привет", persona="jarvis")

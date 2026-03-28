@@ -1,7 +1,8 @@
 import sqlite3
 import time
+import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from achievements_service import AchievementsService
 from anti_abuse_service import AntiAbuseService
@@ -40,6 +41,8 @@ class LegacyJarvisAdapter:
         if self.enabled:
             self.bootstrap_from_existing_events()
             self.merge_legacy_profiles()
+            self.repair_reaction_received_metrics()
+            self.repair_invalid_achievement_unlocks()
 
     def _connect_legacy(self) -> Optional[sqlite3.Connection]:
         if not self.legacy_db_path or not Path(self.legacy_db_path).exists():
@@ -262,7 +265,7 @@ class LegacyJarvisAdapter:
         username: str,
         first_name: str,
         text: str,
-    ) -> List[Tuple[str, str]]:
+    ) -> List[Dict[str, object]]:
         if not self.enabled or not text.strip():
             return []
         now_ts = int(time.time())
@@ -362,11 +365,74 @@ class LegacyJarvisAdapter:
         self.rating.recalculate_profile(user_id)
         return unlocked
 
-    def sync_reaction(self, chat_id: int, user_id: int, message_id: int, reactions_added: int = 1) -> None:
-        if not self.enabled or user_id is None:
-            return
+    def _find_reaction_target_user_id(self, conn, chat_id: int, message_id: int) -> Optional[int]:
+        row = conn.execute(
+            """SELECT user_id
+            FROM chat_events
+            WHERE chat_id = ? AND message_id = ? AND role = 'user' AND user_id IS NOT NULL AND message_type != 'reaction'
+            ORDER BY CASE
+                WHEN message_type IN ('text', 'caption', 'voice', 'photo', 'document', 'animation', 'sticker', 'mobile_text') THEN 0
+                ELSE 1
+            END, id ASC
+            LIMIT 1""",
+            (chat_id, message_id),
+        ).fetchone()
+        return safe_int(row["user_id"]) if row and row["user_id"] is not None else None
+
+    def _record_reaction_received(
+        self,
+        conn,
+        *,
+        chat_id: int,
+        actor_user_id: int,
+        target_user_id: int,
+        message_id: int,
+        reactions_added: int,
+        created_at: Optional[int] = None,
+    ) -> None:
+        self.repository.ensure_profile(conn, target_user_id)
+        conn.execute(
+            """UPDATE progression_profiles
+            SET reactions_received = reactions_received + ?,
+                updated_at = ?
+            WHERE user_id = ?""",
+            (reactions_added, created_at or int(time.time()), target_user_id),
+        )
+        self.repository.record_score_event(
+            conn,
+            user_id=target_user_id,
+            chat_id=chat_id,
+            source_message_id=message_id,
+            event_type="reaction_received",
+            xp_delta=0,
+            score_delta=reactions_added * 2,
+            reason="reaction received",
+            metadata={"reactions_added": reactions_added, "actor_user_id": actor_user_id, "target_user_id": target_user_id},
+            created_at=created_at,
+        )
+
+    def sync_reaction(self, chat_id: int, user_id: int, message_id: int, reactions_added: int = 1) -> Dict[str, object]:
+        if not self.enabled or user_id is None or reactions_added <= 0:
+            return {"actor_unlocked": [], "target_unlocked": [], "target_user_id": None}
+        target_user_id: Optional[int] = None
         with self.repository.connect() as conn:
             self.repository.ensure_profile(conn, user_id)
+            existing_link = conn.execute(
+                """SELECT target_user_id
+                FROM reaction_links
+                WHERE actor_user_id = ? AND chat_id = ? AND message_id = ?""",
+                (user_id, chat_id, message_id),
+            ).fetchone()
+            if existing_link:
+                conn.execute(
+                    """UPDATE reaction_links
+                    SET reaction_count = MAX(reaction_count, ?),
+                        last_updated_at = ?
+                    WHERE actor_user_id = ? AND chat_id = ? AND message_id = ?""",
+                    (reactions_added, int(time.time()), user_id, chat_id, message_id),
+                )
+                conn.commit()
+                return {"actor_unlocked": [], "target_unlocked": [], "target_user_id": safe_int(existing_link["target_user_id"]) if existing_link else None}
             conn.execute(
                 """UPDATE progression_profiles
                 SET reactions_given = reactions_given + ?,
@@ -386,8 +452,182 @@ class LegacyJarvisAdapter:
                 reason="reaction",
                 metadata={"reactions_added": reactions_added},
             )
+            target_user_id = self._find_reaction_target_user_id(conn, chat_id, message_id)
+            conn.execute(
+                """INSERT OR REPLACE INTO reaction_links
+                (actor_user_id, chat_id, message_id, target_user_id, reaction_count, first_reacted_at, last_updated_at)
+                VALUES (?, ?, ?, ?, ?, COALESCE((SELECT first_reacted_at FROM reaction_links WHERE actor_user_id = ? AND chat_id = ? AND message_id = ?), ?), ?)""",
+                (
+                    user_id,
+                    chat_id,
+                    message_id,
+                    target_user_id,
+                    reactions_added,
+                    user_id,
+                    chat_id,
+                    message_id,
+                    int(time.time()),
+                    int(time.time()),
+                ),
+            )
+            if target_user_id is not None:
+                self._record_reaction_received(
+                    conn,
+                    chat_id=chat_id,
+                    actor_user_id=user_id,
+                    target_user_id=target_user_id,
+                    message_id=message_id,
+                    reactions_added=reactions_added,
+                )
             conn.commit()
         self.rating.recalculate_profile(user_id)
+        actor_snapshot = self.history.build_snapshot(user_id)
+        actor_unlocked = self.achievements.evaluate(user_id, actor_snapshot)
+        self.rating.recalculate_profile(user_id)
+        target_unlocked: List[Dict[str, object]] = []
+        if target_user_id is not None:
+            target_snapshot = self.history.build_snapshot(target_user_id)
+            target_unlocked = self.achievements.evaluate(target_user_id, target_snapshot)
+            self.rating.recalculate_profile(target_user_id)
+        return {
+            "actor_unlocked": actor_unlocked,
+            "target_unlocked": target_unlocked,
+            "target_user_id": target_user_id,
+        }
+
+    def repair_reaction_received_metrics(self) -> None:
+        if not self.enabled:
+            return
+        with self.repository.connect() as conn:
+            profile_rows = conn.execute(
+                "SELECT user_id, reactions_given, reactions_received, contribution_score FROM progression_profiles"
+            ).fetchall()
+            base_contribution_by_user: Dict[int, int] = {}
+            for row in profile_rows:
+                user_id = safe_int(row["user_id"])
+                old_given = safe_int(row["reactions_given"])
+                contribution_score = safe_int(row["contribution_score"])
+                base_contribution_by_user[user_id] = max(0, contribution_score - old_given * 2)
+
+            conn.execute("DELETE FROM score_events WHERE event_type IN ('reaction_given', 'reaction_received')")
+            conn.execute("DELETE FROM reaction_links")
+            reaction_rows = conn.execute(
+                """SELECT id, chat_id, message_id, user_id, created_at
+                FROM chat_events
+                WHERE role = 'user' AND message_type = 'reaction' AND user_id IS NOT NULL
+                ORDER BY id ASC"""
+            ).fetchall()
+            given_counts: Dict[int, int] = {}
+            received_counts: Dict[int, int] = {}
+            seen_links: Set[Tuple[int, int, int]] = set()
+            touched_users: Set[int] = set(base_contribution_by_user.keys())
+            for row in reaction_rows:
+                actor_user_id = safe_int(row["user_id"])
+                chat_id = safe_int(row["chat_id"])
+                message_id = safe_int(row["message_id"])
+                created_at = safe_int(row["created_at"]) or int(time.time())
+                if not actor_user_id or not chat_id or not message_id:
+                    continue
+                link_key = (actor_user_id, chat_id, message_id)
+                if link_key in seen_links:
+                    continue
+                seen_links.add(link_key)
+                self.repository.ensure_profile(conn, actor_user_id)
+                given_counts[actor_user_id] = given_counts.get(actor_user_id, 0) + 1
+                self.repository.record_score_event(
+                    conn,
+                    user_id=actor_user_id,
+                    chat_id=chat_id,
+                    source_message_id=message_id,
+                    event_type="reaction_given",
+                    xp_delta=1,
+                    score_delta=2,
+                    reason="reaction",
+                    metadata={"reactions_added": 1},
+                    created_at=created_at,
+                )
+                target_user_id = self._find_reaction_target_user_id(conn, chat_id, message_id)
+                conn.execute(
+                    """INSERT OR REPLACE INTO reaction_links
+                    (actor_user_id, chat_id, message_id, target_user_id, reaction_count, first_reacted_at, last_updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?, ?)""",
+                    (actor_user_id, chat_id, message_id, target_user_id, created_at, created_at),
+                )
+                if target_user_id is None:
+                    continue
+                self._record_reaction_received(
+                    conn,
+                    chat_id=chat_id,
+                    actor_user_id=actor_user_id,
+                    target_user_id=target_user_id,
+                    message_id=message_id,
+                    reactions_added=1,
+                    created_at=created_at,
+                )
+                received_counts[target_user_id] = received_counts.get(target_user_id, 0) + 1
+                touched_users.add(actor_user_id)
+                touched_users.add(target_user_id)
+
+            all_user_ids = set(base_contribution_by_user.keys()) | set(given_counts.keys()) | set(received_counts.keys())
+            for user_id in all_user_ids:
+                new_given = given_counts.get(user_id, 0)
+                new_received = received_counts.get(user_id, 0)
+                new_contribution = base_contribution_by_user.get(user_id, 0) + new_given * 2
+                conn.execute(
+                    """UPDATE progression_profiles
+                    SET reactions_given = ?,
+                        reactions_received = ?,
+                        contribution_score = ?,
+                        updated_at = ?
+                    WHERE user_id = ?""",
+                    (new_given, new_received, new_contribution, int(time.time()), user_id),
+                )
+            conn.commit()
+        for user_id in touched_users:
+            snapshot = self.history.build_snapshot(user_id)
+            self.achievements.evaluate(user_id, snapshot)
+            self.rating.recalculate_profile(user_id)
+
+    def repair_invalid_achievement_unlocks(self) -> None:
+        if not self.enabled:
+            return
+        touched_users: Set[int] = set()
+        with self.repository.connect() as conn:
+            unlocked_rows = conn.execute(
+                "SELECT user_id, code FROM user_achievement_state WHERE unlocked_at IS NOT NULL"
+            ).fetchall()
+            for row in unlocked_rows:
+                user_id = safe_int(row["user_id"])
+                code = str(row["code"] or "")
+                definition = self.achievements.get_definition(code)
+                if not definition:
+                    continue
+                snapshot = self.history.build_snapshot(user_id)
+                chain_code = str(definition.get("chain_code", ""))
+                parent_unlocked = True
+                if chain_code:
+                    parent = conn.execute(
+                        "SELECT unlocked_at FROM user_achievement_state WHERE user_id = ? AND code = ?",
+                        (user_id, chain_code),
+                    ).fetchone()
+                    parent_unlocked = bool(parent and parent["unlocked_at"])
+                requirements_ok = self.achievements.requirements_met(definition, snapshot)
+                metric = str(definition["metric"])
+                metric_ok = safe_int(snapshot.get(metric, 0)) >= safe_int(definition["target"])
+                if parent_unlocked and requirements_ok and metric_ok:
+                    continue
+                conn.execute(
+                    "UPDATE user_achievement_state SET unlocked_at = NULL, tier_achieved = 0 WHERE user_id = ? AND code = ?",
+                    (user_id, code),
+                )
+                conn.execute(
+                    "DELETE FROM score_events WHERE user_id = ? AND event_type = 'achievement_unlock' AND metadata_json LIKE ?",
+                    (user_id, f'%\"code\": \"{code}\"%'),
+                )
+                touched_users.add(user_id)
+            conn.commit()
+        for user_id in touched_users:
+            self.rating.recalculate_profile(user_id)
 
     def sync_moderation_event(
         self,
@@ -416,23 +656,47 @@ class LegacyJarvisAdapter:
     def render_rating(self, user_id: int) -> Optional[str]:
         return self.rating.render_rating(user_id)
 
-    def render_top_all_time(self) -> str:
-        return self.rating.render_top_all_time()
+    def render_top_all_time(self, page: int = 1) -> str:
+        return self.rating.render_top_all_time(page=page)
 
-    def render_top_historical(self) -> str:
-        return self.rating.render_top_historical()
+    def render_top_historical(self, page: int = 1) -> str:
+        return self.rating.render_top_historical(page=page)
 
-    def render_top_week(self) -> str:
-        return self.rating.render_top_week()
+    def render_top_week(self, page: int = 1) -> str:
+        return self.rating.render_top_week(page=page)
 
-    def render_top_day(self) -> str:
-        return self.rating.render_top_day()
+    def render_top_day(self, page: int = 1) -> str:
+        return self.rating.render_top_day(page=page)
 
-    def render_top_social(self) -> str:
-        return self.rating.render_top_social()
+    def render_top_social(self, page: int = 1) -> str:
+        return self.rating.render_top_social(page=page)
 
-    def render_top_season(self) -> str:
-        return self.rating.render_top_season()
+    def render_top_season(self, page: int = 1) -> str:
+        return self.rating.render_top_season(page=page)
+
+    def render_top_reactions_received(self, page: int = 1) -> str:
+        return self.rating.render_top_reactions_received(page=page)
+
+    def render_top_reactions_given(self, page: int = 1) -> str:
+        return self.rating.render_top_reactions_given(page=page)
+
+    def render_top_activity(self, page: int = 1) -> str:
+        return self.rating.render_top_activity(page=page)
+
+    def render_top_behavior(self, page: int = 1) -> str:
+        return self.rating.render_top_behavior(page=page)
+
+    def render_top_achievements(self, page: int = 1) -> str:
+        return self.rating.render_top_achievements(page=page)
+
+    def render_top_messages(self, page: int = 1) -> str:
+        return self.rating.render_top_messages(page=page)
+
+    def render_top_helpful(self, page: int = 1) -> str:
+        return self.rating.render_top_helpful(page=page)
+
+    def render_top_streak(self, page: int = 1) -> str:
+        return self.rating.render_top_streak(page=page)
 
     def render_stats(self) -> str:
         return self.rating.render_stats()
@@ -441,12 +705,7 @@ class LegacyJarvisAdapter:
         profile = self._load_profile(user_id)
         if not profile:
             return "Профиль еще не сформирован. Напишите несколько сообщений в чате."
-        return (
-            f"{profile['rank_badge']} {profile.get('first_name') or profile.get('username') or user_id}\n"
-            f"Score: {safe_int(profile['total_score']):,} | LV {safe_int(profile['level'])} {get_level_name(safe_int(profile['level']))}\n"
-            f"XP: {safe_int(profile['total_xp']):,} | Вклад: {safe_int(profile['contribution_score'])} | Поведение: {safe_int(profile['behavior_score'])}/100\n"
-            f"Сезон: {safe_int(profile['season_score'])} | Динамика: {safe_int(profile['dynamic_score'])}"
-        )
+        return self.rating.render_profile_card(user_id)
 
     def render_achievements(self, user_id: int) -> str:
         profile = self._load_profile(user_id)

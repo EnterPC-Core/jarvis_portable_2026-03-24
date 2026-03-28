@@ -14,8 +14,12 @@ def trim_generic_followup(text: str) -> str:
         return cleaned
     last = paragraphs[-1].lower()
     generic_starters = (
+        "следующий шаг:",
+        "следующий шаг ",
         "если хочешь, я могу",
         "если хочешь могу",
+        "если хочешь, сформулирую",
+        "если хочешь, сделаю",
         "могу следующим сообщением",
         "если хочешь, следующим сообщением",
         "практический вывод для меня дальше",
@@ -82,4 +86,3 @@ def split_long_message(text: str, limit: int = DEFAULT_TELEGRAM_TEXT_LIMIT) -> L
 def build_download_name(file_path: str, fallback_name: str) -> str:
     candidate = Path(file_path).name.strip()
     return candidate or fallback_name
-

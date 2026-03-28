@@ -10,6 +10,10 @@ def is_error_log_line(lowered_line: str) -> bool:
         return False
     if "failed to edit status message" in lowered_line and "retry after" in lowered_line:
         return False
+    if "failed to answer callback query" in lowered_line and (
+        "query is too old" in lowered_line or "query id is invalid" in lowered_line
+    ):
+        return False
     ignore_markers = (
         "config loaded",
         "bot started",
@@ -126,6 +130,8 @@ def inspect_runtime_log(log_path: Path, window_seconds: int = 86400) -> Dict[str
         "exchange open.er lookup failed",
         "url fetch failed",
         "failed to edit status message",
+        "не удалось связаться с enterprise",
+        "failed to answer callback query",
     )
     severe_lines: List[str] = []
     warning_lines: List[str] = []

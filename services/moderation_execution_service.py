@@ -125,7 +125,7 @@ class ModerationExecutionService:
                     bridge.safe_send_text(
                         chat_id,
                         bridge.moderation_orchestrator.text_policy.format_public_notice(target_label, action.action),
-                    )
+                )
                 bridge.notify_owner(
                     bridge.render_auto_moderation_owner_report(
                         chat_id=chat_id,
@@ -137,6 +137,25 @@ class ModerationExecutionService:
                     )
                 )
                 return
+
+        if decision.action == "deescalate":
+            cooldown_key = f"soft_moderation_notice:{chat_id}:{decision.code}"
+            try:
+                last_notice_ts = int(str(bridge.state.get_meta(cooldown_key, "0") or "0").strip() or "0")
+            except ValueError:
+                last_notice_ts = 0
+            if now_ts - last_notice_ts < 120:
+                return
+            bridge.state.set_meta(cooldown_key, str(now_ts))
+            bridge.safe_send_text(chat_id, f"JARVIS: {decision.public_reason}")
+            bridge.state.record_event(
+                chat_id,
+                target_user_id,
+                "assistant",
+                "auto_deescalate",
+                f"[auto_deescalate {target_user_id}: {decision.reason}]",
+            )
+            return
 
         try:
             if decision.action == "mute":

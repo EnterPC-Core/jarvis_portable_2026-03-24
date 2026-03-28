@@ -1,6 +1,8 @@
 from threading import Thread
 from typing import Optional
 
+from handlers.command_parsers import parse_chat_watch_command
+
 
 class TelegramMessageHandlers:
     def __init__(self, *, owner_user_id: int, safe_mode_reply: str) -> None:
@@ -11,9 +13,10 @@ class TelegramMessageHandlers:
         raw_text = (message.get("text") or "").strip()
         text = bridge.normalize_incoming_text(raw_text, bridge.bot_username)
         assistant_persona, text = bridge.extract_assistant_persona(text)
+        is_owner = bridge.is_owner_identity(user_id)
         if assistant_persona and not text:
             text = raw_text
-        if chat_type == "private" and user_id == self.owner_user_id:
+        if chat_type == "private" and is_owner:
             assistant_persona = "enterprise"
         spontaneous_group_reply = False
         active_group_followup = False
@@ -21,7 +24,7 @@ class TelegramMessageHandlers:
         direct_group_help_request = False
         bridge.log(f"incoming text chat={chat_id} type={chat_type} user={user_id} text={bridge.shorten_for_log(raw_text)}")
 
-        if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
+        if chat_type in {"group", "supergroup"} and not is_owner:
             bridge.log(
                 f"group non-owner ignored chat={chat_id} user={user_id} "
                 f"text={bridge.shorten_for_log(raw_text)}"
@@ -31,26 +34,28 @@ class TelegramMessageHandlers:
         if (
             chat_type == "private"
             and user_id is not None
-            and user_id != self.owner_user_id
+            and not is_owner
             and bridge.contains_profanity(raw_text)
         ):
             bridge.enforce_private_profanity_global_ban(chat_id, user_id, raw_text, message)
             return
 
         if chat_type in {"group", "supergroup"}:
-            if user_id != self.owner_user_id and bridge.is_group_discussion_rate_limited(chat_id, user_id):
+            if not is_owner and bridge.is_group_discussion_rate_limited(chat_id, user_id):
                 bridge.log(f"group discussion rate-limited chat={chat_id} user={user_id} text={bridge.shorten_for_log(raw_text)}")
                 return
             active_group_followup = bridge.is_group_followup_message(chat_id, message, raw_text)
             active_group_discussion = bridge.is_group_discussion_continuation(chat_id, message, raw_text)
-            should_handle_as_bot = bridge.should_process_group_message(message, raw_text)
+            owner_chat_watch_request = is_owner and parse_chat_watch_command(text or raw_text)
+            should_handle_as_bot = bridge.should_process_group_message(message, raw_text) or owner_chat_watch_request
             if (
-                user_id == self.owner_user_id
+                is_owner
                 and assistant_persona not in {"enterprise", "jarvis"}
                 and not raw_text.startswith("/")
                 and not active_group_followup
                 and not active_group_discussion
                 and not should_handle_as_bot
+                and not owner_chat_watch_request
             ):
                 bridge.log(
                     f"owner group message without explicit persona ignored chat={chat_id} user={user_id} "
@@ -60,19 +65,19 @@ class TelegramMessageHandlers:
             participant_priority = bridge.get_group_participant_priority(chat_id, message)
             meaningful_group_request = bridge.is_meaningful_group_request(message, raw_text)
             ambient_group_chatter = bridge.is_ambient_group_chatter(message, raw_text)
-            if ambient_group_chatter and not active_group_followup and not active_group_discussion and user_id != self.owner_user_id:
+            if ambient_group_chatter and not active_group_followup and not active_group_discussion and not is_owner:
                 return
             if (
                 should_handle_as_bot
                 and user_id is not None
-                and user_id != self.owner_user_id
+                and not is_owner
                 and not bridge.has_chat_access(bridge.state.authorized_user_ids, user_id)
                 and bridge.is_group_spontaneous_reply_candidate(chat_id, message, raw_text)
                 and meaningful_group_request
             ):
                 direct_group_help_request = True
                 assistant_persona = assistant_persona or "jarvis"
-            elif should_handle_as_bot and user_id is not None and user_id != self.owner_user_id and not meaningful_group_request and not active_group_followup and not active_group_discussion:
+            elif should_handle_as_bot and user_id is not None and not is_owner and not meaningful_group_request and not active_group_followup and not active_group_discussion:
                 bridge.log(
                     f"group direct trigger suppressed chat={chat_id} user={user_id} "
                     f"priority={participant_priority} text={bridge.shorten_for_log(raw_text)}"
@@ -129,7 +134,7 @@ class TelegramMessageHandlers:
             bridge.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
             return
 
-        if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
+        if chat_type in {"group", "supergroup"} and not is_owner:
             if not bridge.record_group_discussion_turn(chat_id, user_id):
                 bridge.state.finish_chat_task(chat_id)
                 bridge.log(f"group discussion turn blocked chat={chat_id} user={user_id} text={bridge.shorten_for_log(raw_text)}")
@@ -150,7 +155,8 @@ class TelegramMessageHandlers:
         chat = message.get("chat") or {}
         chat_type = (chat.get("type") or "private").lower()
 
-        if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
+        is_owner = bridge.is_owner_identity(user_id)
+        if chat_type in {"group", "supergroup"} and not is_owner:
             bridge.log(f"group non-owner photo ignored chat={chat_id} user={user_id}")
             return
 
@@ -183,7 +189,8 @@ class TelegramMessageHandlers:
         file_name = document.get("file_name") or "document"
         bridge.log(f"incoming document chat={chat_id} user={user_id} file={bridge.shorten_for_log(file_name)} caption={bridge.shorten_for_log(caption)}")
 
-        if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
+        is_owner = bridge.is_owner_identity(user_id)
+        if chat_type in {"group", "supergroup"} and not is_owner:
             bridge.log(f"group non-owner document ignored chat={chat_id} user={user_id} file={bridge.shorten_for_log(file_name)}")
             return
 
@@ -222,7 +229,8 @@ class TelegramMessageHandlers:
             chat_type = (chat.get("type") or "private").lower()
             bridge.log(f"incoming voice chat={chat_id} user={user_id} duration={duration}")
 
-            if chat_type in {"group", "supergroup"} and user_id != self.owner_user_id:
+            is_owner = bridge.is_owner_identity(user_id)
+            if chat_type in {"group", "supergroup"} and not is_owner:
                 bridge.log(f"group non-owner voice ignored chat={chat_id} user={user_id}")
                 return
 
@@ -231,7 +239,7 @@ class TelegramMessageHandlers:
                 return
 
             if chat_type in {"group", "supergroup"}:
-                if not bridge.should_process_group_message(message, "") and user_id != self.owner_user_id:
+                if not bridge.should_process_group_message(message, "") and not is_owner:
                     bridge.log(f"voice trigger not found chat={chat_id} file_id={file_id}")
                     return
 

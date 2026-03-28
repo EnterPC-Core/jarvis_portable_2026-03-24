@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import html
 import json
 import mimetypes
@@ -35,6 +36,7 @@ from handlers.ui_handlers import UIHandlers
 from handlers.command_parsers import (
     normalize_mode as _normalize_mode,
     parse_autobio_command as _parse_autobio_command,
+    parse_chat_watch_command as _parse_chat_watch_command,
     parse_chat_digest_command as _parse_chat_digest_command,
     parse_daily_command as _parse_daily_command,
     parse_digest_command as _parse_digest_command,
@@ -315,6 +317,11 @@ DEFAULT_ENTERPRISE_SERVER_BASE_URL = "http://127.0.0.1:8766"
 DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
 OWNER_USER_ID = int((os.getenv("OWNER_USER_ID", os.getenv("ADMIN_ID", "6102780373")) or "6102780373").strip())
 OWNER_USERNAME = (os.getenv("OWNER_USERNAME", "@DmitryUnboxing") or "@DmitryUnboxing").strip()
+OWNER_ALIAS_USER_IDS = tuple(
+    int(part.strip())
+    for part in (os.getenv("OWNER_ALIAS_USER_IDS", "7087071466") or "7087071466").split(",")
+    if part.strip().isdigit()
+)
 OWNER_MEMORY_CHAT_ID = 0
 ACCESS_DENIED_TEXT = (
     "Этот раздел недоступен."
@@ -361,6 +368,15 @@ WHO_SAID_USAGE_TEXT = "Используй: /who_said <запрос>"
 HISTORY_USAGE_TEXT = "Используй: /history @username, /history user_id или reply на сообщение участника"
 DIGEST_USAGE_TEXT = "Используй: /digest [YYYY-MM-DD]"
 CHAT_DIGEST_USAGE_TEXT = "Используй: /chatdigest <chat_id> [YYYY-MM-DD]"
+CHAT_DEEP_USAGE_TEXT = "Используй: /chatdeep [chat_id]"
+WHOIS_USAGE_TEXT = "Используй: /whois @username, /whois user_id или reply на сообщение участника"
+WHATS_HAPPENING_USAGE_TEXT = "Используй: /whatshappening [chat_id]"
+SUMMARY24H_USAGE_TEXT = "Используй: /summary24h [chat_id]"
+CONFLICTS_USAGE_TEXT = "Используй: /conflicts [chat_id]"
+OWNERGRAPH_USAGE_TEXT = "Используй: /ownergraph"
+WATCHLIST_USAGE_TEXT = "Используй: /watchlist [chat_id]"
+RELIABLE_USAGE_TEXT = "Используй: /reliable [chat_id]"
+ACHIEVEMENT_AUDIT_USAGE_TEXT = "Используй: /achaudit [количество]"
 OWNER_REPORT_USAGE_TEXT = "Используй: /ownerreport"
 REPAIR_STATUS_USAGE_TEXT = "Используй: /repairstatus"
 QUALITY_REPORT_USAGE_TEXT = "Используй: /qualityreport"
@@ -503,6 +519,15 @@ COMMANDS_LIST_TEXT = (
     "/daily [YYYY-MM-DD]\n"
     "/digest [YYYY-MM-DD]\n"
     "/chatdigest <chat_id> [YYYY-MM-DD]\n"
+    "/chatdeep [chat_id]\n"
+    "/whois [@username|user_id]\n"
+    "/watchlist [chat_id]\n"
+    "/reliable [chat_id]\n"
+    "/achaudit [количество]\n"
+    "/whatshappening [chat_id]\n"
+    "/summary24h [chat_id]\n"
+    "/conflicts [chat_id]\n"
+    "/ownergraph\n"
     "/ownerreport\n"
     "/repairstatus\n"
     "/export [chat|today|@username|user_id]\n"
@@ -691,6 +716,14 @@ CONTROL_PANEL_SECTIONS = (
     "top_day",
     "top_social",
     "top_season",
+    "top_reactions_received",
+    "top_reactions_given",
+    "top_activity",
+    "top_behavior",
+    "top_achievements",
+    "top_messages",
+    "top_helpful",
+    "top_streak",
     "appeals",
     "appeal_history",
     "admin_appeals",
@@ -698,9 +731,19 @@ CONTROL_PANEL_SECTIONS = (
     "admin_moderation",
     "admin_warns",
     "owner_root",
+    "owner_identity",
     "owner_runtime",
     "owner_git",
+    "owner_jarvis",
+    "owner_system_map",
+    "owner_capabilities",
+    "owner_automation",
     "owner_memory",
+    "owner_overview",
+    "owner_people",
+    "owner_watchlist",
+    "owner_suspects",
+    "owner_reliable",
     "owner_files",
     "owner_live",
     "owner_moderation",
@@ -765,6 +808,7 @@ PUBLIC_ALLOWED_COMMANDS: Set[str] = {"/start", "/rating", "/top", "/topweek", "/
 PUBLIC_ALLOWED_CALLBACKS: Set[str] = {
     "ui:home",
     "ui:profile",
+    "ui:achievements",
     "ui:top",
     "ui:top:all",
     "ui:top:history",
@@ -772,6 +816,14 @@ PUBLIC_ALLOWED_CALLBACKS: Set[str] = {
     "ui:top:day",
     "ui:top:social",
     "ui:top:season",
+    "ui:top:reactions",
+    "ui:top:given",
+    "ui:top:activity",
+    "ui:top:behavior",
+    "ui:top:achievements",
+    "ui:top:messages",
+    "ui:top:helpful",
+    "ui:top:streak",
     "ui:appeals",
     "ui:appeal:history",
     "ui:appeal:new",
@@ -974,6 +1026,126 @@ class BridgeState:
                 )"""
             )
             self.db.execute(
+                """CREATE TABLE IF NOT EXISTS participant_profiles (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    first_seen_at INTEGER NOT NULL DEFAULT 0,
+                    last_seen_at INTEGER NOT NULL DEFAULT 0,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    reply_count INTEGER NOT NULL DEFAULT 0,
+                    reactions_given INTEGER NOT NULL DEFAULT 0,
+                    reactions_received INTEGER NOT NULL DEFAULT 0,
+                    conflict_score INTEGER NOT NULL DEFAULT 0,
+                    toxicity_score INTEGER NOT NULL DEFAULT 0,
+                    spam_score INTEGER NOT NULL DEFAULT 0,
+                    flood_score INTEGER NOT NULL DEFAULT 0,
+                    instability_score INTEGER NOT NULL DEFAULT 0,
+                    helpfulness_score INTEGER NOT NULL DEFAULT 0,
+                    credibility_score INTEGER NOT NULL DEFAULT 0,
+                    owner_affinity_score INTEGER NOT NULL DEFAULT 0,
+                    risk_flags_json TEXT NOT NULL DEFAULT '[]',
+                    notes_summary TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS participant_chat_profiles (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    first_seen_at INTEGER NOT NULL DEFAULT 0,
+                    last_seen_at INTEGER NOT NULL DEFAULT 0,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    reply_count INTEGER NOT NULL DEFAULT 0,
+                    reactions_given INTEGER NOT NULL DEFAULT 0,
+                    reactions_received INTEGER NOT NULL DEFAULT 0,
+                    conflict_score INTEGER NOT NULL DEFAULT 0,
+                    toxicity_score INTEGER NOT NULL DEFAULT 0,
+                    spam_score INTEGER NOT NULL DEFAULT 0,
+                    flood_score INTEGER NOT NULL DEFAULT 0,
+                    instability_score INTEGER NOT NULL DEFAULT 0,
+                    helpfulness_score INTEGER NOT NULL DEFAULT 0,
+                    credibility_score INTEGER NOT NULL DEFAULT 0,
+                    risk_flags_json TEXT NOT NULL DEFAULT '[]',
+                    notes_summary TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    PRIMARY KEY(chat_id, user_id)
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS participant_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL DEFAULT 0,
+                    signal_type TEXT NOT NULL,
+                    score_delta INTEGER NOT NULL DEFAULT 0,
+                    evidence_text TEXT NOT NULL DEFAULT '',
+                    source_message_id INTEGER,
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS participant_visual_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    file_unique_id TEXT NOT NULL DEFAULT '',
+                    media_sha256 TEXT NOT NULL DEFAULT '',
+                    caption TEXT NOT NULL DEFAULT '',
+                    analysis_text TEXT NOT NULL DEFAULT '',
+                    risk_flags_json TEXT NOT NULL DEFAULT '[]',
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    UNIQUE(chat_id, message_id)
+                )"""
+            )
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS message_subjects (
+                    chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    subject_type TEXT NOT NULL DEFAULT '',
+                    source_kind TEXT NOT NULL DEFAULT '',
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    summary TEXT NOT NULL DEFAULT '',
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    PRIMARY KEY(chat_id, message_id)
+                )"""
+            )
+            participant_visual_columns = {
+                str(row["name"])
+                for row in self.db.execute("PRAGMA table_info(participant_visual_signals)").fetchall()
+            }
+            if "media_sha256" not in participant_visual_columns:
+                self.db.execute(
+                    "ALTER TABLE participant_visual_signals ADD COLUMN media_sha256 TEXT NOT NULL DEFAULT ''"
+                )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_participant_visual_signals_user_chat ON participant_visual_signals(user_id, chat_id, created_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_participant_visual_signals_sha256 ON participant_visual_signals(media_sha256)"
+            )
+            stale_visual_rows = self.db.execute(
+                """
+                SELECT id, analysis_text
+                FROM participant_visual_signals
+                WHERE analysis_text LIKE 'scene:%'
+                   OR analysis_text LIKE 'profile_style:%'
+                   OR analysis_text LIKE '%risk_flags:%'
+                   OR analysis_text LIKE '%why:%'
+                LIMIT 200
+                """
+            ).fetchall()
+            for row in stale_visual_rows:
+                normalized_analysis = normalize_visual_analysis_text(str(row["analysis_text"] or ""))
+                self.db.execute(
+                    "UPDATE participant_visual_signals SET analysis_text = ? WHERE id = ?",
+                    (normalized_analysis, int(row["id"] or 0)),
+                )
+            self.db.execute(
                 """CREATE TABLE IF NOT EXISTS chat_runtime_cache (
                     chat_id INTEGER PRIMARY KEY,
                     chat_title TEXT NOT NULL DEFAULT '',
@@ -1125,6 +1297,12 @@ class BridgeState:
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_participants_chat_id_last_seen ON chat_participants(chat_id, last_seen_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_participant_chat_profiles_chat_id_updated_at ON participant_chat_profiles(chat_id, updated_at DESC)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_participant_observations_user_chat_created ON participant_observations(user_id, chat_id, created_at DESC)"
             )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_relation_memory_chat_id_updated ON relation_memory(chat_id, updated_at DESC, last_interaction_at DESC)"
@@ -1748,6 +1926,123 @@ class BridgeState:
                 )
             self.db.commit()
 
+    def update_group_deep_profile(self, chat_id: int, limit: int = 120) -> None:
+        with self.db_lock:
+            rows = self.db.execute(
+                """
+                SELECT created_at, user_id, username, first_name, last_name, role, message_type, text
+                FROM chat_events
+                WHERE chat_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (chat_id, limit),
+            ).fetchall()
+            runtime_row = self.db.execute(
+                """
+                SELECT chat_title, member_count
+                FROM chat_runtime_cache
+                WHERE chat_id = ?
+                """,
+                (chat_id,),
+            ).fetchone()
+        if not rows:
+            return
+        recent_rows = list(reversed(rows))
+        user_rows = [row for row in recent_rows if (row["role"] or "") == "user"]
+        actor_counts: Dict[str, int] = {}
+        topic_counts: Dict[str, int] = {}
+        rough_markers = 0
+        laugh_markers = 0
+        duplicate_markers = 0
+        previous_actor = ""
+        streak = 0
+        max_streak = 0
+        last_text_by_actor: Dict[str, str] = {}
+        for row in user_rows:
+            actor = build_actor_name(
+                row["user_id"],
+                row["username"] or "",
+                row["first_name"] or "",
+                row["last_name"] or "",
+                "user",
+            )
+            actor_counts[actor] = actor_counts.get(actor, 0) + 1
+            text = normalize_whitespace(row["text"] or "")
+            lowered = text.lower()
+            for keyword in extract_keywords(text):
+                if keyword.isdigit():
+                    continue
+                topic_counts[keyword] = topic_counts.get(keyword, 0) + 1
+            if any(token in lowered for token in ("ахах", "хаха", "))))", "😂", "😁", "😄")):
+                laugh_markers += 1
+            if any(token in lowered for token in ("нах", "охуе", "говно", "заеб", "пизд", "заткнись")):
+                rough_markers += 1
+            if len(lowered) >= 8 and last_text_by_actor.get(actor, "") == lowered:
+                duplicate_markers += 1
+            last_text_by_actor[actor] = lowered
+            if actor == previous_actor:
+                streak += 1
+            else:
+                previous_actor = actor
+                streak = 1
+            max_streak = max(max_streak, streak)
+        top_speakers = ", ".join(
+            f"{name}={count}" for name, count in sorted(actor_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
+        )
+        top_topics = ", ".join(
+            f"{name}={count}" for name, count in sorted(topic_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+        )
+        tone_bits: List[str] = []
+        if laugh_markers >= 3:
+            tone_bits.append("ирония/смех")
+        if rough_markers >= 2:
+            tone_bits.append("жёсткий или конфликтный тон")
+        if duplicate_markers >= 2:
+            tone_bits.append("повторы")
+        if max_streak >= 3:
+            tone_bits.append("серии сообщений подряд")
+        lines = ["Group deep profile:"]
+        if runtime_row:
+            chat_title = normalize_whitespace(runtime_row["chat_title"] or "")
+            if chat_title:
+                lines.append(f"- title: {truncate_text(chat_title, 120)}")
+            if int(runtime_row["member_count"] or 0) > 0:
+                lines.append(f"- member_count: {int(runtime_row['member_count'] or 0)}")
+        if top_speakers:
+            lines.append(f"- top_speakers: {truncate_text(top_speakers, 320)}")
+        if top_topics:
+            lines.append(f"- recurring_topics: {truncate_text(top_topics, 360)}")
+        if tone_bits:
+            lines.append(f"- tone: {', '.join(tone_bits)}")
+        if user_rows:
+            recent_examples = [
+                truncate_text(normalize_whitespace(row["text"] or ""), 140)
+                for row in user_rows[-8:]
+                if normalize_whitespace(row["text"] or "")
+            ]
+            if recent_examples:
+                lines.append("- recent_examples:")
+                lines.extend(f"  • {item}" for item in recent_examples[:5])
+        profile_text = truncate_text("\n".join(lines), 2200)
+        with self.db_lock:
+            recent_snapshot = self.db.execute(
+                "SELECT summary, created_at FROM summary_snapshots WHERE chat_id = ? AND scope = 'group_deep_profile' ORDER BY id DESC LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+            should_snapshot = True
+            if recent_snapshot:
+                previous_summary = recent_snapshot[0] or ""
+                previous_ts = int(recent_snapshot[1] or 0)
+                if previous_summary == profile_text and previous_ts >= int(time.time()) - 1800:
+                    should_snapshot = False
+            if should_snapshot:
+                self.db.execute(
+                    "INSERT INTO summary_snapshots(chat_id, scope, summary) VALUES(?, 'group_deep_profile', ?)",
+                    (chat_id, profile_text),
+                )
+                self.db.commit()
+
     def add_fact(self, chat_id: int, fact: str, created_by_user_id: Optional[int]) -> None:
         cleaned = normalize_whitespace(fact)
         if not cleaned:
@@ -1894,6 +2189,8 @@ class BridgeState:
 
     def get_participant_profile_context(self, chat_id: int, target_user_id: Optional[int] = None, target_username: str = "", limit: int = 40) -> Tuple[str, str]:
         username_filter = target_username.lstrip("@").lower()
+        if target_user_id is not None:
+            self.refresh_participant_behavior_profile(target_user_id, chat_id=chat_id)
         with self.db_lock:
             if target_user_id is not None:
                 rows = self.db.execute(
@@ -1918,8 +2215,561 @@ class BridgeState:
             lines.append(f"[{stamp}] ({message_type}) {truncate_text(content, 320)}")
             type_counts[message_type] = type_counts.get(message_type, 0) + 1
         stats = ", ".join(f"{k}={v}" for k, v in sorted(type_counts.items()))
-        context = f"Participant: {label}\nMessages sampled: {len(rows)}\nTypes: {stats}\n\n" + "\n".join(lines)
+        behavior_context = self.get_participant_behavior_context(chat_id, target_user_id=target_user_id)
+        context_parts = [f"Participant: {label}", f"Messages sampled: {len(rows)}", f"Types: {stats}"]
+        if behavior_context:
+            context_parts.extend(["", behavior_context])
+        context = "\n".join(context_parts) + "\n\n" + "\n".join(lines)
         return label, context
+
+    def _analyze_participant_rows(self, rows: Sequence[sqlite3.Row], owner_user_id: int = OWNER_USER_ID) -> Dict[str, object]:
+        rough_tokens = ("нах", "охуе", "говно", "заеб", "пизд", "заткнись", "иди ты", "долбо", "ебан")
+        helpful_tokens = ("решение", "совет", "проверь", "источник", "сделай", "фикс", "ошибка", "лог")
+        contradiction_tokens = ("неправ", "херня", "чуш", "бред", "врешь", "врет", "несешь")
+        message_count = 0
+        reply_count = 0
+        reactions_given = 0
+        conflict_score = 0
+        toxicity_score = 0
+        spam_score = 0
+        flood_score = 0
+        instability_score = 0
+        helpfulness_score = 0
+        owner_affinity_score = 0
+        unique_days: Set[str] = set()
+        recent_texts: List[str] = []
+        seen_messages: Dict[str, int] = {}
+        first_seen_at = 0
+        last_seen_at = 0
+        username = ""
+        display_name = ""
+        signal_examples: Dict[str, str] = {}
+        message_times: List[int] = []
+        for row in rows:
+            created_at = int(row["created_at"] or 0)
+            message_type = str(row["message_type"] or "")
+            text = normalize_whitespace(row["text"] or "")
+            lowered = text.lower()
+            if not first_seen_at or (created_at and created_at < first_seen_at):
+                first_seen_at = created_at
+            if created_at > last_seen_at:
+                last_seen_at = created_at
+            if created_at:
+                unique_days.add(datetime.fromtimestamp(created_at).strftime("%Y-%m-%d"))
+                message_times.append(created_at)
+            if not username:
+                username = str(row["username"] or "")
+            if not display_name:
+                display_name = build_actor_name(row["user_id"], row["username"] or "", row["first_name"] or "", row["last_name"] or "", "user")
+            if message_type == "reaction":
+                reactions_given += 1
+                continue
+            message_count += 1
+            if row["reply_to_user_id"] is not None:
+                reply_count += 1
+                if is_owner_identity(int(row["reply_to_user_id"] or 0)):
+                    if any(token in lowered for token in rough_tokens + contradiction_tokens):
+                        owner_affinity_score -= 2
+                        signal_examples.setdefault("owner_hostile", text)
+                    elif any(token in lowered for token in helpful_tokens) or ("спасибо" in lowered):
+                        owner_affinity_score += 1
+            if any(token in lowered for token in rough_tokens):
+                toxicity_score += 3
+                conflict_score += 2
+                instability_score += 1
+                signal_examples.setdefault("toxic", text)
+            if any(token in lowered for token in contradiction_tokens):
+                conflict_score += 2
+                signal_examples.setdefault("conflict", text)
+            if any(token in lowered for token in helpful_tokens):
+                helpfulness_score += 2
+                signal_examples.setdefault("helpful", text)
+            if len(text) >= 180 and any(token in lowered for token in helpful_tokens):
+                helpfulness_score += 2
+            if text:
+                seen_messages[text] = seen_messages.get(text, 0) + 1
+                if seen_messages[text] >= 3:
+                    spam_score += 2
+                    signal_examples.setdefault("spam", text)
+                recent_texts.append(text)
+                if len(recent_texts) >= 3 and recent_texts[-1] == recent_texts[-2] == recent_texts[-3]:
+                    spam_score += 3
+                    signal_examples.setdefault("spam", text)
+        for stamp in sorted(message_times):
+            burst = sum(1 for item in message_times if stamp - 90 <= item <= stamp + 90)
+            if burst >= 4:
+                flood_score = max(flood_score, burst - 3)
+        credibility_score = max(0, helpfulness_score * 2 - toxicity_score - spam_score)
+        risk_flags: List[str] = []
+        if toxicity_score >= 4:
+            risk_flags.append("toxic")
+        if conflict_score >= 4:
+            risk_flags.append("high_conflict")
+        if spam_score >= 3:
+            risk_flags.append("spammy")
+        if flood_score >= 2:
+            risk_flags.append("flood_prone")
+        if instability_score >= 2:
+            risk_flags.append("emotionally_unstable")
+        if helpfulness_score >= 6:
+            risk_flags.append("helpful")
+        if credibility_score >= 8:
+            risk_flags.append("technically_reliable")
+        if owner_affinity_score <= -2:
+            risk_flags.append("owner_hostile")
+        notes: List[str] = []
+        if message_count:
+            notes.append(f"сообщений={message_count}")
+        if reply_count:
+            notes.append(f"reply={reply_count}")
+        if reactions_given:
+            notes.append(f"reactions_given={reactions_given}")
+        if helpfulness_score >= 6:
+            notes.append("часто пишет по делу")
+        if toxicity_score >= 4:
+            notes.append("часто срывается в грубость")
+        if spam_score >= 3:
+            notes.append("склонен к повторам")
+        if flood_score >= 2:
+            notes.append("умеет зафлуживать окно")
+        if owner_affinity_score <= -2:
+            notes.append("часто жёстко отвечает владельцу")
+        if owner_affinity_score >= 2:
+            notes.append("обычно к владельцу лоялен")
+        return {
+            "username": username,
+            "display_name": display_name,
+            "first_seen_at": first_seen_at,
+            "last_seen_at": last_seen_at,
+            "message_count": message_count,
+            "reply_count": reply_count,
+            "reactions_given": reactions_given,
+            "conflict_score": conflict_score,
+            "toxicity_score": toxicity_score,
+            "spam_score": spam_score,
+            "flood_score": flood_score,
+            "instability_score": instability_score,
+            "helpfulness_score": helpfulness_score,
+            "credibility_score": credibility_score,
+            "owner_affinity_score": owner_affinity_score,
+            "risk_flags": risk_flags,
+            "notes_summary": "; ".join(notes),
+            "signal_examples": signal_examples,
+            "unique_days": len(unique_days),
+        }
+
+    def refresh_participant_behavior_profile(self, user_id: int, chat_id: Optional[int] = None) -> None:
+        if not user_id:
+            return
+        with self.db_lock:
+            def _merge_visual_signals(stats: Dict[str, object], signal_rows: List[sqlite3.Row]) -> Dict[str, object]:
+                if not signal_rows:
+                    return stats
+                merged = dict(stats)
+                risk_flags = list(merged.get("risk_flags") or [])
+                signal_examples = dict(merged.get("signal_examples") or {})
+                notes_summary = str(merged.get("notes_summary") or "")
+                suspicious_hits = 0
+                scam_hits = 0
+                sexual_hits = 0
+                bot_hits = 0
+                for row in signal_rows:
+                    try:
+                        flags = json.loads(row["risk_flags_json"] or "[]")
+                    except ValueError:
+                        flags = []
+                    analysis_text = truncate_text(normalize_visual_analysis_text(row["analysis_text"] or row["caption"] or ""), 280)
+                    if any(flag in flags for flag in ("suspicious_visual", "fake_identity", "engagement_bait")):
+                        suspicious_hits += 1
+                        signal_examples.setdefault("suspicious_visual", analysis_text)
+                    if any(flag in flags for flag in ("romance_scam", "scam_risk", "promo_bait")):
+                        scam_hits += 1
+                        signal_examples.setdefault("scam_risk", analysis_text)
+                    if any(flag in flags for flag in ("sexual_bait", "adult_promo", "sexualized_profile")):
+                        sexual_hits += 1
+                        signal_examples.setdefault("sexual_bait", analysis_text)
+                    if any(flag in flags for flag in ("likely_bot", "bot_like", "mass_bait")):
+                        bot_hits += 1
+                        signal_examples.setdefault("likely_bot", analysis_text)
+                if suspicious_hits:
+                    risk_flags.append("suspicious_visual")
+                if scam_hits:
+                    risk_flags.append("scam_risk")
+                if sexual_hits:
+                    risk_flags.append("sexual_bait")
+                if bot_hits:
+                    risk_flags.append("likely_bot_like")
+                merged["risk_flags"] = list(dict.fromkeys(risk_flags))
+                merged["signal_examples"] = signal_examples
+                merged["spam_score"] = int(merged.get("spam_score") or 0) + suspicious_hits + bot_hits
+                merged["instability_score"] = int(merged.get("instability_score") or 0) + sexual_hits
+                merged["conflict_score"] = int(merged.get("conflict_score") or 0) + scam_hits
+                visual_notes: List[str] = []
+                if suspicious_hits:
+                    visual_notes.append("подозрительный визуальный паттерн")
+                if scam_hits:
+                    visual_notes.append("визуально похож на bait/scam")
+                if sexual_hits:
+                    visual_notes.append("есть sexualized bait сигналы")
+                if bot_hits:
+                    visual_notes.append("есть признаки неаутентичного аккаунта")
+                merged["notes_summary"] = "; ".join(part for part in [notes_summary, ", ".join(visual_notes)] if part)
+                return merged
+
+            table_names = {
+                str(row["name"])
+                for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            global_rows = self.db.execute(
+                """SELECT created_at, user_id, username, first_name, last_name, message_type, text, reply_to_user_id, message_id
+                FROM chat_events
+                WHERE role = 'user' AND user_id = ?
+                ORDER BY id ASC""",
+                (user_id,),
+            ).fetchall()
+            if not global_rows:
+                return
+            global_stats = self._analyze_participant_rows(global_rows)
+            visual_global_rows = self.db.execute(
+                """SELECT risk_flags_json, analysis_text, caption
+                FROM participant_visual_signals
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 20""",
+                (user_id,),
+            ).fetchall()
+            global_stats = _merge_visual_signals(global_stats, visual_global_rows)
+            reactions_received = 0
+            if "score_events" in table_names:
+                reactions_received = int(self.db.execute("SELECT COUNT(*) FROM score_events WHERE user_id = ? AND event_type = 'reaction_received'", (user_id,)).fetchone()[0] or 0)
+            self.db.execute("DELETE FROM participant_observations WHERE user_id = ? AND chat_id = 0", (user_id,))
+            for signal_type, example in dict(global_stats.get("signal_examples") or {}).items():
+                score_delta = int(global_stats.get("toxicity_score", 0) or 0) if signal_type == "toxic" else 1
+                self.db.execute(
+                    """INSERT INTO participant_observations(user_id, chat_id, signal_type, score_delta, evidence_text, created_at)
+                    VALUES(?, 0, ?, ?, ?, strftime('%s','now'))""",
+                    (user_id, signal_type, score_delta, truncate_text(example, 280)),
+                )
+            self.db.execute(
+                """INSERT INTO participant_profiles(
+                    user_id, username, display_name, first_seen_at, last_seen_at, message_count, reply_count,
+                    reactions_given, reactions_received, conflict_score, toxicity_score, spam_score, flood_score,
+                    instability_score, helpfulness_score, credibility_score, owner_affinity_score, risk_flags_json,
+                    notes_summary, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = excluded.username,
+                    display_name = excluded.display_name,
+                    first_seen_at = excluded.first_seen_at,
+                    last_seen_at = excluded.last_seen_at,
+                    message_count = excluded.message_count,
+                    reply_count = excluded.reply_count,
+                    reactions_given = excluded.reactions_given,
+                    reactions_received = excluded.reactions_received,
+                    conflict_score = excluded.conflict_score,
+                    toxicity_score = excluded.toxicity_score,
+                    spam_score = excluded.spam_score,
+                    flood_score = excluded.flood_score,
+                    instability_score = excluded.instability_score,
+                    helpfulness_score = excluded.helpfulness_score,
+                    credibility_score = excluded.credibility_score,
+                    owner_affinity_score = excluded.owner_affinity_score,
+                    risk_flags_json = excluded.risk_flags_json,
+                    notes_summary = excluded.notes_summary,
+                    updated_at = excluded.updated_at""",
+                (
+                    user_id,
+                    str(global_stats.get("username") or ""),
+                    str(global_stats.get("display_name") or str(user_id)),
+                    int(global_stats.get("first_seen_at") or 0),
+                    int(global_stats.get("last_seen_at") or 0),
+                    int(global_stats.get("message_count") or 0),
+                    int(global_stats.get("reply_count") or 0),
+                    int(global_stats.get("reactions_given") or 0),
+                    reactions_received,
+                    int(global_stats.get("conflict_score") or 0),
+                    int(global_stats.get("toxicity_score") or 0),
+                    int(global_stats.get("spam_score") or 0),
+                    int(global_stats.get("flood_score") or 0),
+                    int(global_stats.get("instability_score") or 0),
+                    int(global_stats.get("helpfulness_score") or 0),
+                    int(global_stats.get("credibility_score") or 0),
+                    int(global_stats.get("owner_affinity_score") or 0),
+                    json.dumps(global_stats.get("risk_flags") or [], ensure_ascii=False),
+                    truncate_text(str(global_stats.get("notes_summary") or ""), 320),
+                ),
+            )
+            if chat_id is not None:
+                chat_rows = self.db.execute(
+                    """SELECT created_at, user_id, username, first_name, last_name, message_type, text, reply_to_user_id, message_id
+                    FROM chat_events
+                    WHERE role = 'user' AND chat_id = ? AND user_id = ?
+                    ORDER BY id ASC""",
+                    (chat_id, user_id),
+                ).fetchall()
+                if chat_rows:
+                    chat_stats = self._analyze_participant_rows(chat_rows)
+                    visual_chat_rows = self.db.execute(
+                        """SELECT risk_flags_json, analysis_text, caption
+                        FROM participant_visual_signals
+                        WHERE chat_id = ? AND user_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT 12""",
+                        (chat_id, user_id),
+                    ).fetchall()
+                    chat_stats = _merge_visual_signals(chat_stats, visual_chat_rows)
+                    self.db.execute("DELETE FROM participant_observations WHERE user_id = ? AND chat_id = ?", (user_id, chat_id))
+                    for signal_type, example in dict(chat_stats.get("signal_examples") or {}).items():
+                        score_delta = int(chat_stats.get("toxicity_score", 0) or 0) if signal_type == "toxic" else 1
+                        self.db.execute(
+                            """INSERT INTO participant_observations(user_id, chat_id, signal_type, score_delta, evidence_text, created_at)
+                            VALUES(?, ?, ?, ?, ?, strftime('%s','now'))""",
+                            (user_id, chat_id, signal_type, score_delta, truncate_text(example, 280)),
+                        )
+                    chat_reactions_received = 0
+                    if "score_events" in table_names:
+                        chat_reactions_received = int(
+                            self.db.execute(
+                                "SELECT COUNT(*) FROM score_events WHERE user_id = ? AND chat_id = ? AND event_type = 'reaction_received'",
+                                (user_id, chat_id),
+                            ).fetchone()[0]
+                            or 0
+                        )
+                    self.db.execute(
+                        """INSERT INTO participant_chat_profiles(
+                            chat_id, user_id, username, display_name, first_seen_at, last_seen_at, message_count, reply_count,
+                            reactions_given, reactions_received, conflict_score, toxicity_score, spam_score, flood_score,
+                            instability_score, helpfulness_score, credibility_score, risk_flags_json, notes_summary, updated_at
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                        ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                            username = excluded.username,
+                            display_name = excluded.display_name,
+                            first_seen_at = excluded.first_seen_at,
+                            last_seen_at = excluded.last_seen_at,
+                            message_count = excluded.message_count,
+                            reply_count = excluded.reply_count,
+                            reactions_given = excluded.reactions_given,
+                            reactions_received = excluded.reactions_received,
+                            conflict_score = excluded.conflict_score,
+                            toxicity_score = excluded.toxicity_score,
+                            spam_score = excluded.spam_score,
+                            flood_score = excluded.flood_score,
+                            instability_score = excluded.instability_score,
+                            helpfulness_score = excluded.helpfulness_score,
+                            credibility_score = excluded.credibility_score,
+                            risk_flags_json = excluded.risk_flags_json,
+                            notes_summary = excluded.notes_summary,
+                            updated_at = excluded.updated_at""",
+                        (
+                            chat_id,
+                            user_id,
+                            str(chat_stats.get("username") or ""),
+                            str(chat_stats.get("display_name") or str(user_id)),
+                            int(chat_stats.get("first_seen_at") or 0),
+                            int(chat_stats.get("last_seen_at") or 0),
+                            int(chat_stats.get("message_count") or 0),
+                            int(chat_stats.get("reply_count") or 0),
+                            int(chat_stats.get("reactions_given") or 0),
+                            chat_reactions_received,
+                            int(chat_stats.get("conflict_score") or 0),
+                            int(chat_stats.get("toxicity_score") or 0),
+                            int(chat_stats.get("spam_score") or 0),
+                            int(chat_stats.get("flood_score") or 0),
+                            int(chat_stats.get("instability_score") or 0),
+                            int(chat_stats.get("helpfulness_score") or 0),
+                            int(chat_stats.get("credibility_score") or 0),
+                            json.dumps(chat_stats.get("risk_flags") or [], ensure_ascii=False),
+                            truncate_text(str(chat_stats.get("notes_summary") or ""), 320),
+                        ),
+                    )
+            self.db.commit()
+
+    def get_participant_behavior_context(self, chat_id: int, target_user_id: Optional[int] = None) -> str:
+        if target_user_id is None:
+            return ""
+        with self.db_lock:
+            global_row = self.db.execute("SELECT * FROM participant_profiles WHERE user_id = ?", (target_user_id,)).fetchone()
+            chat_row = self.db.execute("SELECT * FROM participant_chat_profiles WHERE chat_id = ? AND user_id = ?", (chat_id, target_user_id)).fetchone()
+            observation_rows = self.db.execute(
+                """SELECT signal_type, evidence_text
+                FROM participant_observations
+                WHERE user_id = ? AND chat_id IN (0, ?)
+                ORDER BY created_at DESC
+                LIMIT 6""",
+                (target_user_id, chat_id),
+            ).fetchall()
+            visual_rows = self.db.execute(
+                """SELECT analysis_text, risk_flags_json
+                FROM participant_visual_signals
+                WHERE user_id = ? AND chat_id IN (?, 0)
+                ORDER BY created_at DESC
+                LIMIT 3""",
+                (target_user_id, chat_id),
+            ).fetchall()
+        if not global_row and not chat_row:
+            return ""
+        lines = ["Поведенческий профиль:"]
+        if chat_row:
+            flags = ", ".join(translate_risk_flag(flag) for flag in json.loads(chat_row["risk_flags_json"] or "[]")) or "нет"
+            lines.append(
+                f"- по чату: сообщений={int(chat_row['message_count'] or 0)}; конфликт={int(chat_row['conflict_score'] or 0)}; токсичность={int(chat_row['toxicity_score'] or 0)}; спам={int(chat_row['spam_score'] or 0)}; флуд={int(chat_row['flood_score'] or 0)}; полезность={int(chat_row['helpfulness_score'] or 0)}; доверие={int(chat_row['credibility_score'] or 0)}; флаги={flags}"
+            )
+            if chat_row["notes_summary"]:
+                lines.append(f"- заметки по чату: {chat_row['notes_summary']}")
+        if global_row:
+            flags = ", ".join(translate_risk_flag(flag) for flag in json.loads(global_row["risk_flags_json"] or "[]")) or "нет"
+            lines.append(
+                f"- глобально: сообщений={int(global_row['message_count'] or 0)}; reply={int(global_row['reply_count'] or 0)}; реакций отправлено={int(global_row['reactions_given'] or 0)}; реакций получено={int(global_row['reactions_received'] or 0)}; отношение к владельцу={int(global_row['owner_affinity_score'] or 0)}; флаги={flags}"
+            )
+            if global_row["notes_summary"]:
+                lines.append(f"- глобальные заметки: {global_row['notes_summary']}")
+        if observation_rows:
+            lines.append("Последние сигналы:")
+            for row in observation_rows[:4]:
+                lines.append(f"- {row['signal_type']}: {truncate_text(normalize_whitespace(row['evidence_text'] or ''), 180)}")
+        if visual_rows:
+            lines.append("Визуальные сигналы:")
+            for row in visual_rows:
+                try:
+                    flags = ", ".join(translate_risk_flag(flag) for flag in json.loads(row["risk_flags_json"] or "[]")[:4]) or "нет"
+                except ValueError:
+                    flags = "нет"
+                lines.append(f"- {flags}: {truncate_text(normalize_visual_analysis_text(row['analysis_text'] or ''), 180)}")
+        return "\n".join(lines)
+
+    def record_participant_visual_signal(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        file_unique_id: str,
+        media_sha256: str,
+        caption: str,
+        analysis_text: str,
+        risk_flags: List[str],
+    ) -> None:
+        with self.db_lock:
+            self.db.execute(
+                """INSERT INTO participant_visual_signals(
+                    chat_id, user_id, message_id, file_unique_id, media_sha256, caption, analysis_text, risk_flags_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                    file_unique_id = excluded.file_unique_id,
+                    media_sha256 = excluded.media_sha256,
+                    caption = excluded.caption,
+                    analysis_text = excluded.analysis_text,
+                    risk_flags_json = excluded.risk_flags_json,
+                    created_at = excluded.created_at""",
+                (
+                    chat_id,
+                    user_id,
+                    message_id,
+                    file_unique_id or "",
+                    media_sha256 or "",
+                    truncate_text(caption or "", 500),
+                    truncate_text(normalize_visual_analysis_text(analysis_text or ""), 1200),
+                    json.dumps(risk_flags or [], ensure_ascii=False),
+                ),
+            )
+            self.db.commit()
+
+    def get_visual_signal_for_message(self, chat_id: int, message_id: int) -> Optional[sqlite3.Row]:
+        with self.db_lock:
+            row = self.db.execute(
+                """SELECT user_id, caption, analysis_text, risk_flags_json, created_at
+                FROM participant_visual_signals
+                WHERE chat_id = ? AND message_id = ?
+                LIMIT 1""",
+                (chat_id, message_id),
+            ).fetchone()
+        return row
+
+    def record_message_subject(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        subject_type: str,
+        source_kind: str,
+        user_id: int = 0,
+        summary: str = "",
+        details: Optional[Dict[str, object]] = None,
+    ) -> None:
+        if not chat_id or not message_id or not subject_type.strip():
+            return
+        with self.db_lock:
+            self.db.execute(
+                """INSERT INTO message_subjects(
+                    chat_id, message_id, subject_type, source_kind, user_id, summary, details_json, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                    subject_type = excluded.subject_type,
+                    source_kind = excluded.source_kind,
+                    user_id = excluded.user_id,
+                    summary = excluded.summary,
+                    details_json = excluded.details_json,
+                    updated_at = excluded.updated_at""",
+                (
+                    chat_id,
+                    message_id,
+                    subject_type.strip(),
+                    source_kind.strip(),
+                    int(user_id or 0),
+                    truncate_text(normalize_whitespace(summary or ""), 1200),
+                    json.dumps(details or {}, ensure_ascii=False),
+                ),
+            )
+            self.db.commit()
+
+    def get_message_subject(self, chat_id: int, message_id: int) -> Optional[sqlite3.Row]:
+        with self.db_lock:
+            row = self.db.execute(
+                """SELECT chat_id, message_id, subject_type, source_kind, user_id, summary, details_json, updated_at
+                FROM message_subjects
+                WHERE chat_id = ? AND message_id = ?
+                LIMIT 1""",
+                (chat_id, message_id),
+            ).fetchone()
+        return row
+
+    def set_active_subject(
+        self,
+        *,
+        chat_id: int,
+        user_id: Optional[int],
+        message_id: int,
+        subject_type: str,
+        source: str = "",
+    ) -> None:
+        if not chat_id or not message_id or not subject_type.strip():
+            return
+        scope_user_id = int(user_id or 0)
+        payload = {
+            "chat_id": int(chat_id),
+            "user_id": scope_user_id,
+            "message_id": int(message_id),
+            "subject_type": subject_type.strip(),
+            "source": source.strip(),
+            "updated_at": int(time.time()),
+        }
+        self.set_meta(f"active_subject:{chat_id}:{scope_user_id}", json.dumps(payload, ensure_ascii=False))
+
+    def get_active_subject(self, chat_id: int, user_id: Optional[int]) -> Optional[Dict[str, object]]:
+        scope_user_id = int(user_id or 0)
+        raw = self.get_meta(f"active_subject:{chat_id}:{scope_user_id}", "")
+        if not raw.strip():
+            return None
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            return None
+        if int(payload.get("chat_id") or 0) != int(chat_id):
+            return None
+        updated_at = int(payload.get("updated_at") or 0)
+        if updated_at and int(time.time()) - updated_at > 600:
+            return None
+        return payload
 
     def refresh_user_memory_profile(
         self,
@@ -2118,13 +2968,179 @@ class BridgeState:
         if not rows:
             return ""
         participant_map = {int(row[0]): row for row in participant_rows if row[0] is not None}
-        return _render_user_memory_context(
+        rendered = _render_user_memory_context(
             rows,
             participant_map,
             relation_rows,
             build_actor_name_func=build_actor_name,
             truncate_text_func=truncate_text,
         )
+        if OWNER_USER_ID in selected_ids:
+            cross_chat_context = self.get_owner_cross_chat_memory_context(limit=4)
+            if cross_chat_context:
+                return f"{rendered}\n\n{cross_chat_context}".strip()
+        return rendered
+
+    def get_owner_cross_chat_memory_context(self, limit: int = 4) -> str:
+        with self.db_lock:
+            event_rows = self.db.execute(
+                """
+                SELECT e.chat_id, COALESCE(MAX(NULLIF(c.chat_title, '')), '') AS chat_title, COUNT(*) AS cnt, MAX(e.created_at) AS last_ts
+                FROM chat_events e
+                LEFT JOIN chat_runtime_cache c ON c.chat_id = e.chat_id
+                WHERE e.role = 'user' AND e.user_id = ? AND e.chat_id < 0
+                GROUP BY e.chat_id
+                ORDER BY last_ts DESC
+                LIMIT ?
+                """,
+                (OWNER_USER_ID, max(2, limit * 2)),
+            ).fetchall()
+            relation_rows = self.db.execute(
+                """
+                SELECT
+                    other.user_id AS other_user_id,
+                    COALESCE(MAX(NULLIF(other.username, '')), '') AS username,
+                    COALESCE(MAX(NULLIF(other.first_name, '')), '') AS first_name,
+                    COALESCE(MAX(NULLIF(other.last_name, '')), '') AS last_name,
+                    COUNT(*) AS overlap_count,
+                    COUNT(DISTINCT owner.chat_id) AS shared_chat_count,
+                    MAX(owner.created_at) AS last_ts
+                FROM chat_events owner
+                JOIN chat_events other
+                  ON other.chat_id = owner.chat_id
+                 AND other.role = 'user'
+                 AND other.user_id IS NOT NULL
+                 AND owner.user_id IS NOT NULL
+                 AND other.user_id != owner.user_id
+                WHERE owner.role = 'user'
+                  AND owner.user_id = ?
+                  AND owner.chat_id < 0
+                GROUP BY other.user_id
+                ORDER BY shared_chat_count DESC, overlap_count DESC, last_ts DESC
+                LIMIT ?
+                """,
+                (OWNER_USER_ID, max(3, limit)),
+            ).fetchall()
+            summary_rows = self.db.execute(
+                """
+                SELECT s.chat_id, s.scope, s.summary, s.created_at
+                FROM summary_snapshots s
+                WHERE s.chat_id IN (
+                    SELECT DISTINCT chat_id
+                    FROM chat_events
+                    WHERE role = 'user' AND user_id = ? AND chat_id < 0
+                )
+                ORDER BY s.created_at DESC, s.id DESC
+                LIMIT ?
+                """,
+                (OWNER_USER_ID, max(4, limit * 3)),
+            ).fetchall()
+        if not event_rows:
+            return ""
+        lines = ["Owner cross-chat memory:"]
+        top_chats = []
+        for row in event_rows[:limit]:
+            chat_id_value = int(row["chat_id"] or 0)
+            chat_title = normalize_whitespace(row["chat_title"] or "") or str(chat_id_value)
+            top_chats.append(chat_id_value)
+            lines.append(
+                f"- active_chat: {truncate_text(chat_title, 80)}; messages={int(row['cnt'] or 0)}; chat_id={chat_id_value}"
+            )
+        if relation_rows:
+            lines.append("Owner relation layer:")
+            for row in relation_rows[:limit]:
+                actor = build_actor_name(
+                    int(row["other_user_id"] or 0),
+                    row["username"] or "",
+                    row["first_name"] or "",
+                    row["last_name"] or "",
+                    "user",
+                )
+                lines.append(
+                    f"- {actor}: shared_chats={int(row['shared_chat_count'] or 0)}; overlap={int(row['overlap_count'] or 0)}"
+                )
+        added = 0
+        for row in summary_rows:
+            chat_id_value = int(row["chat_id"] or 0)
+            if chat_id_value not in top_chats:
+                continue
+            stamp = datetime.fromtimestamp(int(row["created_at"] or 0)).strftime("%m-%d %H:%M") if row["created_at"] else "--:--"
+            summary_text = normalize_whitespace(row["summary"] or "")
+            if not summary_text:
+                continue
+            lines.append(
+                f"- recent_group_summary [{stamp}] chat_id={chat_id_value}: {truncate_text(summary_text, 220)}"
+            )
+            added += 1
+            if added >= limit:
+                break
+        return "\n".join(lines)
+
+    def get_chat_profile_context(self, chat_id: int, limit: int = 6) -> str:
+        with self.db_lock:
+            runtime_row = self.db.execute(
+                """
+                SELECT chat_title, member_count, admins_synced_at, member_count_synced_at
+                FROM chat_runtime_cache
+                WHERE chat_id = ?
+                """,
+                (chat_id,),
+            ).fetchone()
+            participant_rows = self.db.execute(
+                """
+                SELECT user_id, username, first_name, last_name, is_admin, last_status, last_seen_at
+                FROM chat_participants
+                WHERE chat_id = ?
+                ORDER BY is_admin DESC, last_seen_at DESC
+                LIMIT ?
+                """,
+                (chat_id, max(4, limit)),
+            ).fetchall()
+            top_rows = self.db.execute(
+                """
+                SELECT user_id, username, first_name, last_name, COUNT(*) AS cnt
+                FROM chat_events
+                WHERE chat_id = ? AND role = 'user'
+                GROUP BY user_id, username, first_name, last_name
+                ORDER BY cnt DESC
+                LIMIT ?
+                """,
+                (chat_id, max(4, limit)),
+            ).fetchall()
+            deep_profile_row = self.db.execute(
+                """
+                SELECT summary
+                FROM summary_snapshots
+                WHERE chat_id = ? AND scope = 'group_deep_profile'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (chat_id,),
+            ).fetchone()
+        lines = ["Group profile:"]
+        if runtime_row:
+            chat_title = normalize_whitespace(runtime_row["chat_title"] or "")
+            if chat_title:
+                lines.append(f"- title: {truncate_text(chat_title, 100)}")
+            if int(runtime_row["member_count"] or 0) > 0:
+                lines.append(f"- member_count: {int(runtime_row['member_count'] or 0)}")
+        if top_rows:
+            active = ", ".join(
+                f"{build_actor_name(row['user_id'], row['username'] or '', row['first_name'] or '', row['last_name'] or '', 'user')}={int(row['cnt'] or 0)}"
+                for row in top_rows[:limit]
+            )
+            lines.append(f"- top_speakers: {truncate_text(active, 320)}")
+        if participant_rows:
+            admins = [
+                build_actor_name(row["user_id"], row["username"] or "", row["first_name"] or "", row["last_name"] or "", "user")
+                for row in participant_rows
+                if int(row["is_admin"] or 0)
+            ]
+            if admins:
+                lines.append(f"- known_admins: {truncate_text(', '.join(admins[:limit]), 220)}")
+        if deep_profile_row and deep_profile_row["summary"]:
+            lines.append(truncate_text(normalize_whitespace(deep_profile_row["summary"] or ""), 900))
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     def get_actor_labels(self, chat_id: int, user_ids: List[int]) -> Dict[int, str]:
         normalized_ids = sorted({int(user_id) for user_id in user_ids if user_id is not None})
@@ -2881,8 +3897,10 @@ class BridgeState:
                 (chat_id,),
             ).fetchall()
         dynamics = self.get_chat_dynamics_context(chat_id, query=query)
+        profile = self.get_chat_profile_context(chat_id)
         return _render_chat_memory_context(
             summary=summary,
+            profile=profile,
             rows=rows,
             facts=facts,
             dynamics=dynamics,
@@ -2910,13 +3928,22 @@ class BridgeState:
         short_markers = 0
         laugh_markers = 0
         rough_markers = 0
+        duplicate_markers = 0
+        current_streak = 0
+        previous_label = ""
         topic_markers: Dict[str, int] = {}
         label_by_user: Dict[int, str] = {}
+        last_text_by_user: Dict[str, str] = {}
         for user_id, username, first_name, last_name, reply_to_user_id, message_type, text, created_at in recent_rows:
             label = build_actor_name(user_id, username or "", first_name or "", last_name or "", "user")
             actor_counts[label] = actor_counts.get(label, 0) + 1
             if user_id is not None:
                 label_by_user[int(user_id)] = label
+            if previous_label == label:
+                current_streak += 1
+            else:
+                previous_label = label
+                current_streak = 1
             cleaned = (text or "").lower()
             if len((text or "").strip()) <= 40:
                 short_markers += 1
@@ -2924,6 +3951,9 @@ class BridgeState:
                 laugh_markers += 1
             if any(token in cleaned for token in ("нах", "охуе", "говно", "заеб", "пизд")):
                 rough_markers += 1
+            if len(cleaned) >= 8 and last_text_by_user.get(label, "") == cleaned:
+                duplicate_markers += 1
+            last_text_by_user[label] = cleaned
             for marker in ("бот", "jarvis", "осознан", "контекст", "стиль", "тест", "чат", "памят", "серьез", "цикл"):
                 if marker in cleaned:
                     topic_markers[marker] = topic_markers.get(marker, 0) + 1
@@ -2934,10 +3964,13 @@ class BridgeState:
                 reply_pairs[pair] = reply_pairs.get(pair, 0) + 1
         lines = ["Chat dynamics:"]
         if actor_counts:
+            ranked_actors = sorted(actor_counts.items(), key=lambda item: (-item[1], item[0]))
             top_actors = ", ".join(
-                f"{name}={count}" for name, count in sorted(actor_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+                f"{name}={count}" for name, count in ranked_actors[:5]
             )
             lines.append(f"- active_now: {truncate_text(top_actors, 320)}")
+            if ranked_actors:
+                lines.append(f"- tone_setters: {truncate_text(', '.join(name for name, _count in ranked_actors[:3]), 220)}")
         if reply_pairs:
             top_pairs = ", ".join(
                 f"{src} -> {dst} x{count}" for (src, dst), count in sorted(reply_pairs.items(), key=lambda item: (-item[1], item[0][0], item[0][1]))[:4]
@@ -2950,6 +3983,10 @@ class BridgeState:
             tone_bits.append("ирония/смех")
         if rough_markers >= 1:
             tone_bits.append("грубоватый дружеский тон")
+        if duplicate_markers >= 2:
+            tone_bits.append("повторы и зацикливание")
+        if current_streak >= 3:
+            tone_bits.append("серии сообщений подряд")
         if tone_bits:
             lines.append(f"- tone: {', '.join(tone_bits)}")
         if topic_markers:
@@ -2957,6 +3994,15 @@ class BridgeState:
                 f"{name}={count}" for name, count in sorted(topic_markers.items(), key=lambda item: (-item[1], item[0]))[:6]
             )
             lines.append(f"- recurring_topics: {truncate_text(topics, 320)}")
+        if actor_counts:
+            message_total = sum(actor_counts.values())
+            if message_total > 0:
+                dominant_name, dominant_count = max(actor_counts.items(), key=lambda item: (item[1], item[0]))
+                dominance_share = dominant_count / message_total
+                if dominance_share >= 0.34:
+                    lines.append(
+                        f"- dominance_signal: {truncate_text(dominant_name, 120)} держит заметную долю окна ({int(dominance_share * 100)}%)"
+                    )
         recent_snippets = [
             truncate_text((row[6] or "").strip(), 120)
             for row in recent_rows[-6:]
@@ -4173,6 +5219,7 @@ class TelegramBridge:
     def __init__(self, config: BotConfig) -> None:
         self.config = config
         self.owner_user_id = OWNER_USER_ID
+        self.owner_alias_user_ids = OWNER_ALIAS_USER_IDS
         self.state = BridgeState(config.history_limit, config.default_mode, config.db_path)
         self.legacy = LegacyJarvisAdapter(config.legacy_jarvis_db_path, config.db_path)
         self.appeals = AppealsService(config.db_path, config.legacy_jarvis_db_path)
@@ -4253,6 +5300,7 @@ class TelegramBridge:
         self.backup_in_progress = False
         self.next_backup_check_ts = 0.0
         self.next_report_check_ts = 0.0
+        self.next_owner_alert_check_ts = 0.0
         self.next_moderation_check_ts = 0.0
         self.next_memory_refresh_check_ts = 0.0
         self.next_auto_self_heal_check_ts = 0.0
@@ -4401,6 +5449,30 @@ class TelegramBridge:
         jobs = [job for job in jobs if int(job.get("chat_id") or 0) != int(chat_id or 0)]
         self.state.set_meta("pending_enterprise_jobs", json.dumps(jobs, ensure_ascii=False))
 
+    def _filter_new_achievement_announcements(
+        self,
+        chat_id: int,
+        user_id: int,
+        unlocked: Sequence[Dict[str, object]],
+        cooldown_seconds: int = 86400,
+    ) -> List[Dict[str, object]]:
+        fresh: List[Dict[str, object]] = []
+        now_ts = int(time.time())
+        for item in unlocked:
+            code = str(item.get("code") or "").strip()
+            if not code:
+                continue
+            meta_key = f"achievement_announce:{chat_id}:{user_id}:{code}"
+            try:
+                last_sent_ts = int(str(self.state.get_meta(meta_key, "0") or "0").strip() or "0")
+            except ValueError:
+                last_sent_ts = 0
+            if last_sent_ts > 0 and now_ts - last_sent_ts < cooldown_seconds:
+                continue
+            self.state.set_meta(meta_key, str(now_ts))
+            fresh.append(item)
+        return fresh
+
     def resume_pending_enterprise_jobs(self) -> None:
         raw = self.state.get_meta("pending_enterprise_jobs", "[]")
         try:
@@ -4416,6 +5488,8 @@ class TelegramBridge:
     def _resume_pending_enterprise_job(self, job: dict) -> None:
         job_id = str(job.get("job_id") or "")
         chat_id = int(job.get("chat_id") or 0)
+        delivery_chat_id = int(job.get("delivery_chat_id") or 0) or chat_id
+        progress_chat_id = int(job.get("progress_chat_id") or 0) or delivery_chat_id or chat_id
         if not job_id or not chat_id:
             return
         try:
@@ -4428,12 +5502,14 @@ class TelegramBridge:
             answer = self.js_enterprise.wait_for_job(
                 job_id=job_id,
                 chat_id=chat_id,
+                progress_chat_id=progress_chat_id,
                 initial_status=str(job.get("initial_status") or OWNER_AGENT_RUNNING_TEXT),
                 status_message_id=status_message_id,
                 effective_timeout=int(job.get("timeout_seconds") or 0) or None,
                 progress_style=str(job.get("progress_style") or "enterprise"),
                 replace_status_with_answer=bool(job.get("replace_status_with_answer")),
                 target_label=str(job.get("target_label") or ""),
+                delivery_chat_id=delivery_chat_id,
                 postprocess=bool(job.get("postprocess", True)),
                 approval_policy=str(job.get("approval_policy") or "") or None,
                 sandbox_mode=str(job.get("sandbox_mode") or "") or None,
@@ -4443,9 +5519,12 @@ class TelegramBridge:
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
             delivered_via_status = self.consume_answer_delivered_via_status(chat_id)
             if not delivered_via_status:
-                self.safe_send_text(chat_id, answer)
+                self.safe_send_text(delivery_chat_id, answer)
             self.clear_pending_enterprise_job(job_id)
-            log(f"resume pending enterprise delivered job={job_id} chat={chat_id} via_status={'yes' if delivered_via_status else 'no'}")
+            log(
+                "resume pending enterprise delivered "
+                f"job={job_id} chat={chat_id} delivery_chat={delivery_chat_id} via_status={'yes' if delivered_via_status else 'no'}"
+            )
         except Exception as error:
             self.clear_pending_enterprise_job(job_id)
             log_exception(f"resume pending enterprise failed job={job_id}", error, limit=10)
@@ -5032,6 +6111,9 @@ class TelegramBridge:
     def is_owner_private_chat(self, user_id: Optional[int], chat_id: int) -> bool:
         return is_owner_private_chat(user_id, chat_id)
 
+    def is_owner_identity(self, user_id: Optional[int]) -> bool:
+        return is_owner_identity(user_id)
+
     def build_route_summary_text(self, route_info: RouteDecision) -> str:
         return build_route_summary_text(route_info)
 
@@ -5074,6 +6156,9 @@ class TelegramBridge:
 
     def parse_owner_report_command(self, text: str) -> bool:
         return parse_owner_report_command(text)
+
+    def parse_chat_watch_command(self, text: str) -> bool:
+        return parse_chat_watch_command(text)
 
     def parse_export_command(self, text: str) -> Optional[str]:
         return parse_export_command(text)
@@ -5187,6 +6272,7 @@ class TelegramBridge:
                 self.beat_heartbeat()
                 self.maybe_start_weekly_backup()
                 self.maybe_start_scheduled_reports()
+                self.maybe_start_owner_chat_alerts()
                 self.maybe_start_memory_refresh()
                 self.maybe_run_auto_repair_loop()
                 self.process_due_moderation_actions()
@@ -5256,6 +6342,9 @@ class TelegramBridge:
         pending_text = self.state.get_meta("pending_restart_text", RESTARTED_TEXT) or RESTARTED_TEXT
         started_at_text = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%Y-%m-%d %H:%M:%S MSK")
         outgoing_text = f"{pending_text}\nВремя запуска: {started_at_text}"
+        restart_digest = self.build_restart_runtime_digest()
+        if restart_digest:
+            outgoing_text = f"{outgoing_text}\n\n{restart_digest}"
         try:
             edited = False
             if raw_message_id:
@@ -5270,6 +6359,37 @@ class TelegramBridge:
             self.state.set_meta("pending_restart_chat_id", "")
             self.state.set_meta("pending_restart_message_id", "")
             self.state.set_meta("pending_restart_text", "")
+
+    def build_restart_runtime_digest(self) -> str:
+        lines: List[str] = []
+        enterprise_ok = False
+        try:
+            response = self.session.get(f"{self.config.enterprise_server_base_url}/health", timeout=2)
+            enterprise_ok = bool(response.ok)
+        except Exception:
+            enterprise_ok = False
+        lines.append(f"Enterprise server: {'ok' if enterprise_ok else 'unreachable'}")
+
+        raw_jobs = self.state.get_meta("pending_enterprise_jobs", "[]")
+        try:
+            jobs = json.loads(raw_jobs)
+        except ValueError:
+            jobs = []
+        if not isinstance(jobs, list):
+            jobs = []
+        active_jobs = [job for job in jobs if str(job.get("job_id") or "").strip()]
+        lines.append(f"Pending enterprise jobs: {len(active_jobs)}")
+        if active_jobs:
+            preview = []
+            for job in active_jobs[:3]:
+                job_id = str(job.get("job_id") or "").strip() or "?"
+                source_chat_id = int(job.get("chat_id") or 0)
+                delivery_chat_id = int(job.get("delivery_chat_id") or 0) or source_chat_id
+                preview.append(f"- {job_id}: source={source_chat_id} delivery={delivery_chat_id}")
+            lines.extend(preview)
+            if len(active_jobs) > 3:
+                lines.append(f"- ... ещё {len(active_jobs) - 3}")
+        return "\n".join(lines)
 
     def get_updates(self, offset: Optional[int]) -> dict:
         params = {
@@ -5372,7 +6492,7 @@ class TelegramBridge:
     def is_chat_admin(self, chat_id: int, user_id: Optional[int]) -> bool:
         if user_id is None:
             return False
-        if user_id == OWNER_USER_ID:
+        if is_owner_identity(user_id):
             return True
         try:
             return self.get_chat_member_status(chat_id, user_id) in {"creator", "administrator"}
@@ -5381,7 +6501,7 @@ class TelegramBridge:
             return False
 
     def can_moderate_target(self, chat_id: int, target_user_id: int) -> bool:
-        if target_user_id == OWNER_USER_ID:
+        if is_owner_identity(target_user_id):
             return False
         if self.bot_user_id is not None and target_user_id == self.bot_user_id:
             return False
@@ -5524,6 +6644,8 @@ class TelegramBridge:
 
         if self.should_record_incoming_event(chat_id, user_id, message, chat_type):
             self.record_incoming_event(chat_id, user_id, message)
+        if chat_type in {"group", "supergroup"} and message.get("photo") and user_id is not None and not (from_user.get("is_bot") or False):
+            self.maybe_start_silent_photo_analysis(chat_id, user_id, message)
         self.maybe_refresh_chat_participants_snapshot(chat_id, chat_type)
 
         if message.get("new_chat_members"):
@@ -5536,9 +6658,6 @@ class TelegramBridge:
         if message.get("text") and self.maybe_apply_auto_moderation(chat_id, user_id, message, chat_type):
             return
         if not has_chat_access(self.state.authorized_user_ids, user_id):
-            if chat_type == "private":
-                log(f"blocked private non-owner user_id={user_id} chat_id={chat_id}")
-                return
             guest_allowed = has_public_command_access(raw_text)
             if not guest_allowed and chat_type in {"group", "supergroup"} and message.get("text"):
                 guest_allowed = (
@@ -5549,7 +6668,10 @@ class TelegramBridge:
             if guest_allowed:
                 pass
             else:
-                log(f"blocked user_id={user_id} chat_id={chat_id}")
+                if chat_type == "private":
+                    log(f"blocked private non-owner user_id={user_id} chat_id={chat_id}")
+                else:
+                    log(f"blocked user_id={user_id} chat_id={chat_id}")
                 return
 
         try:
@@ -5790,7 +6912,7 @@ class TelegramBridge:
             return
 
         try:
-            self.legacy.sync_message(
+            unlocked = self.legacy.sync_message(
                 chat_id=int(chat_id),
                 message_id=int(message_id),
                 user_id=int(user_id),
@@ -5798,6 +6920,12 @@ class TelegramBridge:
                 first_name=from_user.get("first_name") or "",
                 text=text,
             )
+            if unlocked:
+                unlocked = self._filter_new_achievement_announcements(int(chat_id), int(user_id), unlocked)
+                display_name = (from_user.get("first_name") or from_user.get("username") or str(user_id)).strip()
+                announce_text = self.legacy.achievements.format_unlock_announcement(display_name, unlocked)
+                if announce_text:
+                    self.safe_send_text(int(chat_id), announce_text)
         except Exception as error:
             log_exception(f"legacy jarvis sync failed chat={chat_id} user={user_id}", error, limit=6)
 
@@ -5843,8 +6971,20 @@ class TelegramBridge:
         )
         if user_id is not None:
             try:
-                reaction_delta = max(len(reaction_update.get("new_reaction") or []), len(reaction_update.get("reactions") or []), 1)
-                self.legacy.sync_reaction(int(chat_id), int(user_id), int(message_id or 0), reactions_added=reaction_delta)
+                new_count = len(reaction_update.get("new_reaction") or [])
+                old_count = len(reaction_update.get("old_reaction") or [])
+                reaction_delta = max(0, new_count - old_count)
+                if reaction_delta == 0 and new_count == 0 and old_count == 0 and reaction_update.get("reactions") is not None:
+                    reaction_delta = max(len(reaction_update.get("reactions") or []), 0)
+                if reaction_delta > 0:
+                    reaction_result = self.legacy.sync_reaction(int(chat_id), int(user_id), int(message_id or 0), reactions_added=reaction_delta)
+                    actor_unlocked = reaction_result.get("actor_unlocked") or []
+                    if actor_unlocked:
+                        actor_unlocked = self._filter_new_achievement_announcements(int(chat_id), int(user_id), actor_unlocked)
+                        display_name = (first_name or username or str(user_id)).strip()
+                        announce_text = self.legacy.achievements.format_unlock_announcement(display_name, actor_unlocked)
+                        if announce_text:
+                            self.safe_send_text(int(chat_id), announce_text)
             except Exception as error:
                 log_exception(f"legacy reaction sync failed chat={chat_id} user={user_id}", error, limit=6)
         log(f"incoming reaction chat={chat_id} user={user_id} message_id={message_id} value={shorten_for_log(content)}")
@@ -6140,10 +7280,11 @@ class TelegramBridge:
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
             delivered_via_status = self.consume_answer_delivered_via_status(chat_id)
             if not delivered_via_status:
+                delivery_chat_id = self.resolve_enterprise_delivery_chat_id(chat_id, chat_type, assistant_persona)
                 reply_to_message_id = None
-                if chat_type in {"group", "supergroup"}:
+                if delivery_chat_id == chat_id and chat_type in {"group", "supergroup"}:
                     reply_to_message_id = (message or {}).get("message_id")
-                self.safe_send_text(chat_id, answer, reply_to_message_id=reply_to_message_id)
+                self.safe_send_text(delivery_chat_id, answer, reply_to_message_id=reply_to_message_id)
             self.clear_pending_enterprise_jobs_for_chat(chat_id)
             if chat_type in {"group", "supergroup"}:
                 self.mark_active_group_discussion(chat_id, user_id, message)
@@ -6161,6 +7302,185 @@ class TelegramBridge:
         finally:
             self.state.finish_chat_task(chat_id)
 
+    def run_recent_chat_report_task(self, chat_id: int, user_id: Optional[int], text: str, message: Optional[dict] = None) -> None:
+        user_history_saved = False
+        try:
+            rows = self.state.get_recent_chat_rows(chat_id, limit=100)
+            self.state.append_history(chat_id, "user", text)
+            user_history_saved = True
+            if not rows:
+                answer = "В памяти этого чата пока нет сообщений, поэтому отчёт собрать не из чего."
+            else:
+                chat = (message or {}).get("chat") or {}
+                chat_title = self.state.get_chat_title(chat_id, chat.get("title") or "")
+                from_stamp = datetime.fromtimestamp(rows[0][0]).strftime("%Y-%m-%d %H:%M") if rows[0][0] else "?"
+                to_stamp = datetime.fromtimestamp(rows[-1][0]).strftime("%Y-%m-%d %H:%M") if rows[-1][0] else "?"
+                participant_counts: Dict[str, int] = {}
+                transcript_lines: List[str] = []
+                for created_at, row_user_id, username, first_name, last_name, role, message_type, content in rows:
+                    stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
+                    actor = build_actor_name(row_user_id, username, first_name, last_name, role)
+                    if role == "user":
+                        participant_counts[actor] = participant_counts.get(actor, 0) + 1
+                    transcript_lines.append(
+                        f"[{stamp}] {actor} [{message_type}]: {truncate_text(normalize_whitespace(content), 220)}"
+                    )
+                activity_lines = ["Активность участников:"]
+                for actor, count in sorted(participant_counts.items(), key=lambda item: (-item[1], item[0]))[:8]:
+                    activity_lines.append(f"- {actor}: {count}")
+                troublemaker_summary = render_chat_troublemaker_summary(rows)
+                prompt = (
+                    "Сделай краткий отчёт по содержанию Telegram-чата на основе последних 100 сообщений.\n"
+                    "Нельзя выдумывать факты вне лога.\n"
+                    "Ответ нужен на русском и строго в формате:\n"
+                    "1. Что происходит\n"
+                    "2. Кто самый активный\n"
+                    "3. Конфликты/риски\n"
+                    "4. Кто гонит беса\n"
+                    "5. Что важно прямо сейчас\n"
+                    "Если явного провокатора нет, так и напиши.\n\n"
+                    f"Чат: {chat_title or chat_id}\n"
+                    f"chat_id={chat_id}\n"
+                    f"Сообщений в выборке: {len(rows)}\n"
+                    f"Период выборки: {from_stamp} .. {to_stamp}\n\n"
+                    + "\n".join(activity_lines)
+                    + "\n\n"
+                    + troublemaker_summary
+                    + "\n\n"
+                    "Лог сообщений:\n"
+                    + "\n".join(transcript_lines)
+                )
+                answer = self.ask_codex(
+                    chat_id,
+                    prompt,
+                    user_id=user_id,
+                    chat_type=((message or {}).get("chat") or {}).get("type") or "private",
+                    assistant_persona="jarvis",
+                    message=message,
+                    suppress_status_messages=True,
+                )
+            self.state.append_history(chat_id, "assistant", answer)
+            self.state.record_event(chat_id, user_id, "assistant", "chat_watch_report", answer)
+            self.safe_send_text(chat_id, answer, reply_to_message_id=(message or {}).get("message_id"))
+        except Exception as error:
+            log_exception(f"recent chat report failed chat={chat_id}", error, limit=10)
+            fallback_answer = "Не удалось собрать отчёт по последним сообщениям. Ошибка записана в лог."
+            if not user_history_saved:
+                self.state.append_history(chat_id, "user", text)
+            self.state.append_history(chat_id, "assistant", fallback_answer)
+            self.state.record_event(chat_id, user_id, "assistant", "chat_watch_report_error", fallback_answer)
+            self.safe_send_text(chat_id, fallback_answer, reply_to_message_id=(message or {}).get("message_id"))
+        finally:
+            self.state.finish_chat_task(chat_id)
+
+    def maybe_start_silent_photo_analysis(self, chat_id: int, user_id: int, message: dict) -> None:
+        best_photo = max((message.get("photo") or []), key=lambda item: item.get("file_size", 0), default=None)
+        if not best_photo:
+            return
+        message_id = int(message.get("message_id") or 0)
+        if message_id <= 0:
+            return
+        meta_key = f"silent_photo_analysis:{chat_id}:{message_id}"
+        if self.state.get_meta(meta_key, ""):
+            return
+        self.state.set_meta(meta_key, str(int(time.time())))
+        worker = Thread(
+            target=self.run_silent_photo_analysis,
+            args=(chat_id, user_id, message_id, best_photo, (message.get("caption") or "").strip()),
+            daemon=True,
+        )
+        worker.start()
+
+    def run_silent_photo_analysis(
+        self,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        photo: dict,
+        caption: str,
+    ) -> None:
+        file_id = str(photo.get("file_id") or "")
+        file_unique_id = str(photo.get("file_unique_id") or "")
+        if not file_id:
+            return
+        analysis_text = ""
+        risk_flags: List[str] = []
+        media_sha256 = ""
+        try:
+            with self.temp_workspace() as workspace:
+                file_info = self.get_file_info(file_id)
+                file_path = file_info.get("file_path")
+                if not file_path:
+                    return
+                local_path = workspace / build_download_name(file_path, fallback_name="silent_photo.jpg")
+                self.download_telegram_file(file_path, local_path)
+                media_sha256 = hashlib.sha256(local_path.read_bytes()).hexdigest()
+                prompt = (
+                    "Тихий анализ Telegram-фото для внутренней памяти бота.\n"
+                    "Нужно кратко и без морализаторства оценить изображение как сигнал риска аккаунта.\n"
+                    "Верни 4 строки:\n"
+                    "сцена: ...\n"
+                    "стиль_профиля: ...\n"
+                    "флаги_риска: comma-separated from [none, suspicious_visual, likely_bot, bot_like, engagement_bait, mass_bait, fake_identity, promo_bait, scam_risk, romance_scam, sexual_bait, adult_promo, sexualized_profile]\n"
+                    "почему: ...\n"
+                    "Не выдумывай, пиши кратко."
+                )
+                analysis_text = self.run_codex(prompt, image_path=local_path, postprocess=False)
+        except Exception as error:
+            log(f"silent photo analysis failed chat={chat_id} message_id={message_id}: {error}")
+        lowered = normalize_whitespace((analysis_text or "") + "\n" + (caption or "")).lower()
+        keyword_map = {
+            "suspicious_visual": ("suspicious_visual", "подозр", "неаутентич", "catfish"),
+            "likely_bot": ("likely_bot", "bot_like", "ботоподоб", "automation"),
+            "engagement_bait": ("engagement_bait", "bait", "приманк"),
+            "mass_bait": ("mass_bait", "массов", "однотип"),
+            "fake_identity": ("fake_identity", "fake_identity", "фейков", "чужое фото"),
+            "promo_bait": ("promo_bait", "promo", "реклам", "продвиж"),
+            "scam_risk": ("scam_risk", "scam", "развод", "скам"),
+            "romance_scam": ("romance_scam", "romance", "love-scam", "романтическ"),
+            "sexual_bait": ("sexual_bait", "sexual_bait", "эрот", "сексуализ"),
+            "adult_promo": ("adult_promo", "adult", "18+", "onlyfans"),
+            "sexualized_profile": ("sexualized_profile", "sexualized_profile", "провокацион"),
+        }
+        for canonical, markers in keyword_map.items():
+            if any(marker in lowered for marker in markers):
+                risk_flags.append(canonical)
+        risk_flags = list(dict.fromkeys(risk_flags))
+        if not analysis_text:
+            analysis_text = (
+                f"сцена: неизвестно\n"
+                f"стиль_профиля: без анализа\n"
+                f"флаги_риска: {', '.join(risk_flags) or 'none'}\n"
+                f"почему: подпись={truncate_text(caption or '', 120)}"
+            )
+        self.state.record_participant_visual_signal(
+            chat_id=chat_id,
+            user_id=user_id,
+            message_id=message_id,
+            file_unique_id=file_unique_id,
+            media_sha256=media_sha256,
+            caption=caption,
+            analysis_text=analysis_text,
+            risk_flags=risk_flags,
+        )
+        self.state.record_message_subject(
+            chat_id=chat_id,
+            message_id=message_id,
+            subject_type="photo",
+            source_kind="silent_photo_analysis",
+            user_id=user_id,
+            summary=analysis_text,
+            details={"caption": caption, "risk_flags": risk_flags},
+        )
+        self.state.set_active_subject(
+            chat_id=chat_id,
+            user_id=user_id,
+            message_id=message_id,
+            subject_type="photo",
+            source="silent_photo_analysis",
+        )
+        self.state.refresh_participant_behavior_profile(user_id, chat_id=chat_id)
+
     def run_photo_task(self, chat_id: int, file_id: str, caption: str, message: Optional[dict] = None) -> None:
         try:
             with self.temp_workspace() as workspace:
@@ -6175,6 +7495,25 @@ class TelegramBridge:
                 answer = self.ask_codex_with_image(chat_id, local_path, caption, message=message)
 
             summary = caption or "без подписи"
+            message_id = int((message or {}).get("message_id") or 0)
+            sender_user_id = int(((message or {}).get("from") or {}).get("id") or 0)
+            if message_id > 0:
+                self.state.record_message_subject(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    subject_type="photo",
+                    source_kind="direct_photo_analysis",
+                    user_id=sender_user_id,
+                    summary=answer,
+                    details={"caption": caption},
+                )
+                self.state.set_active_subject(
+                    chat_id=chat_id,
+                    user_id=sender_user_id or None,
+                    message_id=message_id,
+                    subject_type="photo",
+                    source="direct_photo_analysis",
+                )
             self.state.append_history(chat_id, "user", f"[Пользователь отправил фото: caption={summary}]")
             self.state.append_history(chat_id, "assistant", answer)
             self.state.record_event(chat_id, None, "assistant", "answer", answer)
@@ -6644,6 +7983,11 @@ class TelegramBridge:
 
     def notify_owner(self, text: str) -> None:
         self.safe_send_text(OWNER_USER_ID, text)
+
+    def resolve_enterprise_delivery_chat_id(self, source_chat_id: int, chat_type: str, assistant_persona: str) -> int:
+        if assistant_persona == "enterprise" and chat_type in {"group", "supergroup"}:
+            return OWNER_USER_ID
+        return source_chat_id
 
     def process_appeal_release_actions(self, user_id: int, actions: List[dict], event_name: str, resolution: str) -> None:
         seen: Set[Tuple[int, str]] = set()
@@ -7222,6 +8566,22 @@ class TelegramBridge:
         self.safe_send_text(chat_id, self.render_chat_digest_text(chat_id, day))
         return True
 
+    def handle_recent_chat_report_command(self, chat_id: int, user_id: Optional[int], text: str, message: Optional[dict]) -> bool:
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
+            return True
+        if not self.state.try_start_chat_task(chat_id):
+            self.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
+            return True
+        self.send_chat_action(chat_id, "typing")
+        worker = Thread(
+            target=self.run_recent_chat_report_task,
+            args=(chat_id, user_id, text, message),
+            daemon=True,
+        )
+        worker.start()
+        return True
+
     def handle_routes_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
         if not is_owner_private_chat(user_id, chat_id):
             self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
@@ -7265,6 +8625,39 @@ class TelegramBridge:
 
     def handle_chat_digest_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
         return self.owner_handlers.handle_chat_digest_command(self, chat_id, user_id, payload)
+
+    def handle_chat_deep_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_chat_deep_command(self, chat_id, user_id, payload)
+
+    def handle_whois_command(self, chat_id: int, user_id: Optional[int], payload: str, message: Optional[dict]) -> bool:
+        return self.owner_handlers.handle_whois_command(self, chat_id, user_id, payload, message)
+
+    def handle_profilecheck_command(self, chat_id: int, user_id: Optional[int], payload: str, message: Optional[dict]) -> bool:
+        return self.owner_handlers.handle_profilecheck_command(self, chat_id, user_id, payload, message)
+
+    def handle_whats_happening_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_whats_happening_command(self, chat_id, user_id, payload)
+
+    def handle_summary24h_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_summary24h_command(self, chat_id, user_id, payload)
+
+    def handle_conflicts_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_conflicts_command(self, chat_id, user_id, payload)
+
+    def handle_ownergraph_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_ownergraph_command(self, chat_id, user_id, payload)
+
+    def handle_watchlist_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_watchlist_command(self, chat_id, user_id, payload)
+
+    def handle_reliable_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_reliable_command(self, chat_id, user_id, payload)
+
+    def handle_suspects_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_suspects_command(self, chat_id, user_id, payload)
+
+    def handle_achievement_audit_command(self, chat_id: int, user_id: Optional[int], payload: str) -> bool:
+        return self.owner_handlers.handle_achievement_audit_command(self, chat_id, user_id, payload)
 
     def render_chat_digest_text(self, target_chat_id: int, day: str) -> str:
         return self.owner_handlers.render_chat_digest_text(self, target_chat_id, day)
@@ -7563,10 +8956,13 @@ class TelegramBridge:
     ) -> str:
         started_at = time.perf_counter()
         reply_context = self.build_reply_context(chat_id, message)
+        active_subject_context = self.build_active_subject_context(chat_id, user_id, user_text, message)
+        if active_subject_context:
+            reply_context = f"{reply_context}\n\n{active_subject_context}" if reply_context else active_subject_context
         meta_identity_answer = build_meta_identity_answer(user_text, persona=assistant_persona or "jarvis")
         if meta_identity_answer:
             return postprocess_answer(meta_identity_answer, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
-        if user_id == OWNER_USER_ID:
+        if user_id == OWNER_USER_ID and not reply_context:
             owner_contact_reply = build_owner_contact_reply(user_text, persona=assistant_persona or "jarvis")
             if owner_contact_reply:
                 return postprocess_answer(owner_contact_reply, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
@@ -7714,6 +9110,7 @@ class TelegramBridge:
         context_bundle = preparation.context_bundle
         prompt = preparation.prompt
         replace_status_with_answer = preparation.replace_status_with_answer
+        delivery_chat_id = self.resolve_enterprise_delivery_chat_id(chat_id, chat_type, route_decision.persona)
         effective_initial_status = initial_status
         if chat_type == "private" and route_decision.persona == "enterprise":
             effective_initial_status = (
@@ -7740,6 +9137,7 @@ class TelegramBridge:
                 status_message_id=early_status_message_id,
                 show_status_message=allow_status_message,
                 target_label=progress_target_label,
+                delivery_chat_id=delivery_chat_id,
             )
         else:
             log(
@@ -7756,6 +9154,7 @@ class TelegramBridge:
                 show_status_message=allow_status_message,
                 timeout_seconds=preparation.route_timeout_seconds,
                 target_label=progress_target_label,
+                delivery_chat_id=delivery_chat_id,
             )
             log(
                 "ask_codex model_end "
@@ -7810,6 +9209,22 @@ class TelegramBridge:
         if media_kind:
             lines.append(f"Reply target media: {media_kind}")
         if reply_message_id is not None:
+            visual_row = self.state.get_visual_signal_for_message(chat_id, int(reply_message_id))
+            if visual_row:
+                visual_summary = truncate_text(
+                    normalize_visual_analysis_text(visual_row["analysis_text"] or visual_row["caption"] or ""),
+                    320,
+                )
+                if visual_summary:
+                    lines.append(f"Reply target visual analysis: {visual_summary}")
+                try:
+                    visual_flags = json.loads(visual_row["risk_flags_json"] or "[]")
+                except ValueError:
+                    visual_flags = []
+                if visual_flags:
+                    translated_flags = ", ".join(translate_risk_flag(flag) for flag in visual_flags[:5])
+                    lines.append(f"Reply target visual flags: {translated_flags}")
+        if reply_message_id is not None:
             thread_rows = self.state.get_thread_context(chat_id, int(reply_message_id), limit=8)
             if thread_rows:
                 lines.append("Reply thread context:")
@@ -7817,6 +9232,104 @@ class TelegramBridge:
                     stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
                     event_actor = build_actor_name(event_user_id, username or "", first_name or "", last_name or "", role)
                     lines.append(f"- [{stamp}] {event_actor} ({message_type}): {truncate_text(content, 180)}")
+        return "\n".join(lines)
+
+    def message_refers_to_active_subject(self, user_text: str) -> bool:
+        normalized = normalize_whitespace(user_text or "").lower()
+        if not normalized:
+            return False
+        direct_markers = (
+            "что на фото",
+            "что на картинке",
+            "что изображено",
+            "кто на фото",
+            "кто это",
+            "что там",
+            "и что там",
+            "а там",
+            "а тут",
+            "что тут",
+            "что на этом фото",
+            "что на этой фотке",
+            "что на фотке",
+        )
+        if any(marker in normalized for marker in direct_markers):
+            return True
+        return normalized in {"там?", "тут?", "и что?", "что?", "кто?", "что это?", "и кто это?"}
+
+    def build_active_subject_context(
+        self,
+        chat_id: int,
+        user_id: Optional[int],
+        user_text: str,
+        message: Optional[dict],
+    ) -> str:
+        source = message or {}
+        reply_to = source.get("reply_to_message") or {}
+        target_message_id = 0
+        target_subject_type = ""
+        source_label = ""
+
+        if reply_to.get("message_id") is not None:
+            target_message_id = int(reply_to.get("message_id") or 0)
+            target_subject_type = describe_message_media_kind(reply_to) or "message"
+            source_label = "reply"
+        elif self.message_refers_to_active_subject(user_text):
+            active_subject = self.state.get_active_subject(chat_id, user_id)
+            if active_subject:
+                target_message_id = int(active_subject.get("message_id") or 0)
+                target_subject_type = str(active_subject.get("subject_type") or "")
+                source_label = "focus_memory"
+
+        if target_message_id <= 0:
+            return ""
+
+        subject_row = self.state.get_message_subject(chat_id, target_message_id)
+        visual_row = self.state.get_visual_signal_for_message(chat_id, target_message_id)
+        subject_type = target_subject_type or (subject_row["subject_type"] if subject_row else "message")
+        if source_label == "reply":
+            self.state.set_active_subject(
+                chat_id=chat_id,
+                user_id=user_id,
+                message_id=target_message_id,
+                subject_type=subject_type,
+                source=source_label,
+            )
+
+        lines = [
+            "ACTIVE SUBJECT:",
+            f"- source: {source_label or 'unknown'}",
+            f"- message_id: {target_message_id}",
+            f"- subject_type: {subject_type}",
+        ]
+
+        if subject_row:
+            lines.append(f"- subject_memory: {truncate_text(subject_row['summary'] or '', 380)}")
+            try:
+                subject_details = json.loads(subject_row["details_json"] or "{}")
+            except ValueError:
+                subject_details = {}
+            subject_caption = truncate_text(str(subject_details.get("caption") or ""), 240)
+            if subject_caption:
+                lines.append(f"- subject_caption: {subject_caption}")
+
+        if visual_row:
+            visual_summary = truncate_text(
+                normalize_visual_analysis_text(visual_row["analysis_text"] or visual_row["caption"] or ""),
+                380,
+            )
+            if visual_summary:
+                lines.append(f"- visual_memory: {visual_summary}")
+            try:
+                visual_flags = json.loads(visual_row["risk_flags_json"] or "[]")
+            except ValueError:
+                visual_flags = []
+            if visual_flags:
+                lines.append("- visual_flags: " + ", ".join(translate_risk_flag(flag) for flag in visual_flags[:5]))
+
+        if len(lines) <= 4:
+            return ""
+        lines.append("- instruction: resolve 'там/тут/это/на фото' through this subject first.")
         return "\n".join(lines)
 
     def build_current_discussion_context(
@@ -8023,6 +9536,9 @@ class TelegramBridge:
         prompt_text = caption or DEFAULT_IMAGE_PROMPT
         persona = self.state.get_mode(chat_id)
         reply_context = self.build_reply_context(chat_id, message)
+        active_subject_context = self.build_active_subject_context(chat_id, None, prompt_text, message)
+        if active_subject_context:
+            reply_context = f"{reply_context}\n\n{active_subject_context}" if reply_context else active_subject_context
         context_bundle = self.build_attachment_context_bundle(
             chat_id=chat_id,
             prompt_text=prompt_text,
@@ -8085,6 +9601,9 @@ class TelegramBridge:
         prompt_text = caption or f"Разбери документ {file_name} и кратко скажи, что в нём важно."
         persona = self.state.get_mode(chat_id)
         reply_context = self.build_reply_context(chat_id, message)
+        active_subject_context = self.build_active_subject_context(chat_id, None, prompt_text, message)
+        if active_subject_context:
+            reply_context = f"{reply_context}\n\n{active_subject_context}" if reply_context else active_subject_context
         context_bundle = self.build_attachment_context_bundle(
             chat_id=chat_id,
             prompt_text=prompt_text,
@@ -8169,6 +9688,7 @@ class TelegramBridge:
         replace_status_with_answer: bool = False,
         show_status_message: bool = True,
         target_label: str = "",
+        delivery_chat_id: Optional[int] = None,
     ) -> str:
         return self.js_enterprise.run_with_progress(
             chat_id=chat_id,
@@ -8185,6 +9705,7 @@ class TelegramBridge:
             replace_status_with_answer=replace_status_with_answer,
             show_status_message=show_status_message,
             target_label=target_label,
+            delivery_chat_id=delivery_chat_id,
         )
 
     def _update_progress_status(
@@ -8580,6 +10101,191 @@ class TelegramBridge:
         except Exception as error:
             log_exception("scheduled reports failed", error, limit=10)
 
+    def maybe_start_owner_chat_alerts(self) -> None:
+        now = time.time()
+        if now < self.next_owner_alert_check_ts:
+            return
+        self.next_owner_alert_check_ts = now + 300
+        worker = Thread(target=self.run_owner_chat_alerts, daemon=True)
+        worker.start()
+
+    def run_owner_chat_alerts(self) -> None:
+        try:
+            now_ts = int(time.time())
+            for chat_id in self.state.get_managed_group_chat_ids():
+                alert_text = self.build_owner_chat_alert_text(chat_id, now_ts=now_ts)
+                if not alert_text:
+                    continue
+                self.notify_owner(alert_text)
+        except Exception as error:
+            log_exception("owner chat alerts failed", error, limit=10)
+
+    def build_owner_chat_alert_text(self, chat_id: int, now_ts: Optional[int] = None) -> str:
+        current_ts = int(now_ts or time.time())
+        rows = self.state.get_recent_chat_rows(chat_id, limit=80)
+        if not rows:
+            return ""
+        recent_rows = [row for row in rows if int(row[0] or 0) >= current_ts - 3600]
+        user_rows = [row for row in recent_rows if row[5] == "user"]
+        if not user_rows:
+            return ""
+        user_count = len(user_rows)
+        troublemaker_summary = render_chat_troublemaker_summary(recent_rows)
+        trouble_detected = "явного провокатора не видно" not in troublemaker_summary.lower()
+        activity_spike = user_count >= 25
+        unanswered_questions = self.get_chat_unanswered_questions(chat_id, now_ts=current_ts, limit=3)
+        newcomer_summary = self.get_chat_newcomer_summary(chat_id, now_ts=current_ts)
+        suspect_summary = self.get_chat_suspect_summary(chat_id, now_ts=current_ts)
+        unanswered_detected = bool(unanswered_questions)
+        newcomer_detected = bool(newcomer_summary)
+        suspect_detected = bool(suspect_summary)
+        if not activity_spike and not trouble_detected and not unanswered_detected and not newcomer_detected and not suspect_detected:
+            return ""
+        alert_kind = (
+            "conflict" if trouble_detected else
+            "unanswered" if unanswered_detected else
+            "suspect" if suspect_detected else
+            "newcomer" if newcomer_detected else
+            "activity"
+        )
+        cooldown_key = f"owner_alert:{alert_kind}:{chat_id}"
+        last_sent_raw = self.state.get_meta(cooldown_key, "0")
+        try:
+            last_sent_ts = int(float(last_sent_raw or "0"))
+        except ValueError:
+            last_sent_ts = 0
+        cooldown_seconds = 3600 if trouble_detected else 7200 if unanswered_detected else 10800 if suspect_detected else 14400 if newcomer_detected else 21600
+        if current_ts - last_sent_ts < cooldown_seconds:
+            return ""
+        chat_title = self.state.get_chat_title(chat_id)
+        top_counts: Dict[str, int] = {}
+        highlights: List[str] = []
+        for created_at, user_id, username, first_name, last_name, role, message_type, content in user_rows:
+            actor = self._format_owner_actor_label(user_id, username or "", first_name or "", last_name or "", role)
+            top_counts[actor] = top_counts.get(actor, 0) + 1
+            if len(highlights) < 4 and message_type in {"text", "caption", "edited_text"}:
+                stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
+                highlights.append(f"- [{stamp}] {actor}: {truncate_text(normalize_whitespace(content or ''), 140)}")
+        sorted_top_participants = sorted(top_counts.items(), key=lambda item: (-item[1], item[0]))[:4]
+        lines = [
+            f"OWNER ALERT • {truncate_text(chat_title, 80)}",
+            f"Чат: {truncate_text(chat_title, 80)}",
+            f"chat_id: {chat_id}",
+            f"Сигнал: {'конфликт/шум' if trouble_detected else 'вопросы без ответа' if unanswered_detected else 'подозрительный участник' if suspect_detected else 'новый заметный участник' if newcomer_detected else 'всплеск активности'}",
+            f"signal={'конфликт/шум' if trouble_detected else 'вопросы без ответа' if unanswered_detected else 'подозрительный участник' if suspect_detected else 'новый заметный участник' if newcomer_detected else 'всплеск активности'}",
+            f"Сообщений пользователей за час: {user_count}",
+            f"user_messages_last_hour={user_count}",
+        ]
+        if sorted_top_participants:
+            lines.extend(["", "Кто активнее всего за последний час:"])
+            lines.extend(
+                f"- {name}: {count} сообщений" for name, count in sorted_top_participants
+            )
+        if trouble_detected:
+            lines.extend(["", troublemaker_summary.replace("Кто гонит беса:", "Вероятные источники шума:")])
+        if unanswered_questions:
+            lines.extend(["", "Вопросы без ответа:", "unanswered_questions:"])
+            lines.extend(f"- {item}" for item in unanswered_questions)
+        if newcomer_summary:
+            lines.extend(["", newcomer_summary])
+        if suspect_summary:
+            lines.extend(["", suspect_summary])
+        if highlights:
+            lines.extend(["", "Свежие реплики:"])
+            lines.extend(highlights)
+        self.state.set_meta(cooldown_key, str(current_ts))
+        return "\n".join(lines)
+
+    def _format_owner_actor_label(self, user_id: Optional[int], username: str, first_name: str, last_name: str, role: str) -> str:
+        if role == "assistant":
+            return "Jarvis"
+        if is_owner_identity(user_id):
+            display = " ".join(part for part in [first_name, last_name] if part).strip() or "Дмитрий"
+            return f"{display} (owner)"
+        display = " ".join(part for part in [first_name, last_name] if part).strip()
+        if display and username:
+            return f"{display} (@{username} id={user_id})"
+        if display:
+            return f"{display} id={user_id}" if user_id is not None else display
+        if username:
+            return f"@{username} id={user_id}" if user_id is not None else f"@{username}"
+        return f"user_id={user_id}" if user_id is not None else "user"
+
+    def get_chat_unanswered_questions(self, chat_id: int, now_ts: Optional[int] = None, limit: int = 3) -> List[str]:
+        current_ts = int(now_ts or time.time())
+        rows = self.state.get_recent_chat_rows(chat_id, limit=60)
+        recent_rows = [row for row in rows if int(row[0] or 0) >= current_ts - 7200]
+        unanswered: List[str] = []
+        for index, row in enumerate(recent_rows):
+            created_at, user_id, username, first_name, last_name, role, message_type, content = row
+            if role != "user" or message_type not in {"text", "edited_text", "caption"}:
+                continue
+            text = normalize_whitespace(content or "")
+            if "?" not in text:
+                continue
+            followup_rows = recent_rows[index + 1:index + 7]
+            if any(followup[5] == "assistant" for followup in followup_rows):
+                continue
+            actor = self._format_owner_actor_label(user_id, username or "", first_name or "", last_name or "", role)
+            stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
+            unanswered.append(f"[{stamp}] {actor}: {truncate_text(text, 140)}")
+            if len(unanswered) >= limit:
+                break
+        return unanswered
+
+    def get_chat_newcomer_summary(self, chat_id: int, now_ts: Optional[int] = None) -> str:
+        current_ts = int(now_ts or time.time())
+        with self.state.db_lock:
+            row = self.state.db.execute(
+                """
+                SELECT user_id, username, first_name, last_name, first_seen_at, last_seen_at
+                FROM chat_participants
+                WHERE chat_id = ? AND is_bot = 0
+                  AND first_seen_at >= ?
+                  AND last_seen_at >= ?
+                ORDER BY last_seen_at DESC
+                LIMIT 1
+                """,
+                (chat_id, current_ts - 86400, current_ts - 7200),
+            ).fetchone()
+        if not row:
+            return ""
+        label = self._format_owner_actor_label(row["user_id"], row["username"] or "", row["first_name"] or "", row["last_name"] or "", "user")
+        first_seen = datetime.fromtimestamp(int(row["first_seen_at"] or 0)).strftime("%m-%d %H:%M") if row["first_seen_at"] else "--:--"
+        return f"Новый заметный участник: {label}\nnewcomer_signal: {label}; first_seen={first_seen}"
+
+    def get_chat_suspect_summary(self, chat_id: int, now_ts: Optional[int] = None) -> str:
+        current_ts = int(now_ts or time.time())
+        with self.state.db_lock:
+            row = self.state.db.execute(
+                """
+                SELECT p.user_id, p.display_name, p.username, p.risk_flags_json, p.notes_summary, v.analysis_text
+                FROM participant_chat_profiles p
+                LEFT JOIN participant_visual_signals v
+                  ON v.chat_id = p.chat_id AND v.user_id = p.user_id
+                WHERE p.chat_id = ?
+                  AND p.updated_at >= ?
+                  AND (
+                    p.risk_flags_json LIKE '%scam_risk%'
+                    OR p.risk_flags_json LIKE '%likely_bot_like%'
+                    OR p.risk_flags_json LIKE '%sexual_bait%'
+                    OR p.risk_flags_json LIKE '%suspicious_visual%'
+                  )
+                ORDER BY p.updated_at DESC
+                LIMIT 1
+                """,
+                (chat_id, current_ts - 21600),
+            ).fetchone()
+        if not row:
+            return ""
+        label = str(row["display_name"] or (f"@{row['username']}" if row["username"] else f"user_id={int(row['user_id'] or 0)}"))
+        try:
+            flags = ", ".join(json.loads(row["risk_flags_json"] or "[]")[:5]) or "none"
+        except ValueError:
+            flags = "none"
+        analysis = truncate_text(normalize_visual_analysis_text(row["analysis_text"] or row["notes_summary"] or ""), 180)
+        return f"Подозрительный участник: {label}\nsuspect_signal: {label}; flags={flags}; why={analysis}"
+
     def maybe_start_memory_refresh(self) -> None:
         now = time.time()
         if now < self.next_memory_refresh_check_ts:
@@ -8778,7 +10484,7 @@ class TelegramBridge:
             return f"Daily digest за {target_day}\n\nГрупповые чаты для сводки пока не найдены."
         total_events = 0
         total_user_messages = 0
-        chat_stats: List[Tuple[str, int, int]] = []
+        chat_stats: List[Tuple[str, int, int, str]] = []
         user_counts: Dict[str, int] = {}
         highlights: List[str] = []
         for chat_id in chat_ids:
@@ -8789,7 +10495,16 @@ class TelegramBridge:
             group_user_messages = sum(1 for row in rows if row[5] == "user")
             total_events += group_events
             total_user_messages += group_user_messages
-            chat_stats.append((str(chat_id), group_events, group_user_messages))
+            chat_title = self.state.get_chat_title(chat_id)
+            flags: List[str] = []
+            troublemaker_summary = render_chat_troublemaker_summary(rows)
+            if "явного провокатора не видно" not in troublemaker_summary.lower():
+                flags.append("conflict")
+            if self.get_chat_unanswered_questions(chat_id, now_ts=int(time.time()), limit=1):
+                flags.append("unanswered")
+            if self.get_chat_newcomer_summary(chat_id, now_ts=int(time.time())):
+                flags.append("newcomer")
+            chat_stats.append((truncate_text(chat_title, 80), group_events, group_user_messages, ",".join(flags) or "-"))
             for created_at, user_id, username, first_name, last_name, role, message_type, content in rows:
                 if role != "user":
                     continue
@@ -8809,7 +10524,10 @@ class TelegramBridge:
         top_chats = sorted(chat_stats, key=lambda item: (-item[1], item[0]))[:5]
         if top_chats:
             lines.extend(["", "Топ чатов по активности:"])
-            lines.extend(f"- chat {chat_id}: событий {events}, user-msg {user_messages}" for chat_id, events, user_messages in top_chats)
+            lines.extend(
+                f"- {chat_title}: событий {events}, user-msg {user_messages}, flags={flags}"
+                for chat_title, events, user_messages, flags in top_chats
+            )
         top_users = sorted(user_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
         if top_users:
             lines.extend(["", "Топ участников по сообщениям:"])
@@ -9083,6 +10801,10 @@ def parse_daily_command(text: str) -> Optional[str]:
 
 def parse_digest_command(text: str) -> Optional[str]:
     return _parse_digest_command(text)
+
+
+def parse_chat_watch_command(text: str) -> bool:
+    return _parse_chat_watch_command(text)
 
 
 def parse_owner_report_command(text: str) -> bool:
@@ -9735,11 +11457,11 @@ def can_owner_use_workspace_mode(user_id: Optional[int], chat_type: str, assista
 
 
 def is_owner_private_chat(user_id: Optional[int], chat_id: int) -> bool:
-    return _bridge_is_owner_private_chat(user_id, chat_id, owner_user_id=OWNER_USER_ID)
+    return bool(chat_id > 0 and is_owner_identity(user_id) and int(chat_id) == int(user_id or 0))
 
 
 def has_chat_access(_authorized_user_ids: Set[int], user_id: Optional[int]) -> bool:
-    return _bridge_has_chat_access(_authorized_user_ids, user_id, owner_user_id=OWNER_USER_ID)
+    return bool(is_owner_identity(user_id))
 
 
 def has_public_command_access(text: str) -> bool:
@@ -10341,6 +12063,234 @@ def build_actor_name(user_id: Optional[int], username: str, first_name: str, las
     if display:
         return f"{display} id={user_id}" if user_id is not None else display
     return f"user_id={user_id}" if user_id is not None else "user"
+
+
+CHAT_TROUBLEMAKER_RISK_MARKERS = (
+    "нах",
+    "охуе",
+    "заеб",
+    "пизд",
+    "ебан",
+    "долбо",
+    "идиот",
+    "туп",
+    "чмо",
+    "говно",
+    "бред",
+    "бес",
+    "задолбал",
+    "заткнись",
+)
+
+CHAT_TROUBLEMAKER_TAUNT_MARKERS = (
+    "ахах",
+    "хаха",
+    "ору",
+    "лол",
+    "кек",
+    ")))",
+    "😂",
+    "😁",
+    "😄",
+)
+
+
+def is_owner_identity(user_id: Optional[int]) -> bool:
+    if user_id is None:
+        return False
+    return int(user_id) == OWNER_USER_ID or int(user_id) in OWNER_ALIAS_USER_IDS
+
+
+def translate_risk_flag(flag: str) -> str:
+    mapping = {
+        "suspicious_visual": "подозрительный визуальный паттерн",
+        "likely_bot_like": "похоже на неаутентичный/ботоподобный аккаунт",
+        "likely_bot": "похоже на неаутентичный/ботоподобный аккаунт",
+        "bot_like": "ботоподобный стиль",
+        "engagement_bait": "вовлекающая приманка",
+        "mass_bait": "массовая приманка",
+        "fake_identity": "возможная фейковая личность",
+        "promo_bait": "рекламная приманка",
+        "scam_risk": "риск скама/развода",
+        "romance_scam": "романтический скам",
+        "sexual_bait": "сексуализированная приманка",
+        "adult_promo": "18+ промо",
+        "sexualized_profile": "сексуализированный профиль",
+        "toxic": "токсичный",
+        "high_conflict": "конфликтный",
+        "spammy": "спамит",
+        "flood_prone": "склонен к флуду",
+        "emotionally_unstable": "эмоционально нестабилен",
+        "helpful": "полезный",
+        "technically_reliable": "технически надёжен",
+        "owner_hostile": "враждебен к владельцу",
+    }
+    return mapping.get(flag, flag)
+
+
+def normalize_visual_analysis_text(text: str) -> str:
+    cleaned = normalize_whitespace(text or "")
+    if not cleaned:
+        return ""
+    replacements = {
+        "scene:": "Сцена:",
+        "profile_style:": "Стиль профиля:",
+        "risk_flags:": "Флаги риска:",
+        "why:": "Почему:",
+        "scene :": "Сцена:",
+        "profile_style :": "Стиль профиля:",
+        "risk_flags :": "Флаги риска:",
+        "why :": "Почему:",
+    }
+    for source, target in replacements.items():
+        cleaned = cleaned.replace(source, target)
+    for flag in (
+        "suspicious_visual",
+        "likely_bot_like",
+        "likely_bot",
+        "bot_like",
+        "engagement_bait",
+        "mass_bait",
+        "fake_identity",
+        "promo_bait",
+        "scam_risk",
+        "romance_scam",
+        "sexual_bait",
+        "adult_promo",
+        "sexualized_profile",
+    ):
+        cleaned = re.sub(rf"\b{re.escape(flag)}\b", translate_risk_flag(flag), cleaned)
+    replacements_text = {
+        "dramatic motivational/freedom-themed stock-style image, not a personal photo": "драматичная мотивационная стоковая картинка в стиле свободы, не личное фото",
+        "generic symbolic image, strong emotional framing, and non-personal stock-like visual often used by low-trust or mass-engagement accounts": "символическая картинка с сильной эмоциональной подачей; визуал не похож на личное фото и часто встречается у аккаунтов с низким доверием или bait-стилем",
+        "silhouette of a person breaking chains at sunset": "силуэт человека, разрывающего цепи на фоне заката",
+    }
+    lowered = cleaned.lower()
+    for source, target in replacements_text.items():
+        if source in lowered:
+            cleaned = re.sub(re.escape(source), target, cleaned, flags=re.IGNORECASE)
+            lowered = cleaned.lower()
+    return cleaned
+
+
+def render_chat_troublemaker_summary(
+    rows: List[Tuple[int, Optional[int], str, str, str, str, str, str]],
+    *,
+    top_limit: int = 3,
+) -> str:
+    def _pretty_actor(user_id: Optional[int], username: str, first_name: str, last_name: str, role: str) -> str:
+        if role == "assistant":
+            return "Jarvis"
+        if is_owner_identity(user_id):
+            display = " ".join(part for part in [first_name, last_name] if part).strip() or "Дмитрий"
+            return f"{display} (owner)"
+        display = " ".join(part for part in [first_name, last_name] if part).strip()
+        if display and username:
+            return f"{display} (@{username} id={user_id})"
+        if display:
+            return f"{display} id={user_id}" if user_id is not None else display
+        if username:
+            return f"@{username} id={user_id}" if user_id is not None else f"@{username}"
+        return f"user_id={user_id}" if user_id is not None else "user"
+
+    participant_stats: Dict[str, Dict[str, object]] = {}
+    previous_actor = ""
+    current_streak = 0
+
+    for _created_at, user_id, username, first_name, last_name, role, message_type, content in rows:
+        if role != "user":
+            previous_actor = ""
+            current_streak = 0
+            continue
+        actor = _pretty_actor(user_id, username or "", first_name or "", last_name or "", role)
+        text = normalize_whitespace(content or "")
+        if not text:
+            continue
+        lowered = text.lower()
+        stats = participant_stats.setdefault(
+            actor,
+            {
+                "messages": 0,
+                "risk_hits": 0,
+                "taunt_hits": 0,
+                "caps_hits": 0,
+                "burst_hits": 0,
+                "duplicate_hits": 0,
+                "short_hits": 0,
+                "examples": [],
+                "last_text": "",
+            },
+        )
+        stats["messages"] = int(stats["messages"]) + 1
+        if len(text) <= 18:
+            stats["short_hits"] = int(stats["short_hits"]) + 1
+        if any(marker in lowered for marker in CHAT_TROUBLEMAKER_RISK_MARKERS):
+            stats["risk_hits"] = int(stats["risk_hits"]) + 1
+            examples = stats["examples"]
+            if isinstance(examples, list) and len(examples) < 2:
+                examples.append(truncate_text(text, 80))
+        if any(marker in lowered for marker in CHAT_TROUBLEMAKER_TAUNT_MARKERS):
+            stats["taunt_hits"] = int(stats["taunt_hits"]) + 1
+        alpha_chars = [char for char in text if char.isalpha()]
+        if len(alpha_chars) >= 7:
+            upper_chars = sum(1 for char in alpha_chars if char.isupper())
+            if upper_chars / max(1, len(alpha_chars)) >= 0.68:
+                stats["caps_hits"] = int(stats["caps_hits"]) + 1
+        if previous_actor == actor:
+            current_streak += 1
+        else:
+            previous_actor = actor
+            current_streak = 1
+        if current_streak >= 3:
+            stats["burst_hits"] = int(stats["burst_hits"]) + 1
+        if lowered == stats["last_text"] and len(lowered) >= 8:
+            stats["duplicate_hits"] = int(stats["duplicate_hits"]) + 1
+        stats["last_text"] = lowered
+
+    ranked_rows: List[Tuple[int, str, Dict[str, object]]] = []
+    for actor, stats in participant_stats.items():
+        messages = int(stats["messages"])
+        risk_hits = int(stats["risk_hits"])
+        taunt_hits = int(stats["taunt_hits"])
+        caps_hits = int(stats["caps_hits"])
+        burst_hits = int(stats["burst_hits"])
+        duplicate_hits = int(stats["duplicate_hits"])
+        short_hits = int(stats["short_hits"])
+        score = (
+            risk_hits * 4
+            + taunt_hits * 2
+            + caps_hits * 2
+            + burst_hits * 2
+            + duplicate_hits * 3
+            + (1 if messages >= 10 and short_hits >= max(4, messages // 2) else 0)
+        )
+        if score <= 0:
+            continue
+        ranked_rows.append((score, actor, stats))
+
+    ranked_rows.sort(key=lambda item: (-item[0], -int(item[2]["messages"]), item[1]))
+    if not ranked_rows:
+        return "Кто гонит беса: по последним 100 сообщениям явного провокатора не видно."
+
+    lines = ["Кто гонит беса: вероятные источники шума по окну последних 100 сообщений."]
+    for score, actor, stats in ranked_rows[:top_limit]:
+        reasons: List[str] = [f"сообщений={int(stats['messages'])}"]
+        if int(stats["risk_hits"]):
+            reasons.append(f"грубость/агрессия={int(stats['risk_hits'])}")
+        if int(stats["taunt_hits"]):
+            reasons.append(f"насмешки={int(stats['taunt_hits'])}")
+        if int(stats["caps_hits"]):
+            reasons.append(f"caps={int(stats['caps_hits'])}")
+        if int(stats["burst_hits"]):
+            reasons.append(f"серии подряд={int(stats['burst_hits'])}")
+        if int(stats["duplicate_hits"]):
+            reasons.append(f"повторы={int(stats['duplicate_hits'])}")
+        line = f"- {actor}: риск={score}; " + ", ".join(reasons)
+        examples = stats["examples"]
+        if isinstance(examples, list) and examples:
+            line += f"; примеры: {' | '.join(examples)}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def build_progress_target_label(message: Optional[dict], user_id: Optional[int]) -> str:

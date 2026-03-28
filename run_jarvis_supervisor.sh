@@ -65,6 +65,29 @@ rotate_log_if_needed() {
 rotate_log_if_needed "$LOG_PATH"
 rotate_log_if_needed "$BOOT_LOG_PATH"
 
+read_pid_file() {
+  if [ -f "$1" ]; then
+    cat "$1" 2>/dev/null || true
+  fi
+}
+
+is_bridge_healthy() {
+  LOCK_PID=$(read_pid_file "$LOCK_PATH")
+  if [ -z "$LOCK_PID" ] || ! kill -0 "$LOCK_PID" 2>/dev/null; then
+    return 1
+  fi
+  if [ ! -f "$HEARTBEAT_PATH" ]; then
+    return 1
+  fi
+  NOW_TS=$(date +%s)
+  HEARTBEAT_TS=$(stat -c %Y "$HEARTBEAT_PATH" 2>/dev/null || echo 0)
+  AGE=$((NOW_TS - HEARTBEAT_TS))
+  if [ "$AGE" -gt "$HEARTBEAT_TIMEOUT_SECONDS" ]; then
+    return 1
+  fi
+  return 0
+}
+
 printf '[%s] supervisor init script_dir=%s db_path=%s heartbeat=%s timeout=%ss\n' \
   "$(date '+%Y-%m-%d %H:%M:%S')" "$SCRIPT_DIR" "$DB_PATH" "$HEARTBEAT_PATH" "$HEARTBEAT_TIMEOUT_SECONDS" >> "$BOOT_LOG_PATH"
 while true; do
@@ -74,6 +97,11 @@ while true; do
     # shellcheck disable=SC1091
     . "$SCRIPT_DIR/.env"
     set +a
+  fi
+  if is_bridge_healthy; then
+    printf '[%s] bridge already healthy, waiting 5s\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$BOOT_LOG_PATH"
+    sleep 5
+    continue
   fi
   rm -f "$HEARTBEAT_PATH"
   printf '[%s] launching bridge db_path=%s lock=%s\n' \
@@ -101,6 +129,12 @@ while true; do
   BRIDGE_STATUS=0
   wait "$BRIDGE_PID" 2>/dev/null || BRIDGE_STATUS=$?
   if [ "$BRIDGE_STATUS" -eq "$LOCK_CONFLICT_EXIT_CODE" ]; then
+    if is_bridge_healthy; then
+      printf '[%s] bridge pid=%s exited status=%s but another healthy instance owns %s; waiting 5s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$BRIDGE_PID" "$BRIDGE_STATUS" "$LOCK_PATH" >> "$BOOT_LOG_PATH"
+      sleep 5
+      continue
+    fi
     printf '[%s] bridge lock conflict detected; another instance already owns %s. stopping this supervisor\n' \
       "$(date '+%Y-%m-%d %H:%M:%S')" "$LOCK_PATH" >> "$LOG_PATH"
     printf '[%s] bridge pid=%s exited status=%s due to lock conflict; stopping supervisor to avoid restart loop\n' \

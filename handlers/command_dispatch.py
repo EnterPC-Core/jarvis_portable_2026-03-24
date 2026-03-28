@@ -2,9 +2,13 @@ import time
 from typing import Optional
 
 from handlers.command_parsers import (
+    parse_achievement_audit_command,
     parse_autobio_command,
+    parse_chat_watch_command,
+    parse_chat_deep_command,
     parse_chat_digest_command,
     parse_console_command,
+    parse_conflicts_command,
     parse_daily_command,
     parse_digest_command,
     parse_drives_command,
@@ -18,7 +22,9 @@ from handlers.command_parsers import (
     parse_memory_user_command,
     parse_moderation_command,
     parse_owner_autofix_command,
+    parse_ownergraph_command,
     parse_password_command,
+    parse_profilecheck_command,
     parse_recall_command,
     parse_reflections_command,
     parse_remember_command,
@@ -33,8 +39,14 @@ from handlers.command_parsers import (
     parse_self_heal_approve_command,
     parse_self_heal_deny_command,
     parse_skills_command,
+    parse_suspects_command,
+    parse_summary24h_command,
+    parse_reliable_command,
     parse_upgrade_command,
     parse_warn_command,
+    parse_watchlist_command,
+    parse_whats_happening_command,
+    parse_whois_command,
     parse_who_said_command,
     parse_world_state_command,
 )
@@ -56,7 +68,7 @@ class CommandDispatcher:
         allow_followup_text: bool = False,
     ) -> bool:
         has_access = bridge.has_chat_access(bridge.state.authorized_user_ids, user_id)
-        if text == "/start":
+        if text.startswith("/start"):
             if user_id is not None:
                 bridge.open_control_panel(chat_id, user_id, "home")
             return True
@@ -138,6 +150,8 @@ class CommandDispatcher:
             return True
         if text.startswith("/appeal"):
             return bridge.handle_appeal_command(chat_id, user_id, text)
+        if parse_chat_watch_command(text):
+            return bridge.handle_recent_chat_report_command(chat_id, user_id, text, message)
         remember_value = parse_remember_command(text)
         if remember_value is not None:
             return bridge.handle_remember_command(chat_id, user_id, remember_value)
@@ -219,6 +233,39 @@ class CommandDispatcher:
         chat_digest_value = parse_chat_digest_command(text)
         if chat_digest_value is not None:
             return bridge.handle_chat_digest_command(chat_id, user_id, chat_digest_value)
+        chat_deep_value = parse_chat_deep_command(text)
+        if chat_deep_value is not None:
+            return bridge.handle_chat_deep_command(chat_id, user_id, chat_deep_value)
+        whois_value = parse_whois_command(text)
+        if whois_value is not None:
+            return bridge.handle_whois_command(chat_id, user_id, whois_value, message)
+        profilecheck_value = parse_profilecheck_command(text)
+        if profilecheck_value is not None:
+            return bridge.handle_profilecheck_command(chat_id, user_id, profilecheck_value, message)
+        achievement_audit_value = parse_achievement_audit_command(text)
+        if achievement_audit_value is not None:
+            return bridge.handle_achievement_audit_command(chat_id, user_id, achievement_audit_value)
+        watchlist_value = parse_watchlist_command(text)
+        if watchlist_value is not None:
+            return bridge.handle_watchlist_command(chat_id, user_id, watchlist_value)
+        reliable_value = parse_reliable_command(text)
+        if reliable_value is not None:
+            return bridge.handle_reliable_command(chat_id, user_id, reliable_value)
+        suspects_value = parse_suspects_command(text)
+        if suspects_value is not None:
+            return bridge.handle_suspects_command(chat_id, user_id, suspects_value)
+        whats_happening_value = parse_whats_happening_command(text)
+        if whats_happening_value is not None:
+            return bridge.handle_whats_happening_command(chat_id, user_id, whats_happening_value)
+        summary24h_value = parse_summary24h_command(text)
+        if summary24h_value is not None:
+            return bridge.handle_summary24h_command(chat_id, user_id, summary24h_value)
+        conflicts_value = parse_conflicts_command(text)
+        if conflicts_value is not None:
+            return bridge.handle_conflicts_command(chat_id, user_id, conflicts_value)
+        ownergraph_value = parse_ownergraph_command(text)
+        if ownergraph_value is not None:
+            return bridge.handle_ownergraph_command(chat_id, user_id, ownergraph_value)
         if bridge.parse_owner_report_command(text):
             return bridge.handle_owner_report_command(chat_id, user_id)
         export_scope = bridge.parse_export_command(text)

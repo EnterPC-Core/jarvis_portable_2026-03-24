@@ -1,5 +1,7 @@
 from typing import Optional, Tuple
 
+from utils.text_utils import normalize_whitespace
+
 
 def normalize_mode(raw_mode: Optional[str], allowed_modes: set[str], default_mode: str) -> str:
     candidate = (raw_mode or default_mode).strip().lower()
@@ -141,6 +143,69 @@ def parse_reflections_command(text: str) -> Optional[str]:
 
 def parse_chat_digest_command(text: str) -> Optional[str]:
     return _parse_payload_command(text, "/chatdigest", "")
+
+
+def parse_chat_deep_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/chatdeep", "")
+
+
+def parse_whois_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/whois", "")
+
+def parse_profilecheck_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/profilecheck", "")
+
+
+def parse_watchlist_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/watchlist", "")
+
+
+def parse_reliable_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/reliable", "")
+
+
+def parse_suspects_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/suspects", "")
+
+
+def parse_achievement_audit_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/achaudit", "")
+
+
+def parse_whats_happening_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/whatshappening", "")
+
+
+def parse_summary24h_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/summary24h", "")
+
+
+def parse_conflicts_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/conflicts", "")
+
+
+def parse_ownergraph_command(text: str) -> Optional[str]:
+    return _parse_payload_command(text, "/ownergraph", "")
+
+
+def parse_chat_watch_command(text: str) -> bool:
+    cleaned = normalize_whitespace(text).lower().strip("!?.,:;()[]{}\"' ")
+    if not cleaned:
+        return False
+    direct_matches = {
+        "что тут происходит",
+        "что здесь происходит",
+        "что у вас тут происходит",
+        "что у вас здесь происходит",
+        "что у вас происходит",
+    }
+    if cleaned in direct_matches:
+        return True
+    return (
+        "что" in cleaned
+        and "происходит" in cleaned
+        and any(marker in cleaned for marker in ("тут", "здесь", "у вас", "в чате", "в группе"))
+    )
 
 
 def parse_git_status_command(text: str) -> bool:

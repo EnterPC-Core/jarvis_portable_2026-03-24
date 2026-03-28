@@ -4,7 +4,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 
 DEFAULT_WORKER_PROTECTED_PATHS = (
@@ -82,6 +82,16 @@ def append_progress_event(progress_path: Optional[Path], text: str) -> None:
         return
 
 
+def append_stream_event(stream_path: Optional[Path], payload: Dict[str, object]) -> None:
+    if stream_path is None:
+        return
+    try:
+        with stream_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        return
+
+
 def format_json_progress_event(payload: dict) -> str:
     event_type = str(payload.get("type") or "")
     if event_type == "thread.started":
@@ -102,6 +112,27 @@ def format_json_progress_event(payload: dict) -> str:
     return ""
 
 
+def extract_stream_text_events(payload: dict) -> List[Dict[str, object]]:
+    event_type = str(payload.get("type") or "")
+    item = payload.get("item") or {}
+    item_type = str(item.get("type") or "")
+    events: List[Dict[str, object]] = []
+    if item_type != "agent_message":
+        return events
+
+    text = normalize_whitespace(str(item.get("text") or ""))
+    if event_type == "item.completed" and text:
+        events.append({"kind": "assistant_text", "state": "completed", "text": text})
+        return events
+
+    for key in ("delta", "text_delta", "partial_text", "content", "text"):
+        value = normalize_whitespace(str(item.get(key) or payload.get(key) or ""))
+        if value:
+            events.append({"kind": "assistant_text", "state": "delta", "text": value})
+            break
+    return events
+
+
 def build_subprocess_env() -> dict:
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
@@ -114,18 +145,20 @@ def build_subprocess_env() -> dict:
 
 def build_command(payload: dict) -> list:
     command = ["codex"]
-    approval_policy = payload.get("approval_policy")
     command.append("exec")
     sandbox_mode = payload.get("sandbox_mode")
-    if approval_policy == "never" and sandbox_mode == "danger-full-access":
+    if sandbox_mode == "danger-full-access":
         command.append("--dangerously-bypass-approvals-and-sandbox")
-    elif approval_policy in {"never", "on-request"} and sandbox_mode == "workspace-write":
+    elif sandbox_mode == "workspace-write":
         command.append("--full-auto")
     if payload.get("json_output"):
         command.append("--json")
     command.append("--skip-git-repo-check")
     if sandbox_mode:
         command.extend(["--sandbox", sandbox_mode])
+    model = str(payload.get("model") or "").strip()
+    if model:
+        command.extend(["-m", model])
     image_path = payload.get("image_path")
     if image_path:
         command.extend(["-i", str(image_path)])
@@ -144,6 +177,13 @@ def get_worker_protected_paths(payload: Optional[dict] = None) -> tuple[str, ...
 def protect_prompt(prompt: str, payload: Optional[dict] = None) -> str:
     protected_paths = get_worker_protected_paths(payload)
     protected = "\n".join(f"- {path}" for path in protected_paths)
+    runtime_prompt = normalize_whitespace(str((payload or {}).get("runtime_prompt") or ""))
+    runtime_prefix = (
+        "Отдельные инструкции Enterprise Runtime:\n"
+        f"{runtime_prompt}\n\n"
+        if runtime_prompt
+        else ""
+    )
     return (
         "ВАЖНО: этот worker работает почти по всему проекту, но не имеет права менять server-core.\n"
         "Через задачу можно свободно работать с кодом проекта, тестами, docs, обычными scripts, диагностикой, git-операциями по репо и файлами workspace.\n"
@@ -152,6 +192,7 @@ def protect_prompt(prompt: str, payload: Optional[dict] = None) -> str:
         "Защищённые server-core пути:\n"
         f"{protected}\n\n"
         "Всё остальное в repo/workspace разрешено в рамках задачи.\n\n"
+        f"{runtime_prefix}"
         f"{prompt}"
     )
 
@@ -162,6 +203,8 @@ def run_task(task_path: Path, result_path: Path) -> int:
     timeout = int(payload.get("codex_timeout") or 180)
     progress_path_raw = str(payload.get("progress_path") or "").strip()
     progress_path = Path(progress_path_raw) if progress_path_raw else None
+    stream_path_raw = str(payload.get("stream_path") or "").strip()
+    stream_path = Path(stream_path_raw) if stream_path_raw else None
     command = build_command(payload)
     stdin_command = command + ["-"]
     started_at = time.perf_counter()
@@ -205,8 +248,19 @@ def run_task(task_path: Path, result_path: Path) -> int:
                     json_payload = json.loads(raw_line)
                 except json.JSONDecodeError:
                     continue
+                append_stream_event(
+                    stream_path,
+                    {
+                        "kind": "codex_json",
+                        "payload": json_payload,
+                        "ts": int(time.time() * 1000),
+                    },
+                )
                 progress_text = format_json_progress_event(json_payload)
                 append_progress_event(progress_path, progress_text)
+                for stream_event in extract_stream_text_events(json_payload):
+                    stream_event["ts"] = int(time.time() * 1000)
+                    append_stream_event(stream_path, stream_event)
                 item = json_payload.get("item") or {}
                 if str(json_payload.get("type") or "") == "item.completed" and str(item.get("type") or "") == "agent_message":
                     text = normalize_whitespace(str(item.get("text") or ""))

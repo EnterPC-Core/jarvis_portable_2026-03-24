@@ -182,6 +182,7 @@ def render_summary_memory_context(rows: Sequence[Any], truncate_text_func: Calla
 def render_chat_memory_context(
     *,
     summary: str,
+    profile: str,
     rows: Sequence[Any],
     facts: Sequence[str],
     dynamics: str,
@@ -191,6 +192,8 @@ def render_chat_memory_context(
     lines = ["Chat memory:"]
     if summary:
         lines.append(f"- rolling summary: {truncate_text_func(summary, 260)}")
+    if profile:
+        lines.append(profile)
     if rows:
         active = ", ".join(
             f"{build_actor_name_func(row[0], row[1] or '', row[2] or '', row[3] or '', 'user')}={int(row[4])}"
