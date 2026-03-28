@@ -9,11 +9,17 @@ class TelegramMessageHandlers:
         self.owner_user_id = owner_user_id
         self.safe_mode_reply = safe_mode_reply
 
+    def _is_owner(self, bridge: "TelegramBridge", user_id: Optional[int]) -> bool:
+        resolver = getattr(bridge, "is_owner_identity", None)
+        if callable(resolver):
+            return bool(resolver(user_id))
+        return user_id == self.owner_user_id
+
     def handle_text_message(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], message: dict, chat_type: str = "private") -> None:
         raw_text = (message.get("text") or "").strip()
         text = bridge.normalize_incoming_text(raw_text, bridge.bot_username)
         assistant_persona, text = bridge.extract_assistant_persona(text)
-        is_owner = bridge.is_owner_identity(user_id)
+        is_owner = self._is_owner(bridge, user_id)
         if assistant_persona and not text:
             text = raw_text
         if chat_type == "private" and is_owner:
@@ -155,7 +161,7 @@ class TelegramMessageHandlers:
         chat = message.get("chat") or {}
         chat_type = (chat.get("type") or "private").lower()
 
-        is_owner = bridge.is_owner_identity(user_id)
+        is_owner = self._is_owner(bridge, user_id)
         if chat_type in {"group", "supergroup"} and not is_owner:
             bridge.log(f"group non-owner photo ignored chat={chat_id} user={user_id}")
             return
@@ -189,7 +195,7 @@ class TelegramMessageHandlers:
         file_name = document.get("file_name") or "document"
         bridge.log(f"incoming document chat={chat_id} user={user_id} file={bridge.shorten_for_log(file_name)} caption={bridge.shorten_for_log(caption)}")
 
-        is_owner = bridge.is_owner_identity(user_id)
+        is_owner = self._is_owner(bridge, user_id)
         if chat_type in {"group", "supergroup"} and not is_owner:
             bridge.log(f"group non-owner document ignored chat={chat_id} user={user_id} file={bridge.shorten_for_log(file_name)}")
             return
@@ -229,7 +235,7 @@ class TelegramMessageHandlers:
             chat_type = (chat.get("type") or "private").lower()
             bridge.log(f"incoming voice chat={chat_id} user={user_id} duration={duration}")
 
-            is_owner = bridge.is_owner_identity(user_id)
+            is_owner = self._is_owner(bridge, user_id)
             if chat_type in {"group", "supergroup"} and not is_owner:
                 bridge.log(f"group non-owner voice ignored chat={chat_id} user={user_id}")
                 return

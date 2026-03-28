@@ -19,10 +19,8 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from threading import Event, Lock, RLock, Thread
 from collections import OrderedDict, deque
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Sequence, Set, Tuple
-from urllib.parse import parse_qs, quote_plus, urlparse
 from zoneinfo import ZoneInfo
 
 from requests import Response, Session
@@ -32,6 +30,7 @@ from appeals_service import AppealsService
 from handlers.control_panel_renderer import ControlPanelRenderer
 from handlers.command_dispatch import CommandDispatcher
 from handlers.telegram_handlers import TelegramMessageHandlers
+from handlers.update_dispatcher import handle_reaction_update as dispatch_reaction_update, handle_telegram_update
 from handlers.ui_handlers import UIHandlers
 from handlers.command_parsers import (
     normalize_mode as _normalize_mode,
@@ -250,6 +249,28 @@ from services.moderation_execution_service import (
 from services.runtime_service import RuntimeService, RuntimeServiceDeps
 from services.text_route_service import TextRouteService, TextRouteServiceDeps
 from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
+from services.enterprise_console_webapp import build_enterprise_console_html, run_enterprise_console_server
+from services.reply_context_service import (
+    build_active_subject_context as _build_active_subject_context_service,
+    build_reply_context as _build_reply_context_service,
+    message_refers_to_active_subject as _message_refers_to_active_subject_service,
+)
+from services.bridge_state_schema import (
+    ensure_chat_events_columns,
+    ensure_request_diagnostics_columns,
+    ensure_user_memory_profile_columns,
+    ensure_warn_settings_columns,
+    ensure_warnings_columns,
+    ensure_world_state_registry_columns,
+    initialize_bridge_state_db,
+    seed_drive_scores,
+    seed_self_model_state,
+    seed_skill_memory,
+)
+from services.text_task_service import (
+    run_recent_chat_report_task as _run_recent_chat_report_task_service,
+    run_text_task as _run_text_task_service,
+)
 
 try:
     import psutil
@@ -960,652 +981,41 @@ class BridgeState:
 
     def _init_db(self) -> None:
         with self.db_lock:
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
+            initialize_bridge_state_db(
+                self,
+                normalize_visual_analysis_text_func=normalize_visual_analysis_text,
+                self_model_defaults=SELF_MODEL_DEFAULTS,
+                default_skill_library=DEFAULT_SKILL_LIBRARY,
+                drive_names=DRIVE_NAMES,
             )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS chat_modes (chat_id INTEGER PRIMARY KEY, mode TEXT NOT NULL)"
-            )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS chat_events (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, message_id INTEGER, user_id INTEGER, username TEXT, first_name TEXT, last_name TEXT, chat_type TEXT, role TEXT NOT NULL, message_type TEXT NOT NULL, text TEXT NOT NULL, reply_to_message_id INTEGER, reply_to_user_id INTEGER, reply_to_username TEXT, forward_origin TEXT, has_media INTEGER NOT NULL DEFAULT 0, file_kind TEXT, is_edited INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
-            )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS chat_summaries (chat_id INTEGER PRIMARY KEY, summary TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
-            )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS memory_facts (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, created_by_user_id INTEGER, fact TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS user_memory_profiles (
-                    chat_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    username TEXT NOT NULL DEFAULT '',
-                    display_name TEXT NOT NULL DEFAULT '',
-                    summary TEXT NOT NULL DEFAULT '',
-                    ai_summary TEXT NOT NULL DEFAULT '',
-                    style_notes TEXT NOT NULL DEFAULT '',
-                    topics TEXT NOT NULL DEFAULT '',
-                    last_message_at INTEGER NOT NULL DEFAULT 0,
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    PRIMARY KEY(chat_id, user_id)
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS summary_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id INTEGER NOT NULL,
-                    scope TEXT NOT NULL DEFAULT 'rolling',
-                    summary TEXT NOT NULL,
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS memory_refresh_state (
-                    chat_id INTEGER PRIMARY KEY,
-                    last_event_id INTEGER NOT NULL DEFAULT 0,
-                    last_run_at INTEGER NOT NULL DEFAULT 0,
-                    last_user_refresh_at INTEGER NOT NULL DEFAULT 0,
-                    last_summary_refresh_at INTEGER NOT NULL DEFAULT 0
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS chat_participants (
-                    chat_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    username TEXT NOT NULL DEFAULT '',
-                    first_name TEXT NOT NULL DEFAULT '',
-                    last_name TEXT NOT NULL DEFAULT '',
-                    is_bot INTEGER NOT NULL DEFAULT 0,
-                    is_admin INTEGER NOT NULL DEFAULT 0,
-                    last_status TEXT NOT NULL DEFAULT '',
-                    first_seen_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    last_seen_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    last_join_at INTEGER,
-                    last_leave_at INTEGER,
-                    PRIMARY KEY(chat_id, user_id)
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS participant_profiles (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT NOT NULL DEFAULT '',
-                    display_name TEXT NOT NULL DEFAULT '',
-                    first_seen_at INTEGER NOT NULL DEFAULT 0,
-                    last_seen_at INTEGER NOT NULL DEFAULT 0,
-                    message_count INTEGER NOT NULL DEFAULT 0,
-                    reply_count INTEGER NOT NULL DEFAULT 0,
-                    reactions_given INTEGER NOT NULL DEFAULT 0,
-                    reactions_received INTEGER NOT NULL DEFAULT 0,
-                    conflict_score INTEGER NOT NULL DEFAULT 0,
-                    toxicity_score INTEGER NOT NULL DEFAULT 0,
-                    spam_score INTEGER NOT NULL DEFAULT 0,
-                    flood_score INTEGER NOT NULL DEFAULT 0,
-                    instability_score INTEGER NOT NULL DEFAULT 0,
-                    helpfulness_score INTEGER NOT NULL DEFAULT 0,
-                    credibility_score INTEGER NOT NULL DEFAULT 0,
-                    owner_affinity_score INTEGER NOT NULL DEFAULT 0,
-                    risk_flags_json TEXT NOT NULL DEFAULT '[]',
-                    notes_summary TEXT NOT NULL DEFAULT '',
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS participant_chat_profiles (
-                    chat_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    username TEXT NOT NULL DEFAULT '',
-                    display_name TEXT NOT NULL DEFAULT '',
-                    first_seen_at INTEGER NOT NULL DEFAULT 0,
-                    last_seen_at INTEGER NOT NULL DEFAULT 0,
-                    message_count INTEGER NOT NULL DEFAULT 0,
-                    reply_count INTEGER NOT NULL DEFAULT 0,
-                    reactions_given INTEGER NOT NULL DEFAULT 0,
-                    reactions_received INTEGER NOT NULL DEFAULT 0,
-                    conflict_score INTEGER NOT NULL DEFAULT 0,
-                    toxicity_score INTEGER NOT NULL DEFAULT 0,
-                    spam_score INTEGER NOT NULL DEFAULT 0,
-                    flood_score INTEGER NOT NULL DEFAULT 0,
-                    instability_score INTEGER NOT NULL DEFAULT 0,
-                    helpfulness_score INTEGER NOT NULL DEFAULT 0,
-                    credibility_score INTEGER NOT NULL DEFAULT 0,
-                    risk_flags_json TEXT NOT NULL DEFAULT '[]',
-                    notes_summary TEXT NOT NULL DEFAULT '',
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    PRIMARY KEY(chat_id, user_id)
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS participant_observations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    chat_id INTEGER NOT NULL DEFAULT 0,
-                    signal_type TEXT NOT NULL,
-                    score_delta INTEGER NOT NULL DEFAULT 0,
-                    evidence_text TEXT NOT NULL DEFAULT '',
-                    source_message_id INTEGER,
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS participant_visual_signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    message_id INTEGER NOT NULL,
-                    file_unique_id TEXT NOT NULL DEFAULT '',
-                    media_sha256 TEXT NOT NULL DEFAULT '',
-                    caption TEXT NOT NULL DEFAULT '',
-                    analysis_text TEXT NOT NULL DEFAULT '',
-                    risk_flags_json TEXT NOT NULL DEFAULT '[]',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    UNIQUE(chat_id, message_id)
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS message_subjects (
-                    chat_id INTEGER NOT NULL,
-                    message_id INTEGER NOT NULL,
-                    subject_type TEXT NOT NULL DEFAULT '',
-                    source_kind TEXT NOT NULL DEFAULT '',
-                    user_id INTEGER NOT NULL DEFAULT 0,
-                    summary TEXT NOT NULL DEFAULT '',
-                    details_json TEXT NOT NULL DEFAULT '{}',
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    PRIMARY KEY(chat_id, message_id)
-                )"""
-            )
-            participant_visual_columns = {
-                str(row["name"])
-                for row in self.db.execute("PRAGMA table_info(participant_visual_signals)").fetchall()
-            }
-            if "media_sha256" not in participant_visual_columns:
-                self.db.execute(
-                    "ALTER TABLE participant_visual_signals ADD COLUMN media_sha256 TEXT NOT NULL DEFAULT ''"
-                )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_participant_visual_signals_user_chat ON participant_visual_signals(user_id, chat_id, created_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_participant_visual_signals_sha256 ON participant_visual_signals(media_sha256)"
-            )
-            stale_visual_rows = self.db.execute(
-                """
-                SELECT id, analysis_text
-                FROM participant_visual_signals
-                WHERE analysis_text LIKE 'scene:%'
-                   OR analysis_text LIKE 'profile_style:%'
-                   OR analysis_text LIKE '%risk_flags:%'
-                   OR analysis_text LIKE '%why:%'
-                LIMIT 200
-                """
-            ).fetchall()
-            for row in stale_visual_rows:
-                normalized_analysis = normalize_visual_analysis_text(str(row["analysis_text"] or ""))
-                self.db.execute(
-                    "UPDATE participant_visual_signals SET analysis_text = ? WHERE id = ?",
-                    (normalized_analysis, int(row["id"] or 0)),
-                )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS chat_runtime_cache (
-                    chat_id INTEGER PRIMARY KEY,
-                    chat_title TEXT NOT NULL DEFAULT '',
-                    member_count INTEGER NOT NULL DEFAULT 0,
-                    admins_synced_at INTEGER NOT NULL DEFAULT 0,
-                    member_count_synced_at INTEGER NOT NULL DEFAULT 0,
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            runtime_cache_columns = {
-                str(row["name"])
-                for row in self.db.execute("PRAGMA table_info(chat_runtime_cache)").fetchall()
-            }
-            if "chat_title" not in runtime_cache_columns:
-                self.db.execute("ALTER TABLE chat_runtime_cache ADD COLUMN chat_title TEXT NOT NULL DEFAULT ''")
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS relation_memory (
-                    chat_id INTEGER NOT NULL,
-                    user_low_id INTEGER NOT NULL,
-                    user_high_id INTEGER NOT NULL,
-                    reply_count_low_to_high INTEGER NOT NULL DEFAULT 0,
-                    reply_count_high_to_low INTEGER NOT NULL DEFAULT 0,
-                    co_presence_count INTEGER NOT NULL DEFAULT 0,
-                    humor_markers INTEGER NOT NULL DEFAULT 0,
-                    rough_markers INTEGER NOT NULL DEFAULT 0,
-                    support_markers INTEGER NOT NULL DEFAULT 0,
-                    topic_markers TEXT NOT NULL DEFAULT '',
-                    summary TEXT NOT NULL DEFAULT '',
-                    last_interaction_at INTEGER NOT NULL DEFAULT 0,
-                    confidence REAL NOT NULL DEFAULT 0,
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    PRIMARY KEY(chat_id, user_low_id, user_high_id)
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS self_model_state (
-                    state_id TEXT PRIMARY KEY,
-                    identity TEXT NOT NULL DEFAULT '',
-                    active_mode TEXT NOT NULL DEFAULT '',
-                    capabilities TEXT NOT NULL DEFAULT '',
-                    hard_limitations TEXT NOT NULL DEFAULT '',
-                    trusted_tools TEXT NOT NULL DEFAULT '',
-                    confidence_policy TEXT NOT NULL DEFAULT '',
-                    current_goals TEXT NOT NULL DEFAULT '',
-                    active_constraints TEXT NOT NULL DEFAULT '',
-                    honesty_rules TEXT NOT NULL DEFAULT '',
-                    jarvis_style_invariants TEXT NOT NULL DEFAULT '',
-                    enterprise_style_invariants TEXT NOT NULL DEFAULT '',
-                    last_route_kind TEXT NOT NULL DEFAULT '',
-                    last_outcome TEXT NOT NULL DEFAULT '',
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS autobiographical_memory (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    category TEXT NOT NULL DEFAULT '',
-                    event_type TEXT NOT NULL DEFAULT '',
-                    chat_id INTEGER,
-                    user_id INTEGER,
-                    route_kind TEXT NOT NULL DEFAULT '',
-                    title TEXT NOT NULL DEFAULT '',
-                    details TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT '',
-                    importance INTEGER NOT NULL DEFAULT 0,
-                    open_state TEXT NOT NULL DEFAULT 'closed',
-                    tags TEXT NOT NULL DEFAULT '',
-                    observed_json TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS reflections (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id INTEGER,
-                    user_id INTEGER,
-                    route_kind TEXT NOT NULL DEFAULT '',
-                    task_summary TEXT NOT NULL DEFAULT '',
-                    observed_outcome TEXT NOT NULL DEFAULT '',
-                    uncertainty TEXT NOT NULL DEFAULT '',
-                    lesson TEXT NOT NULL DEFAULT '',
-                    recommended_updates TEXT NOT NULL DEFAULT '',
-                    applied_updates TEXT NOT NULL DEFAULT '',
-                    tags TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS skill_memory (
-                    skill_key TEXT PRIMARY KEY,
-                    title TEXT NOT NULL DEFAULT '',
-                    trigger_tags TEXT NOT NULL DEFAULT '',
-                    procedure TEXT NOT NULL DEFAULT '',
-                    reliability REAL NOT NULL DEFAULT 0.5,
-                    use_count INTEGER NOT NULL DEFAULT 0,
-                    source TEXT NOT NULL DEFAULT '',
-                    notes TEXT NOT NULL DEFAULT '',
-                    last_used_at INTEGER NOT NULL DEFAULT 0,
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS world_state_registry (
-                    state_key TEXT PRIMARY KEY,
-                    category TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT '',
-                    value_text TEXT NOT NULL DEFAULT '',
-                    value_number REAL,
-                    source TEXT NOT NULL DEFAULT '',
-                    confidence REAL NOT NULL DEFAULT 0.0,
-                    ttl_seconds INTEGER NOT NULL DEFAULT 0,
-                    verification_method TEXT NOT NULL DEFAULT '',
-                    stale_flag INTEGER NOT NULL DEFAULT 0,
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS world_state_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source TEXT NOT NULL DEFAULT '',
-                    summary TEXT NOT NULL DEFAULT '',
-                    payload_json TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS drive_scores (
-                    drive_name TEXT PRIMARY KEY,
-                    score REAL NOT NULL DEFAULT 0,
-                    reason TEXT NOT NULL DEFAULT '',
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS chat_events_fts USING fts5(text, content='chat_events', content_rowid='id', tokenize='unicode61')"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_history_chat_id_id ON chat_history(chat_id, id)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_events_chat_id_id ON chat_events(chat_id, id)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_memory_facts_chat_id_id ON memory_facts(chat_id, id)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_user_memory_profiles_chat_id_user_id ON user_memory_profiles(chat_id, user_id)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_participants_chat_id_last_seen ON chat_participants(chat_id, last_seen_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_participant_chat_profiles_chat_id_updated_at ON participant_chat_profiles(chat_id, updated_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_participant_observations_user_chat_created ON participant_observations(user_id, chat_id, created_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_relation_memory_chat_id_updated ON relation_memory(chat_id, updated_at DESC, last_interaction_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_autobiographical_memory_chat_id_id ON autobiographical_memory(chat_id, id DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_autobiographical_memory_open_state ON autobiographical_memory(open_state, importance DESC, updated_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_reflections_chat_id_id ON reflections(chat_id, id DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_world_state_registry_category ON world_state_registry(category, updated_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_summary_snapshots_chat_id_id ON summary_snapshots(chat_id, id)"
-            )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS bot_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS request_diagnostics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id INTEGER NOT NULL,
-                    user_id INTEGER,
-                    chat_type TEXT NOT NULL DEFAULT '',
-                    persona TEXT NOT NULL DEFAULT '',
-                    intent TEXT NOT NULL DEFAULT '',
-                    route_kind TEXT NOT NULL DEFAULT '',
-                    source_label TEXT NOT NULL DEFAULT '',
-                    used_live INTEGER NOT NULL DEFAULT 0,
-                    used_web INTEGER NOT NULL DEFAULT 0,
-                    used_events INTEGER NOT NULL DEFAULT 0,
-                    used_database INTEGER NOT NULL DEFAULT 0,
-                    used_reply INTEGER NOT NULL DEFAULT 0,
-                    used_workspace INTEGER NOT NULL DEFAULT 0,
-                    guardrails TEXT NOT NULL DEFAULT '',
-                    outcome TEXT NOT NULL DEFAULT '',
-                    request_kind TEXT NOT NULL DEFAULT '',
-                    response_mode TEXT NOT NULL DEFAULT '',
-                    sources TEXT NOT NULL DEFAULT '',
-                    tools_used TEXT NOT NULL DEFAULT '',
-                    memory_used TEXT NOT NULL DEFAULT '',
-                    confidence REAL NOT NULL DEFAULT 0.0,
-                    freshness TEXT NOT NULL DEFAULT '',
-                    notes TEXT NOT NULL DEFAULT '',
-                    latency_ms INTEGER NOT NULL DEFAULT 0,
-                    query_text TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS repair_journal (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    signal_code TEXT NOT NULL DEFAULT '',
-                    playbook_id TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT '',
-                    summary TEXT NOT NULL DEFAULT '',
-                    evidence TEXT NOT NULL DEFAULT '',
-                    verification_result TEXT NOT NULL DEFAULT '',
-                    notes TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS self_heal_incidents (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    problem_type TEXT NOT NULL DEFAULT '',
-                    signal_code TEXT NOT NULL DEFAULT '',
-                    state TEXT NOT NULL DEFAULT '',
-                    severity TEXT NOT NULL DEFAULT '',
-                    summary TEXT NOT NULL DEFAULT '',
-                    evidence TEXT NOT NULL DEFAULT '',
-                    risk_level TEXT NOT NULL DEFAULT '',
-                    autonomy_level TEXT NOT NULL DEFAULT '',
-                    source TEXT NOT NULL DEFAULT '',
-                    confidence REAL NOT NULL DEFAULT 0.0,
-                    suggested_playbook TEXT NOT NULL DEFAULT '',
-                    verification_status TEXT NOT NULL DEFAULT '',
-                    lesson_text TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS self_heal_transitions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    incident_id INTEGER NOT NULL,
-                    from_state TEXT NOT NULL DEFAULT '',
-                    to_state TEXT NOT NULL DEFAULT '',
-                    note TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS self_heal_attempts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    incident_id INTEGER NOT NULL,
-                    playbook_id TEXT NOT NULL DEFAULT '',
-                    state TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT '',
-                    execution_summary TEXT NOT NULL DEFAULT '',
-                    executed_steps_json TEXT NOT NULL DEFAULT '',
-                    failed_step TEXT NOT NULL DEFAULT '',
-                    artifacts_changed_json TEXT NOT NULL DEFAULT '',
-                    verification_required INTEGER NOT NULL DEFAULT 1,
-                    notes TEXT NOT NULL DEFAULT '',
-                    stdout_json TEXT NOT NULL DEFAULT '',
-                    stderr_json TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS self_heal_verifications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    incident_id INTEGER NOT NULL,
-                    attempt_id INTEGER,
-                    verified INTEGER NOT NULL DEFAULT 0,
-                    before_state_json TEXT NOT NULL DEFAULT '',
-                    after_state_json TEXT NOT NULL DEFAULT '',
-                    confidence REAL NOT NULL DEFAULT 0.0,
-                    remaining_issues_json TEXT NOT NULL DEFAULT '',
-                    regressions_json TEXT NOT NULL DEFAULT '',
-                    notes TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                """CREATE TABLE IF NOT EXISTS self_heal_lessons (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    incident_id INTEGER NOT NULL,
-                    lesson_key TEXT NOT NULL DEFAULT '',
-                    lesson_text TEXT NOT NULL DEFAULT '',
-                    confidence REAL NOT NULL DEFAULT 0.0,
-                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )"""
-            )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS moderation_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), expires_at INTEGER, active INTEGER NOT NULL DEFAULT 1, completed_at INTEGER)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_moderation_actions_active_expires ON moderation_actions(active, expires_at)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_moderation_actions_chat_user ON moderation_actions(chat_id, user_id, action, active)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_request_diagnostics_chat_id_id ON request_diagnostics(chat_id, id)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_repair_journal_created_at ON repair_journal(created_at DESC, id DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_self_heal_incidents_created_at ON self_heal_incidents(created_at DESC, id DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_self_heal_incidents_problem_state ON self_heal_incidents(problem_type, state, updated_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_self_heal_transitions_incident ON self_heal_transitions(incident_id, created_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_self_heal_attempts_incident ON self_heal_attempts(incident_id, created_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_self_heal_verifications_incident ON self_heal_verifications(incident_id, created_at DESC)"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_self_heal_lessons_incident ON self_heal_lessons(incident_id, created_at DESC)"
-            )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS warnings (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, expires_at INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
-            )
-            self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_warnings_chat_user ON warnings(chat_id, user_id, id)"
-            )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS warn_settings (chat_id INTEGER PRIMARY KEY, warn_limit INTEGER NOT NULL DEFAULT 3, warn_mode TEXT NOT NULL DEFAULT 'mute', warn_expire_seconds INTEGER NOT NULL DEFAULT 0)"
-            )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS welcome_settings (chat_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, template TEXT NOT NULL DEFAULT 'Добро пожаловать, {full_name}!')"
-            )
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS ui_sessions (user_id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL DEFAULT 0, active_panel TEXT NOT NULL DEFAULT 'home', pending_action TEXT NOT NULL DEFAULT '', pending_payload TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))"
-            )
-            self._ensure_warn_settings_columns()
-            self._ensure_warnings_columns()
-            self._ensure_chat_events_columns()
-            self._ensure_user_memory_profile_columns()
-            self._ensure_world_state_registry_columns()
-            self._ensure_request_diagnostics_columns()
-            self._rebuild_chat_events_fts()
-            self._seed_self_model_state()
-            self._seed_skill_memory()
-            self._seed_drive_scores()
             self.db.commit()
 
     def _ensure_warn_settings_columns(self) -> None:
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(warn_settings)").fetchall()}
-        if "warn_expire_seconds" not in columns:
-            self.db.execute("ALTER TABLE warn_settings ADD COLUMN warn_expire_seconds INTEGER NOT NULL DEFAULT 0")
+        ensure_warn_settings_columns(self)
 
     def _ensure_warnings_columns(self) -> None:
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(warnings)").fetchall()}
-        if "expires_at" not in columns:
-            self.db.execute("ALTER TABLE warnings ADD COLUMN expires_at INTEGER")
+        ensure_warnings_columns(self)
 
     def _ensure_chat_events_columns(self) -> None:
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(chat_events)").fetchall()}
-        required = {
-            "message_id": "INTEGER",
-            "username": "TEXT",
-            "first_name": "TEXT",
-            "last_name": "TEXT",
-            "chat_type": "TEXT",
-            "reply_to_message_id": "INTEGER",
-            "reply_to_user_id": "INTEGER",
-            "reply_to_username": "TEXT",
-            "forward_origin": "TEXT",
-            "has_media": "INTEGER",
-            "file_kind": "TEXT",
-            "is_edited": "INTEGER",
-        }
-        for name, type_name in required.items():
-            if name not in columns:
-                self.db.execute(f"ALTER TABLE chat_events ADD COLUMN {name} {type_name}")
+        ensure_chat_events_columns(self)
 
     def _ensure_user_memory_profile_columns(self) -> None:
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(user_memory_profiles)").fetchall()}
-        if "ai_summary" not in columns:
-            self.db.execute("ALTER TABLE user_memory_profiles ADD COLUMN ai_summary TEXT NOT NULL DEFAULT ''")
+        ensure_user_memory_profile_columns(self)
 
     def _ensure_world_state_registry_columns(self) -> None:
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(world_state_registry)").fetchall()}
-        required = {
-            "confidence": "REAL NOT NULL DEFAULT 0.0",
-            "ttl_seconds": "INTEGER NOT NULL DEFAULT 0",
-            "verification_method": "TEXT NOT NULL DEFAULT ''",
-            "stale_flag": "INTEGER NOT NULL DEFAULT 0",
-        }
-        for name, definition in required.items():
-            if name not in columns:
-                self.db.execute(f"ALTER TABLE world_state_registry ADD COLUMN {name} {definition}")
+        ensure_world_state_registry_columns(self)
 
     def _ensure_request_diagnostics_columns(self) -> None:
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(request_diagnostics)").fetchall()}
-        required = {
-            "request_kind": "TEXT NOT NULL DEFAULT ''",
-            "response_mode": "TEXT NOT NULL DEFAULT ''",
-            "sources": "TEXT NOT NULL DEFAULT ''",
-            "tools_used": "TEXT NOT NULL DEFAULT ''",
-            "memory_used": "TEXT NOT NULL DEFAULT ''",
-            "confidence": "REAL NOT NULL DEFAULT 0.0",
-            "freshness": "TEXT NOT NULL DEFAULT ''",
-            "notes": "TEXT NOT NULL DEFAULT ''",
-        }
-        for name, definition in required.items():
-            if name not in columns:
-                self.db.execute(f"ALTER TABLE request_diagnostics ADD COLUMN {name} {definition}")
+        ensure_request_diagnostics_columns(self)
 
     def _seed_self_model_state(self) -> None:
-        self.db.execute(
-            """INSERT INTO self_model_state(
-                state_id, identity, active_mode, capabilities, hard_limitations, trusted_tools,
-                confidence_policy, current_goals, active_constraints, honesty_rules,
-                jarvis_style_invariants, enterprise_style_invariants, last_route_kind, last_outcome
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(state_id) DO NOTHING""",
-            (
-                "primary",
-                SELF_MODEL_DEFAULTS["identity"],
-                self.default_mode,
-                SELF_MODEL_DEFAULTS["capabilities"],
-                SELF_MODEL_DEFAULTS["hard_limitations"],
-                SELF_MODEL_DEFAULTS["trusted_tools"],
-                SELF_MODEL_DEFAULTS["confidence_policy"],
-                SELF_MODEL_DEFAULTS["current_goals"],
-                SELF_MODEL_DEFAULTS["active_constraints"],
-                SELF_MODEL_DEFAULTS["honesty_rules"],
-                SELF_MODEL_DEFAULTS["jarvis_style_invariants"],
-                SELF_MODEL_DEFAULTS["enterprise_style_invariants"],
-                "",
-                "",
-            ),
-        )
+        seed_self_model_state(self, self_model_defaults=SELF_MODEL_DEFAULTS)
 
     def _seed_skill_memory(self) -> None:
-        for skill_key, trigger_tags, procedure, source in DEFAULT_SKILL_LIBRARY:
-            self.db.execute(
-                """INSERT INTO skill_memory(skill_key, title, trigger_tags, procedure, reliability, use_count, source, notes, last_used_at)
-                VALUES(?, ?, ?, ?, ?, 0, ?, '', 0)
-                ON CONFLICT(skill_key) DO NOTHING""",
-                (skill_key, skill_key.replace("_", " "), trigger_tags, procedure, 0.75, source),
-            )
+        seed_skill_memory(self, default_skill_library=DEFAULT_SKILL_LIBRARY)
 
     def _seed_drive_scores(self) -> None:
-        for drive_name in DRIVE_NAMES:
-            self.db.execute(
-                "INSERT INTO drive_scores(drive_name, score, reason) VALUES(?, 0, 'not-initialized') ON CONFLICT(drive_name) DO NOTHING",
-                (drive_name,),
-            )
+        seed_drive_scores(self, drive_names=DRIVE_NAMES)
 
     def upsert_chat_participant(
         self,
@@ -5556,6 +4966,17 @@ class TelegramBridge:
     def truncate_text(self, text: str, limit: int = 280) -> str:
         return truncate_text(text, limit)
 
+    def normalize_whitespace(self, text: str) -> str:
+        return normalize_whitespace(text)
+
+    def render_chat_troublemaker_summary(
+        self,
+        rows: List[Tuple[int, Optional[int], str, str, str, str, str, str]],
+        *,
+        top_limit: int = 3,
+    ) -> str:
+        return render_chat_troublemaker_summary(rows, top_limit=top_limit)
+
     def build_service_actor_name(self, payload: dict) -> str:
         return build_service_actor_name(payload)
 
@@ -5726,335 +5147,19 @@ class TelegramBridge:
 
 
     def build_webapp_html(self, screen_text: str = "Готов. Пиши запрос.", prompt_value: str = "", auto_refresh_seconds: int = 0) -> str:
-        refresh_meta = ""
-        escaped_screen = html.escape(screen_text)
-        escaped_prompt = html.escape(prompt_value)
-        return """<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  __REFRESH_META__
-  <title>Enterprise</title>
-  <style>
-    :root { --bg:#0b1015; --panel:#121922; --line:#263241; --text:#e6edf3; --muted:#8ea0b5; --acc:#3a8bff; --chip:#0f141b; --app-height:100dvh; --kb-offset:0px; }
-    * { box-sizing:border-box; }
-    html, body { height:100%; }
-    body {
-      margin:0;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      background:
-        radial-gradient(circle at top, rgba(58,139,255,0.12), transparent 34%),
-        linear-gradient(180deg,#0b1015,#0d131b);
-      color:var(--text);
-      min-height:var(--app-height);
-      height:var(--app-height);
-      overflow:hidden;
-    }
-    .wrap {
-      width:100%;
-      padding:calc(8px + env(safe-area-inset-top)) 10px calc(8px + env(safe-area-inset-bottom));
-      height:var(--app-height);
-      display:flex;
-      flex-direction:column;
-      gap:8px;
-    }
-    .screen {
-      background:var(--panel);
-      border:1px solid var(--line);
-      border-radius:20px;
-      padding:16px 16px 22px;
-      min-height:0;
-      white-space:pre-wrap;
-      overflow:auto;
-      font-size:14px;
-      line-height:1.5;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
-    }
-    .screen.live { flex:1 1 auto; width:100%; }
-    .composer {
-      flex:0 0 auto;
-      position:sticky;
-      bottom:0;
-      padding-bottom:max(4px, calc(env(safe-area-inset-bottom) + var(--kb-offset)));
-      background:linear-gradient(180deg, rgba(11,16,21,0), rgba(11,16,21,0.92) 24%, rgba(11,16,21,1));
-    }
-    .composer-form {
-      display:flex;
-      align-items:center;
-      background:rgba(12,17,24,0.96);
-      border:1px solid var(--line);
-      border-radius:20px;
-      padding:6px 10px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.24);
-    }
-    .composer-input {
-      width:100%;
-      min-width:0;
-      background:transparent;
-      border:none;
-      outline:none;
-      color:var(--text);
-      font:inherit;
-      font-size:15px;
-      line-height:1.3;
-      padding:10px 8px;
-    }
-    .composer-input::placeholder { color:var(--muted); }
-    .composer-send {
-      flex:0 0 auto;
-      width:34px;
-      height:34px;
-      border:none;
-      border-radius:10px;
-      background:transparent;
-      color:var(--muted);
-      font:inherit;
-      font-size:16px;
-    }
-    @media (max-width: 720px) {
-      .wrap { padding:calc(6px + env(safe-area-inset-top)) 8px calc(6px + env(safe-area-inset-bottom)); gap:8px; }
-      .screen { border-radius:18px; padding:14px 14px 18px; font-size:13px; }
-      .composer-form { border-radius:18px; padding:4px 8px; }
-      .composer-input { padding:10px; font-size:15px; }
-      .composer-send { width:32px; height:32px; }
-    }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div id="screen" class="screen live">__SCREEN_TEXT__</div>
-    <div class="composer">
-      <form id="composer" class="composer-form" method="post" action="/enterprise-console/submit">
-        <input id="cmd" name="cmd" value="__PROMPT_VALUE__" class="composer-input" type="text" enterkeyhint="send" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" placeholder="Сообщение Enterprise">
-        <button id="send" class="composer-send" type="submit" aria-label="Отправить">&#10148;</button>
-      </form>
-    </div>
-  </div>
-  <script>
-    const root = document.documentElement;
-    const params = new URLSearchParams(window.location.search);
-    const jobId = params.get("job_id") || "";
-    const screen = document.getElementById("screen");
-    const input = document.getElementById("cmd");
-    let pollTimer = null;
-    let pollFailures = 0;
-    let wasAtBottom = true;
-    function updateScreen(text, forceBottom = false) {
-      const nearBottom = screen.scrollHeight - screen.scrollTop - screen.clientHeight < 48;
-      screen.textContent = text;
-      if (forceBottom || nearBottom || wasAtBottom) {
-        screen.scrollTop = screen.scrollHeight;
-      }
-      wasAtBottom = screen.scrollHeight - screen.scrollTop - screen.clientHeight < 48;
-    }
-    function syncViewport() {
-      const vv = window.visualViewport;
-      const height = vv ? vv.height : window.innerHeight;
-      const offsetTop = vv ? vv.offsetTop : 0;
-      const keyboardOffset = Math.max(0, window.innerHeight - height - offsetTop);
-      root.style.setProperty("--app-height", `${Math.max(320, Math.round(height + offsetTop))}px`);
-      root.style.setProperty("--kb-offset", `${Math.round(keyboardOffset)}px`);
-    }
-    function pollJob() {
-      if (!jobId) return;
-      const xhr = new XMLHttpRequest();
-      xhr.open("GET", `/enterprise-console/api/jobs/${encodeURIComponent(jobId)}`, true);
-      xhr.setRequestHeader("Cache-Control", "no-store");
-      xhr.onreadystatechange = function () {
-        if (xhr.readyState !== 4) return;
-        if (xhr.status < 200 || xhr.status >= 300) {
-          pollFailures += 1;
-          if (pollFailures >= 4 && document.activeElement !== input) {
-            window.location.replace(window.location.href);
-          }
-          return;
-        }
-        try {
-          const data = JSON.parse(xhr.responseText || "{}");
-          if (!data.ok) return;
-          pollFailures = 0;
-          const header = `[codex live]\n> ${data.command || ""}\n[status] ${data.done ? "done" : "running"}${data.exit_code !== null && data.exit_code !== undefined ? ` | exit=${data.exit_code}` : ""}\n\n`;
-          let text = header + ((data.events || []).join("\n") || "[ожидание событий]");
-          if (data.answer) text += `\n\n[final]\n${data.answer}`;
-          if (data.stderr) text += `\n\nSTDERR:\n${data.stderr}`;
-          updateScreen(text);
-          if (data.done && pollTimer) {
-            clearInterval(pollTimer);
-            pollTimer = null;
-          }
-        } catch (_) {
-          pollFailures += 1;
-        }
-      };
-      try {
-        xhr.send(null);
-      } catch (_) {
-        pollFailures += 1;
-      }
-    }
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", syncViewport);
-      window.visualViewport.addEventListener("scroll", syncViewport);
-    }
-    window.addEventListener("resize", syncViewport);
-    screen.addEventListener("scroll", () => {
-      wasAtBottom = screen.scrollHeight - screen.scrollTop - screen.clientHeight < 48;
-    });
-    setTimeout(() => {
-      syncViewport();
-      if (jobId) {
-        pollJob();
-        pollTimer = setInterval(pollJob, 900);
-      }
-    }, 0);
-  </script>
-</body>
-</html>""".replace("__REFRESH_META__", refresh_meta).replace("__SCREEN_TEXT__", escaped_screen).replace("__PROMPT_VALUE__", escaped_prompt)
+        return build_enterprise_console_html(
+            screen_text=screen_text,
+            prompt_value=prompt_value,
+            auto_refresh_seconds=auto_refresh_seconds,
+        )
 
     def run_webapp_server(self) -> None:
-        secret = self.config.webapp_secret
-        bridge = self
-
-        class EnterpriseConsoleHandler(BaseHTTPRequestHandler):
-            def _write_json(self, payload: Dict[str, object], status: int = 200) -> None:
-                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def _write_html(self, html_text: str, status: int = 200, *, set_auth_cookie: bool = False) -> None:
-                body = html_text.encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                if set_auth_cookie:
-                    self.send_header("Set-Cookie", f"enterprise_console_auth={secret}; Path=/; HttpOnly; SameSite=Lax")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def _redirect(self, location: str, status: int = 303) -> None:
-                self.send_response(status)
-                self.send_header("Location", location)
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-
-            def _cookie_token(self) -> str:
-                raw_cookie = self.headers.get("Cookie", "") or ""
-                for part in raw_cookie.split(";"):
-                    name, _, value = part.strip().partition("=")
-                    if name == "enterprise_console_auth":
-                        return value.strip()
-                return ""
-
-            def _is_local_request(self) -> bool:
-                host = (self.headers.get("Host", "") or "").strip().lower()
-                if host.startswith("127.0.0.1:") or host == "127.0.0.1":
-                    return True
-                if host.startswith("localhost:") or host == "localhost":
-                    return True
-                client_ip = (self.client_address[0] or "").strip()
-                return client_ip in {"127.0.0.1", "::1"}
-
-            def _authorized(self) -> bool:
-                if self._is_local_request():
-                    return True
-                parsed = urlparse(self.path)
-                query = parse_qs(parsed.query or "")
-                query_token = query.get("token", [""])[0].strip()
-                return query_token == secret or self._cookie_token() == secret
-
-            def log_message(self, format: str, *args) -> None:
-                return
-
-            def do_GET(self) -> None:
-                parsed = urlparse(self.path)
-                if not self._authorized():
-                    self._write_json({"ok": False, "error": "forbidden"}, status=403)
-                    return
-                if parsed.path == "/enterprise-console":
-                    query = parse_qs(parsed.query or "")
-                    prompt = (query.get("prompt", [""])[0] or "").strip()
-                    job_id = (query.get("job_id", [""])[0] or "").strip()
-                    screen_text = "Готов. Пиши запрос."
-                    auto_refresh_seconds = 0
-                    if job_id:
-                        snapshot = bridge.get_console_job_snapshot(job_id)
-                        if snapshot is None:
-                            screen_text = "Job не найден."
-                        else:
-                            live_lines = snapshot.get("events") or []
-                            stderr = str(snapshot.get("stderr") or "")
-                            answer = str(snapshot.get("answer") or "")
-                            exit_code = snapshot.get("exit_code")
-                            header = (
-                                "[codex live]\n"
-                                f"> {prompt or snapshot.get('command') or ''}\n"
-                                f"[status] {'done' if snapshot.get('done') else 'running'}"
-                                f"{f' | exit={exit_code}' if exit_code is not None else ''}\n\n"
-                            )
-                            screen_text = header + ("\n".join(str(line) for line in live_lines) or "[ожидание событий]")
-                            if answer:
-                                screen_text += f"\n\n[final]\n{answer}"
-                            if stderr:
-                                screen_text += f"\n\nSTDERR:\n{stderr}"
-                    self._write_html(
-                        bridge.build_webapp_html(
-                            screen_text=screen_text,
-                            prompt_value="",
-                            auto_refresh_seconds=auto_refresh_seconds,
-                        ),
-                        set_auth_cookie=True,
-                    )
-                    return
-                if parsed.path.startswith("/enterprise-console/api/jobs/"):
-                    job_id = parsed.path.rsplit("/", 1)[-1]
-                    snapshot = bridge.get_console_job_snapshot(job_id)
-                    if snapshot is None:
-                        self._write_json({"ok": False, "error": "not found"}, status=404)
-                        return
-                    snapshot["ok"] = True
-                    self._write_json(snapshot)
-                    return
-                self._write_json({"ok": False, "error": "not found"}, status=404)
-
-            def do_POST(self) -> None:
-                parsed = urlparse(self.path)
-                if not self._authorized():
-                    self._write_json({"ok": False, "error": "forbidden"}, status=403)
-                    return
-                content_length = int(self.headers.get("Content-Length", "0") or "0")
-                raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-                try:
-                    if "application/x-www-form-urlencoded" in (self.headers.get("Content-Type", "") or ""):
-                        payload = {key: values[0] for key, values in parse_qs(raw.decode("utf-8") or "").items()}
-                    else:
-                        payload = json.loads(raw.decode("utf-8") or "{}")
-                except json.JSONDecodeError:
-                    payload = {}
-                if parsed.path == "/enterprise-console/submit":
-                    command = str(payload.get("command") or payload.get("cmd") or "").strip()
-                    if not command:
-                        self._redirect("/enterprise-console")
-                        return
-                    job_id = bridge.start_console_job(command)
-                    self._redirect(f"/enterprise-console?job_id={job_id}&prompt={quote_plus(command)}")
-                    return
-                if parsed.path == "/enterprise-console/api/exec":
-                    command = str(payload.get("command") or "").strip()
-                    if not command:
-                        self._write_json({"ok": False, "error": "empty prompt"}, status=400)
-                        return
-                    self._write_json({"ok": True, "job_id": bridge.start_console_job(command)})
-                    return
-                self._write_json({"ok": False, "error": "not found"}, status=404)
-
-        server = ThreadingHTTPServer((self.config.webapp_bind_host, self.config.webapp_port), EnterpriseConsoleHandler)
-        server.serve_forever()
+        run_enterprise_console_server(
+            bridge=self,
+            secret=self.config.webapp_secret,
+            bind_host=self.config.webapp_bind_host,
+            port=self.config.webapp_port,
+        )
 
     def ensure_webapp_server_started(self) -> None:
         with self.webapp_lock:
@@ -6609,94 +5714,7 @@ class TelegramBridge:
         return self.handle_console_command(chat_id, user_id, command)
 
     def handle_update(self, item: dict) -> None:
-        callback_query = item.get("callback_query")
-        if callback_query:
-            self.handle_callback_query(callback_query)
-            return
-
-        reaction_update = item.get("message_reaction") or item.get("message_reaction_count")
-        if reaction_update:
-            self.handle_reaction_update(reaction_update)
-            return
-
-        message = item.get("message") or item.get("edited_message")
-        is_edited_message = item.get("edited_message") is not None
-        if not message:
-            return
-
-        chat = message.get("chat") or {}
-        from_user = message.get("from") or {}
-        chat_id = chat.get("id")
-        message_id = message.get("message_id")
-        user_id = from_user.get("id")
-        chat_type = (chat.get("type") or "").lower()
-
-        if chat_id is None:
-            return
-
-        if not is_edited_message and self.state.is_duplicate_message(chat_id, message_id):
-            log(f"duplicate skipped chat={chat_id} message_id={message_id}")
-            return
-
-        if message.get("video"):
-            log(f"video ignored chat={chat_id} user={user_id} message_id={message_id}")
-            return
-
-        if self.should_record_incoming_event(chat_id, user_id, message, chat_type):
-            self.record_incoming_event(chat_id, user_id, message)
-        if chat_type in {"group", "supergroup"} and message.get("photo") and user_id is not None and not (from_user.get("is_bot") or False):
-            self.maybe_start_silent_photo_analysis(chat_id, user_id, message)
-        self.maybe_refresh_chat_participants_snapshot(chat_id, chat_type)
-
-        if message.get("new_chat_members"):
-            self.handle_new_chat_members(chat_id, message)
-            return
-
-        raw_text = (message.get("text") or "").strip()
-        if message.get("text") and self.maybe_handle_owner_moderation_override(chat_id, user_id, raw_text, message, chat_type):
-            return
-        if message.get("text") and self.maybe_apply_auto_moderation(chat_id, user_id, message, chat_type):
-            return
-        if not has_chat_access(self.state.authorized_user_ids, user_id):
-            guest_allowed = has_public_command_access(raw_text)
-            if not guest_allowed and chat_type in {"group", "supergroup"} and message.get("text"):
-                guest_allowed = (
-                    self.is_group_spontaneous_reply_candidate(chat_id, message, raw_text)
-                    or self.is_group_followup_message(chat_id, message, raw_text)
-                    or self.is_group_discussion_continuation(chat_id, message, raw_text)
-                )
-            if guest_allowed:
-                pass
-            else:
-                if chat_type == "private":
-                    log(f"blocked private non-owner user_id={user_id} chat_id={chat_id}")
-                else:
-                    log(f"blocked user_id={user_id} chat_id={chat_id}")
-                return
-
-        try:
-            if message.get("text"):
-                self.handle_text_message(chat_id, user_id, message, chat_type)
-                return
-            if message.get("document"):
-                self.handle_document_message(chat_id, user_id, message, chat_type)
-                return
-            if message.get("photo"):
-                self.handle_photo_message(chat_id, user_id, message)
-                return
-            if message.get("voice"):
-                return
-            if message.get("animation"):
-                return
-            if any(message.get(key) for key in ["sticker", "document", "video", "video_note", "audio", "contact", "location", "new_chat_members", "left_chat_member", "pinned_message", "new_chat_title", "new_chat_photo"]):
-                return
-            self.safe_send_text(chat_id, UNSUPPORTED_FILE_REPLY)
-        except RequestException as error:
-            log(f"telegram error while handling message chat={chat_id}: {error}")
-            self.safe_send_text(chat_id, "Не удалось обработать сообщение из-за ошибки Telegram API.")
-        except Exception as error:
-            log_exception(f"message handling error chat={chat_id}", error, limit=6)
-            self.safe_send_text(chat_id, "Не удалось обработать сообщение. Попробуй еще раз.")
+        handle_telegram_update(self, item)
 
     def should_record_incoming_event(self, chat_id: int, user_id: Optional[int], message: dict, chat_type: str) -> bool:
         del chat_id
@@ -6930,64 +5948,7 @@ class TelegramBridge:
             log_exception(f"legacy jarvis sync failed chat={chat_id} user={user_id}", error, limit=6)
 
     def handle_reaction_update(self, reaction_update: dict) -> None:
-        chat = reaction_update.get("chat") or {}
-        chat_id = chat.get("id")
-        if chat_id is None:
-            return
-
-        actor = reaction_update.get("user") or {}
-        actor_chat = reaction_update.get("actor_chat") or {}
-        user_id = actor.get("id")
-        username = actor.get("username") or ""
-        first_name = actor.get("first_name") or actor_chat.get("title") or ""
-        last_name = actor.get("last_name") or ""
-        chat_type = (chat.get("type") or "")
-        message_id = reaction_update.get("message_id")
-        old_reactions = format_reaction_payload(reaction_update.get("old_reaction") or [])
-        new_reactions = format_reaction_payload(reaction_update.get("new_reaction") or [])
-
-        if not new_reactions and reaction_update.get("reactions") is not None:
-            new_reactions = format_reaction_count_payload(reaction_update.get("reactions") or [])
-
-        if not new_reactions and not old_reactions:
-            return
-
-        if new_reactions:
-            content = f"[Реакция на message_id={message_id}: {new_reactions}]"
-        else:
-            content = f"[Реакция снята с message_id={message_id}: было {old_reactions}]"
-
-        self.state.record_event(
-            chat_id,
-            user_id,
-            "user",
-            "reaction",
-            content,
-            message_id,
-            username,
-            first_name,
-            last_name,
-            chat_type,
-        )
-        if user_id is not None:
-            try:
-                new_count = len(reaction_update.get("new_reaction") or [])
-                old_count = len(reaction_update.get("old_reaction") or [])
-                reaction_delta = max(0, new_count - old_count)
-                if reaction_delta == 0 and new_count == 0 and old_count == 0 and reaction_update.get("reactions") is not None:
-                    reaction_delta = max(len(reaction_update.get("reactions") or []), 0)
-                if reaction_delta > 0:
-                    reaction_result = self.legacy.sync_reaction(int(chat_id), int(user_id), int(message_id or 0), reactions_added=reaction_delta)
-                    actor_unlocked = reaction_result.get("actor_unlocked") or []
-                    if actor_unlocked:
-                        actor_unlocked = self._filter_new_achievement_announcements(int(chat_id), int(user_id), actor_unlocked)
-                        display_name = (first_name or username or str(user_id)).strip()
-                        announce_text = self.legacy.achievements.format_unlock_announcement(display_name, actor_unlocked)
-                        if announce_text:
-                            self.safe_send_text(int(chat_id), announce_text)
-            except Exception as error:
-                log_exception(f"legacy reaction sync failed chat={chat_id} user={user_id}", error, limit=6)
-        log(f"incoming reaction chat={chat_id} user={user_id} message_id={message_id} value={shorten_for_log(content)}")
+        dispatch_reaction_update(self, reaction_update)
 
     def handle_text_message(self, chat_id: int, user_id: Optional[int], message: dict, chat_type: str = "private") -> None:
         self.telegram_handlers.handle_text_message(self, chat_id, user_id, message, chat_type)
@@ -7259,119 +6220,19 @@ class TelegramBridge:
         message: Optional[dict] = None,
         spontaneous_group_reply: bool = False,
     ) -> None:
-        user_history_saved = False
-        try:
-            log(
-                f"run_text_task start chat={chat_id} type={chat_type} user={user_id} "
-                f"persona={assistant_persona or '-'} text={shorten_for_log(text)}"
-            )
-            self.state.append_history(chat_id, "user", text)
-            user_history_saved = True
-            answer = self.ask_codex(
-                chat_id,
-                text,
-                user_id=user_id,
-                chat_type=chat_type,
-                assistant_persona=assistant_persona,
-                message=message,
-                spontaneous_group_reply=spontaneous_group_reply,
-            )
-            self.state.append_history(chat_id, "assistant", answer)
-            self.state.record_event(chat_id, None, "assistant", "answer", answer)
-            delivered_via_status = self.consume_answer_delivered_via_status(chat_id)
-            if not delivered_via_status:
-                delivery_chat_id = self.resolve_enterprise_delivery_chat_id(chat_id, chat_type, assistant_persona)
-                reply_to_message_id = None
-                if delivery_chat_id == chat_id and chat_type in {"group", "supergroup"}:
-                    reply_to_message_id = (message or {}).get("message_id")
-                self.safe_send_text(delivery_chat_id, answer, reply_to_message_id=reply_to_message_id)
-            self.clear_pending_enterprise_jobs_for_chat(chat_id)
-            if chat_type in {"group", "supergroup"}:
-                self.mark_active_group_discussion(chat_id, user_id, message)
-            if spontaneous_group_reply:
-                self.grant_group_followup_window(chat_id, user_id)
-            log(f"run_text_task sent chat={chat_id} answer_len={len(answer or '')}")
-        except Exception as error:
-            log_exception(f"text task failed chat={chat_id}", error, limit=10)
-            fallback_answer = "Не удалось обработать запрос. Ошибка записана в лог."
-            if not user_history_saved:
-                self.state.append_history(chat_id, "user", text)
-            self.state.append_history(chat_id, "assistant", fallback_answer)
-            self.state.record_event(chat_id, None, "assistant", "answer_error", fallback_answer)
-            self.safe_send_text(chat_id, fallback_answer)
-        finally:
-            self.state.finish_chat_task(chat_id)
+        _run_text_task_service(
+            self,
+            chat_id=chat_id,
+            text=text,
+            user_id=user_id,
+            chat_type=chat_type,
+            assistant_persona=assistant_persona,
+            message=message,
+            spontaneous_group_reply=spontaneous_group_reply,
+        )
 
     def run_recent_chat_report_task(self, chat_id: int, user_id: Optional[int], text: str, message: Optional[dict] = None) -> None:
-        user_history_saved = False
-        try:
-            rows = self.state.get_recent_chat_rows(chat_id, limit=100)
-            self.state.append_history(chat_id, "user", text)
-            user_history_saved = True
-            if not rows:
-                answer = "В памяти этого чата пока нет сообщений, поэтому отчёт собрать не из чего."
-            else:
-                chat = (message or {}).get("chat") or {}
-                chat_title = self.state.get_chat_title(chat_id, chat.get("title") or "")
-                from_stamp = datetime.fromtimestamp(rows[0][0]).strftime("%Y-%m-%d %H:%M") if rows[0][0] else "?"
-                to_stamp = datetime.fromtimestamp(rows[-1][0]).strftime("%Y-%m-%d %H:%M") if rows[-1][0] else "?"
-                participant_counts: Dict[str, int] = {}
-                transcript_lines: List[str] = []
-                for created_at, row_user_id, username, first_name, last_name, role, message_type, content in rows:
-                    stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
-                    actor = build_actor_name(row_user_id, username, first_name, last_name, role)
-                    if role == "user":
-                        participant_counts[actor] = participant_counts.get(actor, 0) + 1
-                    transcript_lines.append(
-                        f"[{stamp}] {actor} [{message_type}]: {truncate_text(normalize_whitespace(content), 220)}"
-                    )
-                activity_lines = ["Активность участников:"]
-                for actor, count in sorted(participant_counts.items(), key=lambda item: (-item[1], item[0]))[:8]:
-                    activity_lines.append(f"- {actor}: {count}")
-                troublemaker_summary = render_chat_troublemaker_summary(rows)
-                prompt = (
-                    "Сделай краткий отчёт по содержанию Telegram-чата на основе последних 100 сообщений.\n"
-                    "Нельзя выдумывать факты вне лога.\n"
-                    "Ответ нужен на русском и строго в формате:\n"
-                    "1. Что происходит\n"
-                    "2. Кто самый активный\n"
-                    "3. Конфликты/риски\n"
-                    "4. Кто гонит беса\n"
-                    "5. Что важно прямо сейчас\n"
-                    "Если явного провокатора нет, так и напиши.\n\n"
-                    f"Чат: {chat_title or chat_id}\n"
-                    f"chat_id={chat_id}\n"
-                    f"Сообщений в выборке: {len(rows)}\n"
-                    f"Период выборки: {from_stamp} .. {to_stamp}\n\n"
-                    + "\n".join(activity_lines)
-                    + "\n\n"
-                    + troublemaker_summary
-                    + "\n\n"
-                    "Лог сообщений:\n"
-                    + "\n".join(transcript_lines)
-                )
-                answer = self.ask_codex(
-                    chat_id,
-                    prompt,
-                    user_id=user_id,
-                    chat_type=((message or {}).get("chat") or {}).get("type") or "private",
-                    assistant_persona="jarvis",
-                    message=message,
-                    suppress_status_messages=True,
-                )
-            self.state.append_history(chat_id, "assistant", answer)
-            self.state.record_event(chat_id, user_id, "assistant", "chat_watch_report", answer)
-            self.safe_send_text(chat_id, answer, reply_to_message_id=(message or {}).get("message_id"))
-        except Exception as error:
-            log_exception(f"recent chat report failed chat={chat_id}", error, limit=10)
-            fallback_answer = "Не удалось собрать отчёт по последним сообщениям. Ошибка записана в лог."
-            if not user_history_saved:
-                self.state.append_history(chat_id, "user", text)
-            self.state.append_history(chat_id, "assistant", fallback_answer)
-            self.state.record_event(chat_id, user_id, "assistant", "chat_watch_report_error", fallback_answer)
-            self.safe_send_text(chat_id, fallback_answer, reply_to_message_id=(message or {}).get("message_id"))
-        finally:
-            self.state.finish_chat_task(chat_id)
+        _run_recent_chat_report_task_service(self, chat_id=chat_id, user_id=user_id, text=text, message=message)
 
     def maybe_start_silent_photo_analysis(self, chat_id: int, user_id: int, message: dict) -> None:
         best_photo = max((message.get("photo") or []), key=lambda item: item.get("file_size", 0), default=None)
@@ -9186,76 +8047,10 @@ class TelegramBridge:
         return report.answer
 
     def build_reply_context(self, chat_id: int, message: Optional[dict]) -> str:
-        source = message or {}
-        reply_to = source.get("reply_to_message") or {}
-        if not reply_to:
-            return ""
-        lines: List[str] = []
-        reply_message_id = reply_to.get("message_id")
-        reply_user = reply_to.get("from") or {}
-        actor = build_service_actor_name(reply_user) if reply_user else "участник"
-        lines.append("Важно: это reply-target, а не текущий автор сообщения.")
-        if reply_message_id is not None:
-            lines.append(f"Reply target message_id: {reply_message_id}")
-        lines.append(f"Reply target author: {actor}")
-        summary = summarize_message_for_pin(reply_to)
-        if summary:
-            lines.append(f"Reply target summary: {truncate_text(summary, 220)}")
-        if reply_to.get("text"):
-            lines.append(f"Reply target text: {truncate_text(reply_to.get('text') or '', 900)}")
-        elif reply_to.get("caption"):
-            lines.append(f"Reply target caption: {truncate_text(reply_to.get('caption') or '', 900)}")
-        media_kind = describe_message_media_kind(reply_to)
-        if media_kind:
-            lines.append(f"Reply target media: {media_kind}")
-        if reply_message_id is not None:
-            visual_row = self.state.get_visual_signal_for_message(chat_id, int(reply_message_id))
-            if visual_row:
-                visual_summary = truncate_text(
-                    normalize_visual_analysis_text(visual_row["analysis_text"] or visual_row["caption"] or ""),
-                    320,
-                )
-                if visual_summary:
-                    lines.append(f"Reply target visual analysis: {visual_summary}")
-                try:
-                    visual_flags = json.loads(visual_row["risk_flags_json"] or "[]")
-                except ValueError:
-                    visual_flags = []
-                if visual_flags:
-                    translated_flags = ", ".join(translate_risk_flag(flag) for flag in visual_flags[:5])
-                    lines.append(f"Reply target visual flags: {translated_flags}")
-        if reply_message_id is not None:
-            thread_rows = self.state.get_thread_context(chat_id, int(reply_message_id), limit=8)
-            if thread_rows:
-                lines.append("Reply thread context:")
-                for created_at, event_user_id, username, first_name, last_name, role, message_type, content in thread_rows:
-                    stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
-                    event_actor = build_actor_name(event_user_id, username or "", first_name or "", last_name or "", role)
-                    lines.append(f"- [{stamp}] {event_actor} ({message_type}): {truncate_text(content, 180)}")
-        return "\n".join(lines)
+        return _build_reply_context_service(self, chat_id, message)
 
     def message_refers_to_active_subject(self, user_text: str) -> bool:
-        normalized = normalize_whitespace(user_text or "").lower()
-        if not normalized:
-            return False
-        direct_markers = (
-            "что на фото",
-            "что на картинке",
-            "что изображено",
-            "кто на фото",
-            "кто это",
-            "что там",
-            "и что там",
-            "а там",
-            "а тут",
-            "что тут",
-            "что на этом фото",
-            "что на этой фотке",
-            "что на фотке",
-        )
-        if any(marker in normalized for marker in direct_markers):
-            return True
-        return normalized in {"там?", "тут?", "и что?", "что?", "кто?", "что это?", "и кто это?"}
+        return _message_refers_to_active_subject_service(user_text)
 
     def build_active_subject_context(
         self,
@@ -9264,73 +8059,7 @@ class TelegramBridge:
         user_text: str,
         message: Optional[dict],
     ) -> str:
-        source = message or {}
-        reply_to = source.get("reply_to_message") or {}
-        target_message_id = 0
-        target_subject_type = ""
-        source_label = ""
-
-        if reply_to.get("message_id") is not None:
-            target_message_id = int(reply_to.get("message_id") or 0)
-            target_subject_type = describe_message_media_kind(reply_to) or "message"
-            source_label = "reply"
-        elif self.message_refers_to_active_subject(user_text):
-            active_subject = self.state.get_active_subject(chat_id, user_id)
-            if active_subject:
-                target_message_id = int(active_subject.get("message_id") or 0)
-                target_subject_type = str(active_subject.get("subject_type") or "")
-                source_label = "focus_memory"
-
-        if target_message_id <= 0:
-            return ""
-
-        subject_row = self.state.get_message_subject(chat_id, target_message_id)
-        visual_row = self.state.get_visual_signal_for_message(chat_id, target_message_id)
-        subject_type = target_subject_type or (subject_row["subject_type"] if subject_row else "message")
-        if source_label == "reply":
-            self.state.set_active_subject(
-                chat_id=chat_id,
-                user_id=user_id,
-                message_id=target_message_id,
-                subject_type=subject_type,
-                source=source_label,
-            )
-
-        lines = [
-            "ACTIVE SUBJECT:",
-            f"- source: {source_label or 'unknown'}",
-            f"- message_id: {target_message_id}",
-            f"- subject_type: {subject_type}",
-        ]
-
-        if subject_row:
-            lines.append(f"- subject_memory: {truncate_text(subject_row['summary'] or '', 380)}")
-            try:
-                subject_details = json.loads(subject_row["details_json"] or "{}")
-            except ValueError:
-                subject_details = {}
-            subject_caption = truncate_text(str(subject_details.get("caption") or ""), 240)
-            if subject_caption:
-                lines.append(f"- subject_caption: {subject_caption}")
-
-        if visual_row:
-            visual_summary = truncate_text(
-                normalize_visual_analysis_text(visual_row["analysis_text"] or visual_row["caption"] or ""),
-                380,
-            )
-            if visual_summary:
-                lines.append(f"- visual_memory: {visual_summary}")
-            try:
-                visual_flags = json.loads(visual_row["risk_flags_json"] or "[]")
-            except ValueError:
-                visual_flags = []
-            if visual_flags:
-                lines.append("- visual_flags: " + ", ".join(translate_risk_flag(flag) for flag in visual_flags[:5]))
-
-        if len(lines) <= 4:
-            return ""
-        lines.append("- instruction: resolve 'там/тут/это/на фото' through this subject first.")
-        return "\n".join(lines)
+        return _build_active_subject_context_service(self, chat_id, user_id, user_text, message)
 
     def build_current_discussion_context(
         self,
