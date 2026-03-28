@@ -295,6 +295,33 @@ from services.bridge_chat_state import (
     update_event_text as _update_event_text_service,
     update_summary as _update_summary_service,
 )
+from services.bridge_moderation_state import (
+    add_moderation_action as _add_moderation_action_service,
+    add_warning as _add_warning_service,
+    complete_moderation_action as _complete_moderation_action_service,
+    deactivate_active_moderation as _deactivate_active_moderation_service,
+    finish_chat_task as _finish_chat_task_service,
+    finish_upgrade as _finish_upgrade_service,
+    get_active_moderations as _get_active_moderations_service,
+    get_due_moderation_actions as _get_due_moderation_actions_service,
+    get_latest_active_moderation as _get_latest_active_moderation_service,
+    get_managed_group_chat_ids as _get_managed_group_chat_ids_service,
+    get_warn_settings as _get_warn_settings_service,
+    get_warning_count as _get_warning_count_service,
+    get_warning_rows as _get_warning_rows_service,
+    get_welcome_settings as _get_welcome_settings_service,
+    is_duplicate_message as _is_duplicate_message_service,
+    remove_last_warning as _remove_last_warning_service,
+    reset_warnings as _reset_warnings_service,
+    reset_welcome_template as _reset_welcome_template_service,
+    set_warn_limit as _set_warn_limit_service,
+    set_warn_mode as _set_warn_mode_service,
+    set_warn_time as _set_warn_time_service,
+    set_welcome_enabled as _set_welcome_enabled_service,
+    set_welcome_template as _set_welcome_template_service,
+    try_start_chat_task as _try_start_chat_task_service,
+    try_start_upgrade as _try_start_upgrade_service,
+)
 from services.text_task_service import (
     run_recent_chat_report_task as _run_recent_chat_report_task_service,
     run_text_task as _run_text_task_service,
@@ -3631,72 +3658,25 @@ class BridgeState:
         return None, ""
 
     def add_moderation_action(self, chat_id: int, user_id: int, action: str, reason: str, created_by_user_id: Optional[int], expires_at: Optional[int] = None) -> None:
-        with self.db_lock:
-            self.db.execute(
-                "INSERT INTO moderation_actions(chat_id, user_id, action, reason, created_by_user_id, expires_at) VALUES(?, ?, ?, ?, ?, ?)",
-                (chat_id, user_id, action, reason, created_by_user_id, expires_at),
-            )
-            self.db.commit()
+        _add_moderation_action_service(self, chat_id, user_id, action, reason, created_by_user_id, expires_at)
 
     def complete_moderation_action(self, action_id: int) -> None:
-        with self.db_lock:
-            self.db.execute(
-                "UPDATE moderation_actions SET active = 0, completed_at = strftime('%s','now') WHERE id = ?",
-                (action_id,),
-            )
-            self.db.commit()
+        _complete_moderation_action_service(self, action_id)
 
     def deactivate_active_moderation(self, chat_id: int, user_id: int, action: str) -> None:
-        with self.db_lock:
-            self.db.execute(
-                "UPDATE moderation_actions SET active = 0, completed_at = strftime('%s','now') WHERE chat_id = ? AND user_id = ? AND action = ? AND active = 1",
-                (chat_id, user_id, action),
-            )
-            self.db.commit()
+        _deactivate_active_moderation_service(self, chat_id, user_id, action)
 
     def get_due_moderation_actions(self, now_ts: int, limit: int = 20) -> List[Tuple[int, int, int, str]]:
-        with self.db_lock:
-            rows = self.db.execute(
-                "SELECT id, chat_id, user_id, action FROM moderation_actions WHERE active = 1 AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY expires_at ASC LIMIT ?",
-                (now_ts, limit),
-            ).fetchall()
-        return [(int(row[0]), int(row[1]), int(row[2]), row[3]) for row in rows]
+        return _get_due_moderation_actions_service(self, now_ts, limit)
 
     def get_latest_active_moderation(self, chat_id: int) -> Optional[Tuple[int, int, str]]:
-        with self.db_lock:
-            row = self.db.execute(
-                "SELECT id, user_id, action FROM moderation_actions WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
-                (chat_id,),
-            ).fetchone()
-        if not row:
-            return None
-        return int(row[0]), int(row[1]), row[2] or ""
+        return _get_latest_active_moderation_service(self, chat_id)
 
     def get_active_moderations(self, chat_id: int, limit: int = 10) -> List[Tuple[int, int, str, str]]:
-        with self.db_lock:
-            rows = self.db.execute(
-                "SELECT id, user_id, action, reason FROM moderation_actions WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT ?",
-                (chat_id, limit),
-            ).fetchall()
-        return [(int(row[0]), int(row[1]), row[2] or "", row[3] or "") for row in rows]
+        return _get_active_moderations_service(self, chat_id, limit)
 
     def get_managed_group_chat_ids(self) -> List[int]:
-        with self.db_lock:
-            rows = self.db.execute(
-                """SELECT DISTINCT chat_id
-                FROM (
-                    SELECT chat_id FROM chat_events WHERE chat_type IN ('group', 'supergroup')
-                    UNION ALL
-                    SELECT chat_id FROM moderation_actions
-                    UNION ALL
-                    SELECT chat_id FROM warn_settings
-                    UNION ALL
-                    SELECT chat_id FROM welcome_settings
-                )
-                WHERE chat_id IS NOT NULL AND chat_id < 0
-                ORDER BY chat_id"""
-            ).fetchall()
-        return [int(row[0]) for row in rows if row and row[0] is not None]
+        return _get_managed_group_chat_ids_service(self)
 
     def get_voice_prompt_terms(self, chat_id: int, limit: int = 24) -> List[str]:
         with self.db_lock:
@@ -3755,95 +3735,31 @@ class BridgeState:
         return terms
 
     def add_warning(self, chat_id: int, user_id: int, reason: str, created_by_user_id: Optional[int], expires_at: Optional[int] = None) -> int:
-        with self.db_lock:
-            self.db.execute(
-                "DELETE FROM warnings WHERE expires_at IS NOT NULL AND expires_at <= strftime('%s','now')"
-            )
-            self.db.execute(
-                "INSERT INTO warnings(chat_id, user_id, reason, created_by_user_id, expires_at) VALUES(?, ?, ?, ?, ?)",
-                (chat_id, user_id, reason, created_by_user_id, expires_at),
-            )
-            count = self.db.execute(
-                "SELECT COUNT(*) FROM warnings WHERE chat_id = ? AND user_id = ? AND (expires_at IS NULL OR expires_at > strftime('%s','now'))",
-                (chat_id, user_id),
-            ).fetchone()[0]
-            self.db.commit()
-        return int(count)
+        return _add_warning_service(self, chat_id, user_id, reason, created_by_user_id, expires_at)
 
     def get_warning_count(self, chat_id: int, user_id: int) -> int:
-        with self.db_lock:
-            self.db.execute(
-                "DELETE FROM warnings WHERE expires_at IS NOT NULL AND expires_at <= strftime('%s','now')"
-            )
-            row = self.db.execute(
-                "SELECT COUNT(*) FROM warnings WHERE chat_id = ? AND user_id = ? AND (expires_at IS NULL OR expires_at > strftime('%s','now'))",
-                (chat_id, user_id),
-            ).fetchone()
-            self.db.commit()
-        return int(row[0]) if row else 0
+        return _get_warning_count_service(self, chat_id, user_id)
 
     def remove_last_warning(self, chat_id: int, user_id: int) -> int:
-        with self.db_lock:
-            row = self.db.execute(
-                "SELECT id FROM warnings WHERE chat_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1",
-                (chat_id, user_id),
-            ).fetchone()
-            if not row:
-                return 0
-            self.db.execute("DELETE FROM warnings WHERE id = ?", (row[0],))
-            count = self.db.execute(
-                "SELECT COUNT(*) FROM warnings WHERE chat_id = ? AND user_id = ?",
-                (chat_id, user_id),
-            ).fetchone()[0]
-            self.db.commit()
-        return int(count)
+        return _remove_last_warning_service(self, chat_id, user_id)
 
     def reset_warnings(self, chat_id: int, user_id: int) -> None:
-        with self.db_lock:
-            self.db.execute("DELETE FROM warnings WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
-            self.db.commit()
+        _reset_warnings_service(self, chat_id, user_id)
 
     def get_warn_settings(self, chat_id: int) -> Tuple[int, str, int]:
-        with self.db_lock:
-            row = self.db.execute(
-                "SELECT warn_limit, warn_mode, warn_expire_seconds FROM warn_settings WHERE chat_id = ?",
-                (chat_id,),
-            ).fetchone()
-        if not row:
-            return 3, 'mute', 0
-        return int(row[0]), row[1], int(row[2] or 0)
+        return _get_warn_settings_service(self, chat_id)
 
     def set_warn_limit(self, chat_id: int, warn_limit: int) -> None:
-        with self.db_lock:
-            self.db.execute(
-                "INSERT INTO warn_settings(chat_id, warn_limit, warn_mode, warn_expire_seconds) VALUES(?, ?, COALESCE((SELECT warn_mode FROM warn_settings WHERE chat_id = ?), 'mute'), COALESCE((SELECT warn_expire_seconds FROM warn_settings WHERE chat_id = ?), 0)) ON CONFLICT(chat_id) DO UPDATE SET warn_limit = excluded.warn_limit",
-                (chat_id, warn_limit, chat_id, chat_id),
-            )
-            self.db.commit()
+        _set_warn_limit_service(self, chat_id, warn_limit)
 
     def set_warn_mode(self, chat_id: int, warn_mode: str) -> None:
-        with self.db_lock:
-            self.db.execute(
-                "INSERT INTO warn_settings(chat_id, warn_limit, warn_mode, warn_expire_seconds) VALUES(?, COALESCE((SELECT warn_limit FROM warn_settings WHERE chat_id = ?), 3), ?, COALESCE((SELECT warn_expire_seconds FROM warn_settings WHERE chat_id = ?), 0)) ON CONFLICT(chat_id) DO UPDATE SET warn_mode = excluded.warn_mode",
-                (chat_id, chat_id, warn_mode, chat_id),
-            )
-            self.db.commit()
+        _set_warn_mode_service(self, chat_id, warn_mode)
 
     def set_warn_time(self, chat_id: int, warn_expire_seconds: int) -> None:
-        with self.db_lock:
-            self.db.execute(
-                "INSERT INTO warn_settings(chat_id, warn_limit, warn_mode, warn_expire_seconds) VALUES(?, COALESCE((SELECT warn_limit FROM warn_settings WHERE chat_id = ?), 3), COALESCE((SELECT warn_mode FROM warn_settings WHERE chat_id = ?), 'mute'), ?) ON CONFLICT(chat_id) DO UPDATE SET warn_expire_seconds = excluded.warn_expire_seconds",
-                (chat_id, chat_id, chat_id, warn_expire_seconds),
-            )
-            self.db.commit()
+        _set_warn_time_service(self, chat_id, warn_expire_seconds)
 
     def get_warning_rows(self, chat_id: int, user_id: int, limit: int = 5) -> List[Tuple[int, str]]:
-        with self.db_lock:
-            rows = self.db.execute(
-                "SELECT created_at, reason FROM warnings WHERE chat_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?",
-                (chat_id, user_id, limit),
-            ).fetchall()
-        return [(int(row[0]), row[1] or '') for row in rows]
+        return _get_warning_rows_service(self, chat_id, user_id, limit)
 
     def get_moderation_log_rows(self, chat_id: int, limit: int = 12) -> List[Tuple[int, Optional[int], str, str, str, str, str, str]]:
         with self.db_lock:
@@ -3854,75 +3770,32 @@ class BridgeState:
         return list(reversed(rows))
 
     def get_welcome_settings(self, chat_id: int) -> Tuple[bool, str]:
-        with self.db_lock:
-            row = self.db.execute(
-                "SELECT enabled, template FROM welcome_settings WHERE chat_id = ?",
-                (chat_id,),
-            ).fetchone()
-        if not row:
-            return False, WELCOME_DEFAULT_TEMPLATE
-        return bool(row[0]), row[1] or WELCOME_DEFAULT_TEMPLATE
+        return _get_welcome_settings_service(self, chat_id, default_template=WELCOME_DEFAULT_TEMPLATE)
 
     def set_welcome_enabled(self, chat_id: int, enabled: bool) -> None:
-        with self.db_lock:
-            self.db.execute(
-                "INSERT INTO welcome_settings(chat_id, enabled, template) VALUES(?, ?, COALESCE((SELECT template FROM welcome_settings WHERE chat_id = ?), ?)) ON CONFLICT(chat_id) DO UPDATE SET enabled = excluded.enabled",
-                (chat_id, 1 if enabled else 0, chat_id, WELCOME_DEFAULT_TEMPLATE),
-            )
-            self.db.commit()
+        _set_welcome_enabled_service(self, chat_id, enabled, default_template=WELCOME_DEFAULT_TEMPLATE)
 
     def set_welcome_template(self, chat_id: int, template: str) -> None:
-        with self.db_lock:
-            self.db.execute(
-                "INSERT INTO welcome_settings(chat_id, enabled, template) VALUES(?, COALESCE((SELECT enabled FROM welcome_settings WHERE chat_id = ?), 0), ?) ON CONFLICT(chat_id) DO UPDATE SET template = excluded.template",
-                (chat_id, chat_id, template),
-            )
-            self.db.commit()
+        _set_welcome_template_service(self, chat_id, template)
 
     def reset_welcome_template(self, chat_id: int) -> None:
-        with self.db_lock:
-            self.db.execute(
-                "INSERT INTO welcome_settings(chat_id, enabled, template) VALUES(?, COALESCE((SELECT enabled FROM welcome_settings WHERE chat_id = ?), 0), ?) ON CONFLICT(chat_id) DO UPDATE SET template = excluded.template",
-                (chat_id, chat_id, WELCOME_DEFAULT_TEMPLATE),
-            )
-            self.db.commit()
+        _reset_welcome_template_service(self, chat_id, default_template=WELCOME_DEFAULT_TEMPLATE)
 
     def try_start_upgrade(self, chat_id: int) -> bool:
-        with self.upgrade_lock:
-            if self.global_upgrade_active or chat_id in self.upgrade_in_progress:
-                return False
-            self.global_upgrade_active = True
-            self.upgrade_in_progress.add(chat_id)
-            return True
+        return _try_start_upgrade_service(self, chat_id)
 
     def finish_upgrade(self, chat_id: int) -> None:
-        with self.upgrade_lock:
-            self.upgrade_in_progress.discard(chat_id)
-            self.global_upgrade_active = False
+        _finish_upgrade_service(self, chat_id)
 
     def try_start_chat_task(self, chat_id: int) -> bool:
-        with self.chat_task_lock:
-            if chat_id in self.chat_tasks_in_progress:
-                return False
-            self.chat_tasks_in_progress.add(chat_id)
-            return True
+        return _try_start_chat_task_service(self, chat_id)
 
     def finish_chat_task(self, chat_id: int) -> None:
-        with self.chat_task_lock:
-            self.chat_tasks_in_progress.discard(chat_id)
+        _finish_chat_task_service(self, chat_id)
 
 
     def is_duplicate_message(self, chat_id: int, message_id: Optional[int]) -> bool:
-        if message_id is None:
-            return False
-        key = (chat_id, message_id)
-        if key in self.seen_message_keys:
-            return True
-        self.seen_message_keys[key] = time.time()
-        self.seen_message_keys.move_to_end(key)
-        while len(self.seen_message_keys) > MAX_SEEN_MESSAGES:
-            self.seen_message_keys.popitem(last=False)
-        return False
+        return _is_duplicate_message_service(self, chat_id, message_id, max_seen_messages=MAX_SEEN_MESSAGES)
 
 
 class TelegramBridge:
