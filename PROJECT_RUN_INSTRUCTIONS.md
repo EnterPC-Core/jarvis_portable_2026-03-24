@@ -15,6 +15,7 @@
 - [`services/bridge_moderation_state.py`](./services/bridge_moderation_state.py) — moderation/warn/welcome/task locks
 - [`services/bridge_diagnostics_state.py`](./services/bridge_diagnostics_state.py) — diagnostics, repair journal, self-heal state
 - [`services/text_task_service.py`](./services/text_task_service.py) — text-task execution
+- [`services/media_task_service.py`](./services/media_task_service.py) — photo/document/voice task flow
 - [`services/ask_codex_service.py`](./services/ask_codex_service.py) — codex orchestration wrapper
 - [`services/reply_context_service.py`](./services/reply_context_service.py) — reply-context and subject resolver
 - [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — Telegram ingress/update dispatch

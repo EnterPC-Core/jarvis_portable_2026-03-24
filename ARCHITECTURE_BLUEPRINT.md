@@ -39,6 +39,7 @@ This blueprint is no longer purely aspirational. The following slices are alread
 - `services/bridge_diagnostics_state.py`
 - `services/reply_context_service.py`
 - `services/text_task_service.py`
+- `services/media_task_service.py`
 - `services/ask_codex_service.py`
 - `services/enterprise_console_webapp.py`
 
@@ -89,6 +90,8 @@ Current residual monolith areas:
   moderation/warn/welcome/task lock persistence extracted from `BridgeState`
 - `services/bridge_diagnostics_state.py`
   request diagnostics, repair journal, self-heal state and world-state row access
+- `services/media_task_service.py`
+  photo/document/voice task orchestration and attachment-aware media prompting
 - `services/bridge_file_helpers.py`
   stateless sdcard/file/media helper wrappers used by bridge compatibility wrappers
 - `services/bridge_ops_helpers.py`

@@ -182,7 +182,6 @@ from services.orchestration_utils import (
 )
 from services.live_gateway import LiveGateway, LiveGatewayDeps
 from pipeline.diagnostics import (
-    build_attachment_bundle,
     build_persisted_self_check_report,
     enrich_self_check_report,
 )
@@ -343,6 +342,13 @@ from services.bridge_diagnostics_state import (
 from services.text_task_service import (
     run_recent_chat_report_task as _run_recent_chat_report_task_service,
     run_text_task as _run_text_task_service,
+)
+from services.media_task_service import (
+    ask_codex_with_document as _ask_codex_with_document_service,
+    ask_codex_with_image as _ask_codex_with_image_service,
+    run_document_task as _run_document_task_service,
+    run_photo_task as _run_photo_task_service,
+    run_voice_task as _run_voice_task_service,
 )
 
 try:
@@ -5366,138 +5372,49 @@ class TelegramBridge:
         self.state.refresh_participant_behavior_profile(user_id, chat_id=chat_id)
 
     def run_photo_task(self, chat_id: int, file_id: str, caption: str, message: Optional[dict] = None) -> None:
-        try:
-            with self.temp_workspace() as workspace:
-                file_info = self.get_file_info(file_id)
-                file_path = file_info.get("file_path")
-                if not file_path:
-                    self.safe_send_text(chat_id, "Telegram не вернул путь к изображению.")
-                    return
-
-                local_path = workspace / build_download_name(file_path, fallback_name="photo.jpg")
-                self.download_telegram_file(file_path, local_path)
-                answer = self.ask_codex_with_image(chat_id, local_path, caption, message=message)
-
-            summary = caption or "без подписи"
-            message_id = int((message or {}).get("message_id") or 0)
-            sender_user_id = int(((message or {}).get("from") or {}).get("id") or 0)
-            if message_id > 0:
-                self.state.record_message_subject(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    subject_type="photo",
-                    source_kind="direct_photo_analysis",
-                    user_id=sender_user_id,
-                    summary=answer,
-                    details={"caption": caption},
-                )
-                self.state.set_active_subject(
-                    chat_id=chat_id,
-                    user_id=sender_user_id or None,
-                    message_id=message_id,
-                    subject_type="photo",
-                    source="direct_photo_analysis",
-                )
-            self.state.append_history(chat_id, "user", f"[Пользователь отправил фото: caption={summary}]")
-            self.state.append_history(chat_id, "assistant", answer)
-            self.state.record_event(chat_id, None, "assistant", "answer", answer)
-            self.safe_send_text(chat_id, answer, reply_to_message_id=(message or {}).get("message_id"))
-        finally:
-            self.state.finish_chat_task(chat_id)
+        _run_photo_task_service(
+            self,
+            chat_id,
+            file_id,
+            caption,
+            message=message,
+            default_image_prompt=DEFAULT_IMAGE_PROMPT,
+            build_download_name_func=build_download_name,
+            build_prompt_func=build_prompt,
+            normalize_whitespace_func=normalize_whitespace,
+            truncate_text_func=truncate_text,
+        )
 
     def run_document_task(self, chat_id: int, file_id: str, document: dict, caption: str, message: Optional[dict] = None) -> None:
-        try:
-            with self.temp_workspace() as workspace:
-                file_info = self.get_file_info(file_id)
-                file_path = file_info.get("file_path")
-                if not file_path:
-                    self.safe_send_text(chat_id, "Telegram не вернул путь к документу.")
-                    return
-                local_path = workspace / build_download_name(file_path, fallback_name=document.get("file_name") or "document.bin")
-                self.download_telegram_file(file_path, local_path)
-                file_excerpt = read_document_excerpt(local_path, document.get("mime_type") or "")
-                answer = self.ask_codex_with_document(chat_id, local_path, document, caption, file_excerpt, message=message)
-            summary = caption or document.get("file_name") or "документ"
-            self.state.append_history(chat_id, "user", f"[Пользователь отправил документ: {summary}]")
-            self.state.append_history(chat_id, "assistant", answer)
-            self.state.record_event(chat_id, None, "assistant", "answer", answer)
-            self.safe_send_text(chat_id, answer, reply_to_message_id=(message or {}).get("message_id"))
-        finally:
-            self.state.finish_chat_task(chat_id)
+        _run_document_task_service(
+            self,
+            chat_id,
+            file_id,
+            document,
+            caption,
+            message=message,
+            build_download_name_func=build_download_name,
+            build_prompt_func=build_prompt,
+            format_file_size_func=format_file_size,
+            normalize_whitespace_func=normalize_whitespace,
+            read_document_excerpt_func=read_document_excerpt,
+            truncate_text_func=truncate_text,
+        )
 
     def run_voice_task(self, chat_id: int, user_id: Optional[int], file_id: str, message: Optional[dict] = None) -> None:
-        try:
-            message = message or {}
-            message_id = message.get("message_id")
-            chat = message.get("chat") or {}
-            chat_type = (chat.get("type") or "private").lower()
-            from_user = message.get("from") or {}
-            owner_label = build_user_autofix_label(from_user)
-            status_message_id = self.send_status_message(chat_id, "Распознаю голосовое...")
-
-            with self.temp_workspace() as workspace:
-                file_info = self.get_file_info(file_id)
-                file_path = file_info.get("file_path")
-                if not file_path:
-                    self.safe_send_text(chat_id, "Telegram не вернул путь к голосовому сообщению.")
-                    return
-
-                local_path = workspace / build_download_name(file_path, fallback_name="voice.ogg")
-                self.download_telegram_file(file_path, local_path)
-                transcript = self.transcribe_voice_with_ai(local_path, chat_id=chat_id)
-
-            if not transcript:
-                self.safe_send_text(chat_id, build_voice_transcription_help(self.config))
-                return
-
-            log(f"voice transcript chat={chat_id} text={shorten_for_log(transcript)}")
-            transcript_message = f"Голосовое от {owner_label}\n\nРасшифровка:\n{transcript}" if chat_type in {"group", "supergroup"} else f"Расшифровка голосового:\n{transcript}"
-            self.state.update_event_text(
-                chat_id,
-                message_id,
-                f"[Голосовое сообщение: {transcript}]",
-                message_type="voice",
-                has_media=1,
-                file_kind="voice",
-            )
-            if status_message_id is not None:
-                if not self.edit_status_message(chat_id, status_message_id, transcript_message):
-                    self.safe_send_text(chat_id, transcript_message)
-            else:
-                self.safe_send_text(chat_id, transcript_message)
-
-            if chat_type in {"group", "supergroup"}:
-                should_handle_as_bot = (
-                    should_process_group_message(
-                        message,
-                        transcript,
-                        self.bot_username,
-                        self.config.trigger_name,
-                        bot_user_id=self.bot_user_id,
-                        allow_owner_reply=False,
-                    )
-                    or contains_voice_trigger_name(transcript, self.config.trigger_name, self.bot_username)
-                )
-                if not should_handle_as_bot:
-                    log(f"voice trigger not found chat={chat_id} text={shorten_for_log(transcript)}")
-                    return
-
-            if self.config.safe_chat_only and is_dangerous_request(transcript):
-                self.state.append_history(chat_id, "user", f"[Голосовое сообщение: {transcript}]")
-                self.safe_send_text(chat_id, SAFE_MODE_REPLY)
-                return
-
-            self.send_chat_action(chat_id, "typing")
-            answer = self.ask_codex(chat_id, transcript)
-            self.state.append_history(chat_id, "user", f"[Голосовое сообщение: {transcript}]")
-            self.state.append_history(chat_id, "assistant", answer)
-            self.state.record_event(chat_id, None, "assistant", "answer", answer)
-            delivered_via_status = self.consume_answer_delivered_via_status(chat_id)
-            if not delivered_via_status:
-                self.safe_send_text(chat_id, answer, reply_to_message_id=message_id if chat_type in {"group", "supergroup"} else None)
-            self.clear_pending_enterprise_jobs_for_chat(chat_id)
-        finally:
-            self.state.finish_chat_task(chat_id)
+        _run_voice_task_service(
+            self,
+            chat_id,
+            user_id,
+            file_id,
+            message=message,
+            safe_mode_reply=SAFE_MODE_REPLY,
+            build_download_name_func=build_download_name,
+            build_voice_transcription_help_func=build_voice_transcription_help,
+            contains_voice_trigger_name_func=contains_voice_trigger_name,
+            should_process_group_message_func=should_process_group_message,
+            is_dangerous_request_func=is_dangerous_request,
+        )
 
     def process_due_moderation_actions(self) -> None:
         now = time.time()
@@ -7084,58 +7001,17 @@ class TelegramBridge:
         return self.run_codex_short(prompt, timeout_seconds=25)
 
     def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str, message: Optional[dict] = None) -> str:
-        prompt_text = caption or DEFAULT_IMAGE_PROMPT
-        persona = self.state.get_mode(chat_id)
-        reply_context = self.build_reply_context(chat_id, message)
-        active_subject_context = self.build_active_subject_context(chat_id, None, prompt_text, message)
-        if active_subject_context:
-            reply_context = f"{reply_context}\n\n{active_subject_context}" if reply_context else active_subject_context
-        context_bundle = self.build_attachment_context_bundle(
-            chat_id=chat_id,
-            prompt_text=prompt_text,
-            persona=persona,
+        return _ask_codex_with_image_service(
+            self,
+            chat_id,
+            image_path,
+            caption,
             message=message,
-            reply_context=reply_context,
-        )
-        attachment_bundle = build_attachment_bundle(
-            attachment_type="image",
-            extracted_text=caption or "",
-            structured_features=f"path={image_path.name}; has_caption={'yes' if caption else 'no'}",
-            source_message_link=f"chat:{chat_id}",
-            relevance_score=0.92,
-            used_in_response=True,
+            default_image_prompt=DEFAULT_IMAGE_PROMPT,
+            build_prompt_func=build_prompt,
             normalize_whitespace_func=normalize_whitespace,
             truncate_text_func=truncate_text,
         )
-        prompt = build_prompt(
-            mode=persona,
-            history=list(self.state.get_history(chat_id)),
-            user_text=prompt_text,
-            attachment_note=(
-                "Пользователь прислал изображение. Анализируй само изображение и подпись вместе.\n"
-                f"AttachmentBundle: type={attachment_bundle.attachment_type}; "
-                f"features={attachment_bundle.structured_features}; "
-                f"relevance={attachment_bundle.relevance_score:.2f}"
-            ),
-            summary_text=context_bundle.summary_text,
-            facts_text=context_bundle.facts_text,
-            event_context=context_bundle.event_context,
-            database_context=context_bundle.database_context,
-            reply_context=context_bundle.reply_context,
-            discussion_context=context_bundle.discussion_context,
-            route_summary=context_bundle.route_summary,
-            guardrail_note=context_bundle.guardrail_note,
-            self_model_text=context_bundle.self_model_text,
-            autobiographical_text=context_bundle.autobiographical_text,
-            skill_memory_text=context_bundle.skill_memory_text,
-            world_state_text=context_bundle.world_state_text,
-            drive_state_text=context_bundle.drive_state_text,
-            user_memory_text=context_bundle.user_memory_text,
-            relation_memory_text=context_bundle.relation_memory_text,
-            chat_memory_text=context_bundle.chat_memory_text,
-            summary_memory_text=context_bundle.summary_memory_text,
-        )
-        return self.run_codex(prompt, image_path=image_path)
 
     def ask_codex_with_document(
         self,
@@ -7146,71 +7022,19 @@ class TelegramBridge:
         file_excerpt: str,
         message: Optional[dict] = None,
     ) -> str:
-        file_name = document.get("file_name") or document_path.name
-        mime_type = document.get("mime_type") or "application/octet-stream"
-        file_size = document.get("file_size") or 0
-        prompt_text = caption or f"Разбери документ {file_name} и кратко скажи, что в нём важно."
-        persona = self.state.get_mode(chat_id)
-        reply_context = self.build_reply_context(chat_id, message)
-        active_subject_context = self.build_active_subject_context(chat_id, None, prompt_text, message)
-        if active_subject_context:
-            reply_context = f"{reply_context}\n\n{active_subject_context}" if reply_context else active_subject_context
-        context_bundle = self.build_attachment_context_bundle(
-            chat_id=chat_id,
-            prompt_text=prompt_text,
-            persona=persona,
+        return _ask_codex_with_document_service(
+            self,
+            chat_id,
+            document_path,
+            document,
+            caption,
+            file_excerpt,
             message=message,
-            reply_context=reply_context,
-        )
-        attachment_bundle = build_attachment_bundle(
-            attachment_type="document",
-            extracted_text=file_excerpt,
-            structured_features=(
-                f"file_name={file_name}; mime={mime_type}; "
-                f"size={format_file_size(int(file_size)) if file_size else 'unknown'}"
-            ),
-            source_message_link=f"chat:{chat_id}",
-            relevance_score=0.95 if file_excerpt else 0.72,
-            used_in_response=True,
+            build_prompt_func=build_prompt,
+            format_file_size_func=format_file_size,
             normalize_whitespace_func=normalize_whitespace,
             truncate_text_func=truncate_text,
         )
-        attachment_lines = [
-            "Пользователь прислал документ.",
-            f"Имя файла: {file_name}",
-            f"MIME: {mime_type}",
-            f"Размер: {format_file_size(int(file_size)) if file_size else 'неизвестно'}",
-            f"AttachmentBundle: type={attachment_bundle.attachment_type}; features={attachment_bundle.structured_features}; relevance={attachment_bundle.relevance_score:.2f}",
-        ]
-        if file_excerpt:
-            attachment_lines.append("Текстовый фрагмент файла:")
-            attachment_lines.append(file_excerpt)
-        else:
-            attachment_lines.append("Текстовый фрагмент файла недоступен. Анализируй только метаданные, подпись и контекст.")
-        prompt = build_prompt(
-            mode=persona,
-            history=list(self.state.get_history(chat_id)),
-            user_text=prompt_text,
-            attachment_note="\n".join(attachment_lines),
-            summary_text=context_bundle.summary_text,
-            facts_text=context_bundle.facts_text,
-            event_context=context_bundle.event_context,
-            database_context=context_bundle.database_context,
-            reply_context=context_bundle.reply_context,
-            discussion_context=context_bundle.discussion_context,
-            route_summary=context_bundle.route_summary,
-            guardrail_note=context_bundle.guardrail_note,
-            self_model_text=context_bundle.self_model_text,
-            autobiographical_text=context_bundle.autobiographical_text,
-            skill_memory_text=context_bundle.skill_memory_text,
-            world_state_text=context_bundle.world_state_text,
-            drive_state_text=context_bundle.drive_state_text,
-            user_memory_text=context_bundle.user_memory_text,
-            relation_memory_text=context_bundle.relation_memory_text,
-            chat_memory_text=context_bundle.chat_memory_text,
-            summary_memory_text=context_bundle.summary_memory_text,
-        )
-        return self.run_codex(prompt)
 
     def run_codex(self, prompt: str, image_path: Optional[Path] = None, sandbox_mode: Optional[str] = None, approval_policy: Optional[str] = None, json_output: bool = False, postprocess: bool = True) -> str:
         return self.js_enterprise.run(

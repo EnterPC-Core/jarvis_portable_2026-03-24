@@ -97,6 +97,7 @@ sh start_jarvis_on_termux.sh
 - [`services/ask_codex_service.py`](./services/ask_codex_service.py) — LLM orchestration wrapper, вынесенный из bridge
 - [`services/text_task_service.py`](./services/text_task_service.py) — text-task execution и recent chat report flow
 - [`services/reply_context_service.py`](./services/reply_context_service.py) — reply-context и active-subject resolver
+- [`services/media_task_service.py`](./services/media_task_service.py) — photo/document/voice task flow и attachment-aware media prompting
 - [`services/enterprise_console_webapp.py`](./services/enterprise_console_webapp.py) — owner webapp/console HTML и server
 - [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — Telegram ingress/update dispatch вне monolith entrypoint
 - [`handlers/control_panel_renderer.py`](./handlers/control_panel_renderer.py) — owner/public inline UI и `Jarvis Control`
@@ -115,7 +116,7 @@ sh start_jarvis_on_termux.sh
 
 Фактическое состояние проекта на сейчас:
 
-- `tg_codex_bridge.py` уже не единственный носитель state/orchestration; часть storage и task-flow вынесена в `services/bridge_*`, `ask_codex_service`, `text_task_service`, `reply_context_service`, `enterprise_console_webapp`, `handlers/update_dispatcher`
+- `tg_codex_bridge.py` уже не единственный носитель state/orchestration; часть storage и task-flow вынесена в `services/bridge_*`, `ask_codex_service`, `text_task_service`, `reply_context_service`, `media_task_service`, `enterprise_console_webapp`, `handlers/update_dispatcher`
 - owner-only `Jarvis Control` живёт в inline owner-панели и не выводится в обычную пользовательскую панель
 - публичный контур ограничен рейтингами, профилем, топами и апелляциями; свободный диалог и runtime-команды остаются owner-only
 - главный остаточный монолит сейчас: часть `BridgeState`, media-task orchestration, `control_panel_renderer.py` и крупный regression suite

@@ -25,6 +25,7 @@
 - [`services/bridge_diagnostics_state.py`](./services/bridge_diagnostics_state.py) — diagnostics and self-heal state
 - [`services/ask_codex_service.py`](./services/ask_codex_service.py) — codex orchestration
 - [`services/text_task_service.py`](./services/text_task_service.py) — text-task flow
+- [`services/media_task_service.py`](./services/media_task_service.py) — media-task flow
 - [`services/reply_context_service.py`](./services/reply_context_service.py) — reply and active-subject context
 - [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — update ingress
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — удержание процесса
