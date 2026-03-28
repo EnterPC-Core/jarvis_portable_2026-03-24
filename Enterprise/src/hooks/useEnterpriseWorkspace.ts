@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { enterpriseCapabilities, enterpriseCoreClient } from "../lib/enterpriseCoreClient";
+import {
+  getEnterpriseCoreBaseUrl,
+  resetEnterpriseCoreBaseUrl,
+  saveEnterpriseCoreBaseUrl,
+} from "../lib/runtimeSettings";
 import { threadRepository } from "../lib/threadRepository";
 import type {
   EnterpriseMessage,
   EnterpriseThread,
   JobSnapshot,
+  RuntimeEndpointState,
   RuntimeSnapshot,
 } from "../types";
 
@@ -44,6 +50,11 @@ export function useEnterpriseWorkspace() {
   const [loadingRuntime, setLoadingRuntime] = useState(true);
   const [busyThreadId, setBusyThreadId] = useState<string | null>(null);
   const [composerText, setComposerText] = useState("");
+  const [runtimeEndpoint, setRuntimeEndpoint] = useState<RuntimeEndpointState>({
+    baseUrl: getEnterpriseCoreBaseUrl(),
+    draftBaseUrl: getEnterpriseCoreBaseUrl(),
+    error: "",
+  });
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const activeThread = useMemo(
@@ -78,6 +89,33 @@ export function useEnterpriseWorkspace() {
       setLoadingRuntime(false);
     }
   }, []);
+
+  const saveRuntimeBaseUrl = useCallback(async () => {
+    try {
+      const nextBaseUrl = saveEnterpriseCoreBaseUrl(runtimeEndpoint.draftBaseUrl);
+      setRuntimeEndpoint({
+        baseUrl: nextBaseUrl,
+        draftBaseUrl: nextBaseUrl,
+        error: "",
+      });
+      await refreshHealth();
+    } catch (error) {
+      setRuntimeEndpoint((current) => ({
+        ...current,
+        error: error instanceof Error ? error.message : "Не удалось сохранить URL Enterprise Core.",
+      }));
+    }
+  }, [refreshHealth, runtimeEndpoint.draftBaseUrl]);
+
+  const resetRuntimeBaseUrl = useCallback(async () => {
+    const nextBaseUrl = resetEnterpriseCoreBaseUrl();
+    setRuntimeEndpoint({
+      baseUrl: nextBaseUrl,
+      draftBaseUrl: nextBaseUrl,
+      error: "",
+    });
+    await refreshHealth();
+  }, [refreshHealth]);
 
   useEffect(() => {
     void (async () => {
@@ -263,14 +301,18 @@ export function useEnterpriseWorkspace() {
     composerText,
     loadingRuntime,
     runtime,
+    runtimeEndpoint,
     runtimeError,
     threads,
     setComposerText,
+    setRuntimeEndpoint,
     cancelActiveResponse,
     createThread,
     deleteThread,
     refreshHealth,
     renameThread,
+    resetRuntimeBaseUrl,
+    saveRuntimeBaseUrl,
     selectThread,
     sendMessage,
   };

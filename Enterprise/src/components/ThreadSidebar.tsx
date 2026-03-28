@@ -1,10 +1,11 @@
 import { useState } from "react";
 
-import type { EnterpriseThread, RuntimeSnapshot } from "../types";
+import type { EnterpriseThread, RuntimeEndpointState, RuntimeSnapshot } from "../types";
 
 type ThreadSidebarProps = {
   activeThreadId: string | null;
   loadingRuntime: boolean;
+  runtimeEndpoint: RuntimeEndpointState;
   runtime: RuntimeSnapshot | null;
   runtimeError: string;
   threads: EnterpriseThread[];
@@ -12,12 +13,16 @@ type ThreadSidebarProps = {
   onDeleteThread: (threadId: string) => void;
   onRefreshHealth: () => void;
   onRenameThread: (threadId: string, title: string) => void;
+  onResetRuntimeBaseUrl: () => void;
+  onRuntimeBaseUrlChange: (value: string) => void;
+  onSaveRuntimeBaseUrl: () => void;
   onSelectThread: (threadId: string) => void;
 };
 
 export function ThreadSidebar({
   activeThreadId,
   loadingRuntime,
+  runtimeEndpoint,
   runtime,
   runtimeError,
   threads,
@@ -25,6 +30,9 @@ export function ThreadSidebar({
   onDeleteThread,
   onRefreshHealth,
   onRenameThread,
+  onResetRuntimeBaseUrl,
+  onRuntimeBaseUrlChange,
+  onSaveRuntimeBaseUrl,
   onSelectThread,
 }: ThreadSidebarProps) {
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
@@ -39,7 +47,33 @@ export function ThreadSidebar({
             Обновить
           </button>
         </div>
+        <label className="field-label" htmlFor="enterprise-core-url">
+          Enterprise Core URL
+        </label>
+        <div className="runtime-url-row">
+          <input
+            className="thread-title-input"
+            id="enterprise-core-url"
+            placeholder="http://192.168.1.10:8766"
+            value={runtimeEndpoint.draftBaseUrl}
+            onChange={(event) => onRuntimeBaseUrlChange(event.target.value)}
+          />
+          <button className="secondary-button" onClick={onSaveRuntimeBaseUrl} type="button">
+            Сохранить
+          </button>
+        </div>
+        <div className="runtime-actions">
+          <span className="muted">Активный адрес: {runtimeEndpoint.baseUrl}</span>
+          <button className="ghost-button" onClick={onResetRuntimeBaseUrl} type="button">
+            Сброс
+          </button>
+        </div>
+        <p className="muted">
+          Для APK укажи полный адрес Enterprise Core. <code>127.0.0.1</code> подходит только когда
+          сервер реально доступен внутри самого приложения.
+        </p>
         {loadingRuntime ? <p className="muted">Проверяю Enterprise Core...</p> : null}
+        {runtimeEndpoint.error ? <p className="error-copy">{runtimeEndpoint.error}</p> : null}
         {runtimeError ? <p className="error-copy">{runtimeError}</p> : null}
         {runtime ? (
           <div className="runtime-grid">

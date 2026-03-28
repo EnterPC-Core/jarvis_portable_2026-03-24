@@ -1,9 +1,9 @@
 import {
-  ENTERPRISE_CORE_BASE_URL,
   ENTERPRISE_PATHS,
   ENTERPRISE_POLL_INTERVAL_MS,
   ENTERPRISE_TIMEOUT_MS,
 } from "./config";
+import { getEnterpriseCoreBaseUrl } from "./runtimeSettings";
 import type {
   EnterpriseCapabilities,
   EnterpriseThread,
@@ -14,23 +14,32 @@ import type {
 } from "../types";
 
 const withBaseUrl = (path: string): string => {
-  return `${ENTERPRISE_CORE_BASE_URL.replace(/\/$/, "")}${path}`;
+  return `${getEnterpriseCoreBaseUrl()}${path}`;
 };
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(withBaseUrl(path), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+  const targetUrl = withBaseUrl(path);
+  let response: Response;
+  try {
+    response = await fetch(targetUrl, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (error) {
+    const details = error instanceof Error ? error.message : "Network request failed";
+    throw new Error(
+      `Не удалось подключиться к Enterprise Core: ${targetUrl}. ${details}. Для APK укажи доступный адрес сервера и не используй 127.0.0.1, если backend работает вне приложения.`
+    );
+  }
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `HTTP ${response.status}`);
+    throw new Error(`${targetUrl}: ${text || `HTTP ${response.status}`}`);
   }
 
   return (await response.json()) as T;

@@ -14,6 +14,7 @@ export default function App() {
           <ThreadSidebar
             activeThreadId={workspace.activeThreadId}
             loadingRuntime={workspace.loadingRuntime}
+            runtimeEndpoint={workspace.runtimeEndpoint}
             runtime={workspace.runtime}
             runtimeError={workspace.runtimeError}
             threads={workspace.threads}
@@ -21,6 +22,15 @@ export default function App() {
             onDeleteThread={workspace.deleteThread}
             onRefreshHealth={workspace.refreshHealth}
             onRenameThread={workspace.renameThread}
+            onResetRuntimeBaseUrl={workspace.resetRuntimeBaseUrl}
+            onRuntimeBaseUrlChange={(value) =>
+              workspace.setRuntimeEndpoint((current) => ({
+                ...current,
+                draftBaseUrl: value,
+                error: "",
+              }))
+            }
+            onSaveRuntimeBaseUrl={workspace.saveRuntimeBaseUrl}
             onSelectThread={workspace.selectThread}
           />
           <ChatPanel

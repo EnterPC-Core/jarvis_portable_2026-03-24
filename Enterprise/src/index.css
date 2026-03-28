@@ -143,6 +143,30 @@ textarea {
   color: var(--text-soft);
 }
 
+.field-label {
+  font-size: 0.88rem;
+  color: var(--text-soft);
+}
+
+.runtime-url-row,
+.runtime-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.runtime-url-row {
+  align-items: stretch;
+}
+
+.runtime-url-row .thread-title-input {
+  flex: 1;
+}
+
+.runtime-actions {
+  justify-content: space-between;
+}
+
 .runtime-grid strong {
   color: var(--text);
 }
@@ -396,6 +420,12 @@ button:disabled {
   cursor: not-allowed;
 }
 
+code {
+  background: rgba(148, 163, 184, 0.16);
+  border-radius: 6px;
+  padding: 0 6px;
+}
+
 @media (max-width: 960px) {
   .app-shell {
     padding: 16px;
@@ -410,5 +440,11 @@ button:disabled {
 
   .message-list {
     max-height: none;
+  }
+
+  .runtime-url-row,
+  .runtime-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

@@ -26,6 +26,7 @@ Android-приложение `Enterprise`, целиком расположенн
 - composer / empty state / loading-progress state / error state
 - Enterprise Core adapter с реальным `POST /api/jobs` и polling `GET /api/jobs/{id}`
 - runtime health panel поверх `/health` и `/api/runtime/status`
+- настраиваемый в UI `Enterprise Core URL`, сохраняемый локально для APK
 - Android wrapper в `android/`
 - GitHub Actions workflow для debug APK и release APK/signing flow
 - GitLab pipeline для того же Android tree
@@ -81,6 +82,21 @@ PATH=/home/userland/.nvm/versions/node/v18.20.8/bin:$PATH \
 ```
 
 Локальная полноценная APK-сборка не является обязательной. Основной сценарий сборки APK вынесен в CI.
+
+## Настройка backend в APK
+
+Debug APK из CI не знает заранее, где именно доступен ваш `Enterprise Core`, поэтому адрес сервера должен быть проверен в карточке `Runtime` после установки приложения.
+
+- Открой `Runtime`
+- В поле `Enterprise Core URL` укажи полный адрес сервера, например `http://192.168.1.10:8766`
+- Нажми `Сохранить`
+- Затем `Обновить`
+
+Важно:
+
+- `127.0.0.1` и `localhost` внутри APK почти никогда не означают ваш UserLAnd backend
+- для Android включён cleartext `http`, поэтому debug-сценарий с локальным HTTP сервером допустим
+- если сервер доступен только по HTTPS с нестандартным сертификатом, нужен отдельный подтверждённый TLS сценарий
 
 ## CI/CD
 

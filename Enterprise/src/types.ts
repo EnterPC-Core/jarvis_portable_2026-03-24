@@ -34,6 +34,12 @@ export type RuntimeSnapshot = {
   enterprise_pid?: number;
 };
 
+export type RuntimeEndpointState = {
+  baseUrl: string;
+  draftBaseUrl: string;
+  error: string;
+};
+
 export type JobSnapshot = {
   ok?: boolean;
   id: string;
