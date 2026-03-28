@@ -152,19 +152,27 @@ class ControlPanelRenderer:
             "Это короткий экран состояния. Ниже можно открыть подробные разделы по кнопкам.\n\n"
             "Что смотреть в первую очередь:\n"
             "• свеж ли heartbeat\n"
-            "• есть ли ошибки за последние 24 часа\n"
-            "• не накопился ли риск по рантайму и качеству ответов\n\n"
+            "• чиста ли текущая сессия после запуска\n"
+            "• что осталось в хвосте за 24 часа\n\n"
             f"• Время: {datetime.now(ZoneInfo('Europe/Moscow')).strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
             f"• Автофикс владельца: {owner_autofix_status}\n"
             f"• Пинг Telegram API: {bridge.get_telegram_ping_text()}\n"
             f"• Heartbeat: {heartbeat_age_text}\n"
             f"• Последний backup: {backup_line}\n"
-            f"• Перезапуски за 24ч: {int(runtime_snapshot.get('restart_count', 0))}\n"
+            "\n"
+            "Текущая сессия:\n"
             f"• Серьёзные ошибки после запуска: {int(runtime_snapshot.get('session_severe_error_count', 0))}\n"
             f"• Предупреждения после запуска: {int(runtime_snapshot.get('session_warning_count', 0))}\n"
             f"• Риск рантайма: {drive_scores.get('runtime_risk_pressure', 0.0):.1f}\n"
+            "\n"
+            "Хвост за 24 часа:\n"
+            f"• Перезапуски: {int(runtime_snapshot.get('restart_count', 0))}\n"
+            f"• Серьёзные ошибки: {int(operational_state.get('window_errors_count', 0))}\n"
+            f"• Предупреждения: {int(operational_state.get('window_warning_count', 0))}\n"
             f"• Уровень неопределённости: {drive_scores.get('uncertainty_pressure', 0.0):.1f}\n"
             f"• Деградировавшие маршруты: {diagnostics_metrics.degraded_count}\n"
+            "\n"
+            "Рабочее дерево:\n"
             f"• Грязных файлов в Git: {int(operational_state.get('git_dirty_count', 0))}"
         )
         markup = {
@@ -258,6 +266,111 @@ class ControlPanelRenderer:
         }
         return text, markup
 
+    def _format_warn_mode_label(self, stored_mode: str) -> str:
+        mode = (stored_mode or "mute").strip().lower()
+        if ":" not in mode:
+            return mode
+        name, raw_seconds = mode.split(":", 1)
+        try:
+            seconds = int(raw_seconds)
+        except ValueError:
+            return mode
+        return f"{name} {self.format_duration_seconds(seconds)}"
+
+    def _build_admin_warns_panel(self, bridge: "TelegramBridge", payload: str) -> Tuple[str, dict]:
+        selected_chat_id = 0
+        try:
+            selected_chat_id = int((payload or "0").strip())
+        except ValueError:
+            selected_chat_id = 0
+        with bridge.state.db_lock:
+            rows = bridge.state.db.execute(
+                "SELECT chat_id, warn_limit, warn_mode, warn_expire_seconds FROM warn_settings ORDER BY chat_id DESC LIMIT 12"
+            ).fetchall()
+        settings_map = {
+            int(row[0]): (int(row[1]), str(row[2]), int(row[3] or 0))
+            for row in rows
+        }
+        chat_candidates = list(settings_map.keys())
+        for chat_id in bridge.state.get_managed_group_chat_ids():
+            if chat_id not in chat_candidates:
+                chat_candidates.append(chat_id)
+        chat_candidates = chat_candidates[:8]
+        if selected_chat_id == 0 and chat_candidates:
+            selected_chat_id = int(chat_candidates[0])
+        warn_limit, warn_mode, warn_expire_seconds = bridge.state.get_warn_settings(selected_chat_id) if selected_chat_id else (3, "mute", 0)
+        chat_title = bridge.state.get_chat_title(selected_chat_id, f"chat={selected_chat_id}") if selected_chat_id else "чат не выбран"
+        warn_lines = [
+            "JARVIS • НАСТРОЙКИ ПРЕДУПРЕЖДЕНИЙ",
+            "",
+            "Здесь уже не просто справка, а быстрые owner-контролы warn-системы по группам.",
+            "",
+        ]
+        if not chat_candidates:
+            warn_lines.append("Управляемые группы пока не найдены.")
+        else:
+            warn_lines.extend([
+                f"Текущий чат: {chat_title}",
+                f"chat_id={selected_chat_id}",
+                f"Лимит warn: {warn_limit}",
+                f"Режим: {self._format_warn_mode_label(warn_mode)}",
+                f"Срок warn: {self.format_duration_seconds(warn_expire_seconds) if warn_expire_seconds > 0 else 'off'}",
+                "",
+                "Быстрые действия ниже сразу меняют настройки для выбранной группы.",
+            ])
+        keyboard = []
+        if chat_candidates:
+            row_buttons = []
+            for chat_id in chat_candidates[:4]:
+                row_buttons.append(
+                    {
+                        "text": self.truncate_text(bridge.state.get_chat_title(chat_id, str(chat_id)), 18),
+                        "callback_data": f"ui:warncfg:chat:{chat_id}",
+                    }
+                )
+            if row_buttons:
+                keyboard.append(row_buttons)
+            if len(chat_candidates) > 4:
+                row_buttons = []
+                for chat_id in chat_candidates[4:8]:
+                    row_buttons.append(
+                        {
+                            "text": self.truncate_text(bridge.state.get_chat_title(chat_id, str(chat_id)), 18),
+                            "callback_data": f"ui:warncfg:chat:{chat_id}",
+                        }
+                    )
+                keyboard.append(row_buttons)
+            keyboard.extend([
+                [
+                    {"text": "Лимит 3", "callback_data": f"ui:warncfg:limit:{selected_chat_id}:3"},
+                    {"text": "Лимит 4", "callback_data": f"ui:warncfg:limit:{selected_chat_id}:4"},
+                    {"text": "Лимит 5", "callback_data": f"ui:warncfg:limit:{selected_chat_id}:5"},
+                ],
+                [
+                    {"text": "Mute", "callback_data": f"ui:warncfg:mode:{selected_chat_id}:mute"},
+                    {"text": "Kick", "callback_data": f"ui:warncfg:mode:{selected_chat_id}:kick"},
+                    {"text": "Ban", "callback_data": f"ui:warncfg:mode:{selected_chat_id}:ban"},
+                ],
+                [
+                    {"text": "TMute 1ч", "callback_data": f"ui:warncfg:mode:{selected_chat_id}:tmute:3600"},
+                    {"text": "TMute 24ч", "callback_data": f"ui:warncfg:mode:{selected_chat_id}:tmute:86400"},
+                ],
+                [
+                    {"text": "TBan 1д", "callback_data": f"ui:warncfg:mode:{selected_chat_id}:tban:86400"},
+                    {"text": "TBan 7д", "callback_data": f"ui:warncfg:mode:{selected_chat_id}:tban:604800"},
+                ],
+                [
+                    {"text": "TTL off", "callback_data": f"ui:warncfg:ttl:{selected_chat_id}:0"},
+                    {"text": "TTL 7д", "callback_data": f"ui:warncfg:ttl:{selected_chat_id}:604800"},
+                    {"text": "TTL 30д", "callback_data": f"ui:warncfg:ttl:{selected_chat_id}:2592000"},
+                ],
+            ])
+        keyboard.extend([
+            [{"text": "Модерация", "callback_data": "ui:adm:moderation"}, {"text": "Очередь апелляций", "callback_data": "ui:adm:queue"}],
+            [{"text": "Главная", "callback_data": "ui:home"}],
+        ])
+        return "\n".join(warn_lines), {"inline_keyboard": keyboard}
+
     def _build_owner_git_panel(self, bridge: "TelegramBridge", payload: str) -> Tuple[str, dict]:
         if payload == "state":
             text = (
@@ -299,11 +412,19 @@ class ControlPanelRenderer:
             text = (
                 "JARVIS • GIT И ЛОГИ\n\n"
                 "Короткая сводка. Ниже можно открыть состояние Git и сами логи отдельно.\n\n"
-                f"• Грязных файлов в Git: {int(operational_state.get('git_dirty_count', 0))}\n"
-                f"• Серьёзные ошибки после запуска: {int(runtime_snapshot.get('session_severe_error_count', 0))}\n"
-                f"• Предупреждения после запуска: {int(runtime_snapshot.get('session_warning_count', 0))}\n"
+                "Текущая сессия:\n"
+                f"• Серьёзные ошибки: {int(runtime_snapshot.get('session_severe_error_count', 0))}\n"
+                f"• Предупреждения: {int(runtime_snapshot.get('session_warning_count', 0))}\n"
+                "\n"
+                "Хвост за 24 часа:\n"
+                f"• Серьёзные ошибки: {int(operational_state.get('window_errors_count', 0))}\n"
+                f"• Предупреждения: {int(operational_state.get('window_warning_count', 0))}\n"
                 f"• Codex degraded: {int(runtime_snapshot.get('codex_degraded_count', 0))}\n"
-                f"• Жёсткие ошибки Codex: {int(runtime_snapshot.get('codex_error_count', 0))}\n\n"
+                f"• Жёсткие ошибки Codex: {int(runtime_snapshot.get('codex_error_count', 0))}\n"
+                "\n"
+                "Git:\n"
+                f"• Грязных файлов в Git: {int(operational_state.get('git_dirty_count', 0))}\n"
+                "\n"
                 "Полезные команды: /gitstatus, /gitlast, /errors, /events, /routes, /upgrade"
             )
         markup = {
@@ -321,70 +442,351 @@ class ControlPanelRenderer:
         }
         return text, markup
 
+    def _build_owner_jarvis_panel(self, bridge: "TelegramBridge", payload: str) -> Tuple[str, dict]:
+        owner_mode = bridge.state.get_mode(self.owner_user_id)
+        managed_chats = bridge.state.get_managed_group_chat_ids()
+        selected = (payload or "overview").strip().lower()
+        title = "JARVIS • JARVIS CONTROL"
+
+        if selected == "modes":
+            text = (
+                f"{title} • РЕЖИМЫ\n\n"
+                "Здесь собраны режимы и поведенческие профили Jarvis.\n\n"
+                f"• Текущий режим owner-чата: {owner_mode}\n"
+                "• Базовый owner-приоритет: включён\n"
+                "• Reply-first поведение: включено\n"
+                "• Active subject для фото/контекста: включён\n"
+                "• Soft moderation: включена как отдельный контур\n\n"
+                "Практический смысл:\n"
+                "• owner-чат получает максимальный приоритет по вниманию и качеству\n"
+                "• reply на фото/сообщение должен считаться главным объектом разговора\n"
+                "• короткие продолжения вроде «и что там?» должны наследовать текущий фокус\n"
+                "• moderation-режим работает отдельно и не должен ломать обычный диалог\n\n"
+                "Если дальше понадобится, сюда можно добавить живое переключение runtime profile и owner-поведения."
+            )
+        elif selected == "access":
+            text = (
+                f"{title} • ДОСТУП\n\n"
+                "Это текущая модель доступа к Jarvis.\n\n"
+                "• Свободный диалог: только создатель\n"
+                "• Обычная панель участников: только профиль, рейтинги, достижения, апелляции\n"
+                "• Owner-панель: runtime, память, модерация, self-heal, команды, deep-analysis\n"
+                f"• Управляемых групп в контуре: {len(managed_chats)}\n"
+                "• Публичный UI не должен показывать внутренние инструкции и owner-управление\n\n"
+                "Правила:\n"
+                "• если давать доступ другим, это нужно делать отдельной access-логикой\n"
+                "• owner-настройки не должны утекать в публичную панель\n"
+                "• public UI должен оставаться простым и безопасным для обычных участников"
+            )
+        elif selected == "instructions":
+            text = (
+                f"{title} • ИНСТРУКЦИИ\n\n"
+                "Это рабочие инструкции по тому, как с Jarvis лучше общаться в Telegram.\n\n"
+                "Диалог:\n"
+                "• вопрос про фото, документ или конкретное сообщение лучше задавать reply на него\n"
+                "• короткое продолжение лучше писать сразу после нужного контекста\n"
+                "• если важна точность, лучше явно указывать, о каком фото или человеке речь\n\n"
+                "Сильные сценарии:\n"
+                "• «что на фото?» reply на фото\n"
+                "• «а тут что?» reply на другое фото\n"
+                "• «и что там?» сразу после предыдущего разбора\n"
+                "• «кто это?» reply на сообщение или фото конкретного человека\n\n"
+                "Owner-команды:\n"
+                "• обзор по группе: /whatshappening, /summary24h, /chatdeep, /conflicts\n"
+                "• по человеку: /whois, /portrait, /profilecheck, /history\n"
+                "• по техсостоянию: /ownerreport, /qualityreport, /errors, /routes"
+            )
+        elif selected == "memory":
+            text = (
+                f"{title} • ПАМЯТЬ\n\n"
+                "Память Jarvis сейчас состоит из нескольких слоёв.\n\n"
+                "• Chat memory: факты и контекст по текущему чату\n"
+                "• User memory: профиль, сигналы и поведение по участнику\n"
+                "• Visual memory: анализ фото и сигналов по media message_id\n"
+                "• Active subject: текущий объект разговора для reply и коротких продолжений\n"
+                "• Summary/history layers: digest, recent events, traces по чату\n\n"
+                "Что это даёт:\n"
+                "• reply на фото должен поднимать нужное описание из памяти, а не фантазировать\n"
+                "• переход между двумя фото должен опираться на новый reply, а не на старый контекст\n"
+                "• вопросы про людей и споры можно разбирать по накопленной истории\n\n"
+                "Основные owner-инструменты:\n"
+                "• /recall, /memorychat, /memoryuser, /memorysummary\n"
+                "• /whois, /profilecheck, /history, /portrait\n"
+                "• /whatshappening, /chatdeep, /summary24h, /conflicts"
+            )
+        elif selected == "moderation":
+            text = (
+                f"{title} • МОДЕРАЦИЯ\n\n"
+                "Здесь про то, как Jarvis должен вести себя в спорных ситуациях.\n\n"
+                "Текущий контур:\n"
+                "• мягкая деэскалация без санкции включена\n"
+                "• бот может остудить спор, отделить факты от эмоций и отметить риск дезинформации\n"
+                "• warn / mute / ban остаются owner/admin-контуром\n"
+                "• публичная панель не должна превращаться в центр модерации\n\n"
+                "Что важно держать:\n"
+                "• сперва охлаждать и структурировать спор\n"
+                "• не фантазировать о фактах без подтверждения\n"
+                "• не спамить одинаковыми охлаждающими сообщениями\n"
+                "• тяжёлые случаи должны оставаться под owner-контролем"
+            )
+        else:
+            text = (
+                f"{title}\n\n"
+                "Это owner-only центр управления самим Jarvis в Telegram.\n\n"
+                "Текущий контур:\n"
+                f"• Режим owner-чата: {owner_mode}\n"
+                "• Свободный диалог: только создатель\n"
+                f"• Управляемых групп: {len(managed_chats)}\n"
+                "• Публичный контур: профиль, рейтинги, достижения, апелляции\n"
+                "• Owner-only контур: память, модерация, runtime, self-heal, deep-analysis\n\n"
+                "Открой нужный подпункт кнопками ниже:\n"
+                "• Режимы\n"
+                "• Доступ\n"
+                "• Инструкции\n"
+                "• Память\n"
+                "• Модерация"
+            )
+
+        markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Обзор", "callback_data": "ui:panel:owner_jarvis:overview"},
+                    {"text": "Режимы", "callback_data": "ui:panel:owner_jarvis:modes"},
+                ],
+                [
+                    {"text": "Доступ", "callback_data": "ui:panel:owner_jarvis:access"},
+                    {"text": "Инструкции", "callback_data": "ui:panel:owner_jarvis:instructions"},
+                ],
+                [
+                    {"text": "Память", "callback_data": "ui:panel:owner_jarvis:memory"},
+                    {"text": "Модерация", "callback_data": "ui:panel:owner_jarvis:moderation"},
+                ],
+                [
+                    {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"},
+                    {"text": "Главная", "callback_data": "ui:home"},
+                ],
+            ]
+        }
+        return text, markup
+
+    def _list_participant_profile_chats(self, bridge: "TelegramBridge", limit: int = 12) -> list[tuple[int, str]]:
+        with bridge.state.db_lock:
+            rows = bridge.state.db.execute(
+                """
+                SELECT p.chat_id, COALESCE(NULLIF(c.chat_title, ''), CAST(p.chat_id AS TEXT)) AS chat_title,
+                       MAX(p.updated_at) AS updated_at
+                FROM participant_chat_profiles p
+                LEFT JOIN chat_runtime_cache c ON c.chat_id = p.chat_id
+                GROUP BY p.chat_id
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [(int(row["chat_id"] or 0), str(row["chat_title"] or "")) for row in rows]
+
+    def _build_owner_people_live_panel(self, bridge: "TelegramBridge", mode: str, payload: str) -> Tuple[str, dict]:
+        if mode == "watchlist":
+            render_func = bridge.owner_handlers.render_watchlist_text
+            title = "WATCHLIST"
+        elif mode == "suspects":
+            render_func = bridge.owner_handlers.render_suspects_text
+            title = "SUSPECTS"
+        else:
+            render_func = bridge.owner_handlers.render_reliable_text
+            title = "НАДЁЖНЫЕ УЧАСТНИКИ"
+        if payload:
+            try:
+                target_chat_id = int(payload)
+            except ValueError:
+                target_chat_id = 0
+        else:
+            target_chat_id = 0
+        if target_chat_id:
+            text = f"JARVIS • {title}\n\n{render_func(bridge, target_chat_id)}"
+        else:
+            text = (
+                f"JARVIS • {title}\n\n"
+                "Это live-screen по participant profiles.\n"
+                "Выбери чат кнопками ниже."
+            )
+        chat_buttons = [
+            {"text": self.truncate_text(chat_title, 22), "callback_data": f"ui:panel:owner_{mode}:{chat_id}"}
+            for chat_id, chat_title in self._list_participant_profile_chats(bridge, limit=8)
+        ]
+        keyboard = [chat_buttons[index:index + 2] for index in range(0, len(chat_buttons), 2)]
+        keyboard.extend(
+            [
+                [{"text": "Люди и связи", "callback_data": "ui:panel:owner_people"}, {"text": "Обзор чатов", "callback_data": "ui:panel:owner_overview"}],
+                [{"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
+            ]
+        )
+        return text, {"inline_keyboard": keyboard}
+
+    def _parse_top_page(self, payload: str) -> int:
+        try:
+            return max(1, int((payload or "1").strip()))
+        except ValueError:
+            return 1
+
+    def _build_top_navigation(self, top_key: str, page: int, *, home_label: str = "Главная") -> list[list[dict]]:
+        prev_page = max(1, page - 1)
+        next_page = page + 1
+        return [
+            [
+                {"text": "Новый", "callback_data": "ui:top:all:1"},
+                {"text": "История", "callback_data": "ui:top:history:1"},
+            ],
+            [
+                {"text": "Неделя", "callback_data": "ui:top:week:1"},
+                {"text": "День", "callback_data": "ui:top:day:1"},
+            ],
+            [
+                {"text": "Вклад", "callback_data": "ui:top:social:1"},
+                {"text": "Сезон", "callback_data": "ui:top:season:1"},
+            ],
+            [
+                {"text": "Реакции+", "callback_data": "ui:top:reactions:1"},
+                {"text": "Реакции→", "callback_data": "ui:top:given:1"},
+            ],
+            [
+                {"text": "Активность", "callback_data": "ui:top:activity:1"},
+                {"text": "Поведение", "callback_data": "ui:top:behavior:1"},
+            ],
+            [
+                {"text": "Сообщения", "callback_data": "ui:top:messages:1"},
+                {"text": "Полезность", "callback_data": "ui:top:helpful:1"},
+            ],
+            [
+                {"text": "Стрик", "callback_data": "ui:top:streak:1"},
+                {"text": "Ачивки", "callback_data": "ui:top:achievements:1"},
+            ],
+            [
+                {"text": "◀️ Назад", "callback_data": f"ui:top:{top_key}:{prev_page}"},
+                {"text": f"Стр. {page}", "callback_data": f"ui:top:{top_key}:{page}"},
+                {"text": "Вперёд ▶️", "callback_data": f"ui:top:{top_key}:{next_page}"},
+            ],
+            [
+                {"text": home_label, "callback_data": "ui:home"},
+                {"text": "Профиль", "callback_data": "ui:profile"},
+            ],
+        ]
+
     def build_public_control_panel(self, bridge: "TelegramBridge", user_id: int, section: str, payload: str = "") -> Tuple[str, dict]:
-        del payload
         if section == "profile":
             text = (
                 "JARVIS • МОЙ ПРОФИЛЬ\n\n"
-                "Ваши текущие показатели в рейтинговой системе:\n\n"
+                "Персональная карточка участника: уровень, рейтинг, вклад, реакции и текущая динамика.\n\n"
                 f"{bridge.legacy.render_dashboard_summary(user_id)}"
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Топы", "callback_data": "ui:top"}, {"text": "Апелляции", "callback_data": "ui:appeals"}],
+                    [{"text": "Все топы", "callback_data": "ui:top"}, {"text": "Достижения", "callback_data": "ui:achievements"}],
+                    [{"text": "Реакции", "callback_data": "ui:top:reactions:1"}, {"text": "За неделю", "callback_data": "ui:top:week:1"}],
+                    [{"text": "Сообщения", "callback_data": "ui:top:messages:1"}, {"text": "Полезность", "callback_data": "ui:top:helpful:1"}],
+                    [{"text": "Апелляции", "callback_data": "ui:appeals"}, {"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "achievements":
+            text = (
+                "JARVIS • ДОСТИЖЕНИЯ\n\n"
+                "Коллекция участника: открытые ачивки, скрытые слоты и ближайший прогресс.\n\n"
+                f"{bridge.legacy.render_achievements(user_id)}"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Профиль", "callback_data": "ui:profile"}, {"text": "Все топы", "callback_data": "ui:top"}],
+                    [{"text": "Рейтинг ачивок", "callback_data": "ui:top:achievements:1"}, {"text": "Реакции", "callback_data": "ui:top:reactions:1"}],
                     [{"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
             return text, markup
-        if section in {"top_all", "top_history", "top_week", "top_day", "top_social", "top_season"}:
+        if section in {
+            "top_all",
+            "top_history",
+            "top_week",
+            "top_day",
+            "top_social",
+            "top_season",
+            "top_reactions_received",
+            "top_reactions_given",
+            "top_activity",
+            "top_behavior",
+            "top_achievements",
+            "top_messages",
+            "top_helpful",
+            "top_streak",
+        }:
+            page = self._parse_top_page(payload)
             mapping = {
-                "top_all": bridge.legacy.render_top_all_time(),
-                "top_history": bridge.legacy.render_top_historical(),
-                "top_week": bridge.legacy.render_top_week(),
-                "top_day": bridge.legacy.render_top_day(),
-                "top_social": bridge.legacy.render_top_social(),
-                "top_season": bridge.legacy.render_top_season(),
+                "top_all": ("all", bridge.legacy.render_top_all_time(page)),
+                "top_history": ("history", bridge.legacy.render_top_historical(page)),
+                "top_week": ("week", bridge.legacy.render_top_week(page)),
+                "top_day": ("day", bridge.legacy.render_top_day(page)),
+                "top_social": ("social", bridge.legacy.render_top_social(page)),
+                "top_season": ("season", bridge.legacy.render_top_season(page)),
+                "top_reactions_received": ("reactions", bridge.legacy.render_top_reactions_received(page)),
+                "top_reactions_given": ("given", bridge.legacy.render_top_reactions_given(page)),
+                "top_activity": ("activity", bridge.legacy.render_top_activity(page)),
+                "top_behavior": ("behavior", bridge.legacy.render_top_behavior(page)),
+                "top_achievements": ("achievements", bridge.legacy.render_top_achievements(page)),
+                "top_messages": ("messages", bridge.legacy.render_top_messages(page)),
+                "top_helpful": ("helpful", bridge.legacy.render_top_helpful(page)),
+                "top_streak": ("streak", bridge.legacy.render_top_streak(page)),
             }
-            text = mapping[section]
-            markup = {
-                "inline_keyboard": [
-                    [
-                        {"text": "Новый", "callback_data": "ui:top:all"},
-                        {"text": "История", "callback_data": "ui:top:history"},
-                    ],
-                    [
-                        {"text": "Неделя", "callback_data": "ui:top:week"},
-                        {"text": "День", "callback_data": "ui:top:day"},
-                    ],
-                    [
-                        {"text": "Вклад", "callback_data": "ui:top:social"},
-                        {"text": "Сезон", "callback_data": "ui:top:season"},
-                    ],
-                    [{"text": "Главная", "callback_data": "ui:home"}],
-                ]
-            }
+            top_key, text = mapping[section]
+            markup = {"inline_keyboard": self._build_top_navigation(top_key, page)}
             return text, markup
         if section == "top_menu":
             text = (
                 "JARVIS • РЕЙТИНГИ\n\n"
-                "Выберите нужный срез рейтинга.\n\n"
-                "Доступны общий рейтинг, исторический архив, неделя, день, вклад в сообщество и сезон."
+                "Здесь собраны все доступные срезы рейтинга.\n\n"
+                "Что можно смотреть:\n"
+                "• новый рейтинг\n"
+                "• исторический рейтинг\n"
+                "• день / неделя / сезон\n"
+                "• вклад в сообщество\n"
+                "• реакции полученные и отправленные\n"
+                "• активность\n"
+                "• поведение\n"
+                "• сообщения\n"
+                "• полезность\n"
+                "• стрики\n"
+                "• достижения"
             )
             markup = {
                 "inline_keyboard": [
                     [
-                        {"text": "Новый", "callback_data": "ui:top:all"},
-                        {"text": "История", "callback_data": "ui:top:history"},
+                        {"text": "Новый", "callback_data": "ui:top:all:1"},
+                        {"text": "История", "callback_data": "ui:top:history:1"},
                     ],
                     [
-                        {"text": "Неделя", "callback_data": "ui:top:week"},
-                        {"text": "День", "callback_data": "ui:top:day"},
+                        {"text": "Неделя", "callback_data": "ui:top:week:1"},
+                        {"text": "День", "callback_data": "ui:top:day:1"},
                     ],
                     [
-                        {"text": "Вклад", "callback_data": "ui:top:social"},
-                        {"text": "Сезон", "callback_data": "ui:top:season"},
+                        {"text": "Вклад", "callback_data": "ui:top:social:1"},
+                        {"text": "Сезон", "callback_data": "ui:top:season:1"},
+                    ],
+                    [
+                        {"text": "Реакции+", "callback_data": "ui:top:reactions:1"},
+                        {"text": "Реакции→", "callback_data": "ui:top:given:1"},
+                    ],
+                    [
+                        {"text": "Активность", "callback_data": "ui:top:activity:1"},
+                        {"text": "Поведение", "callback_data": "ui:top:behavior:1"},
+                    ],
+                    [
+                        {"text": "Сообщения", "callback_data": "ui:top:messages:1"},
+                        {"text": "Полезность", "callback_data": "ui:top:helpful:1"},
+                    ],
+                    [
+                        {"text": "Стрик", "callback_data": "ui:top:streak:1"},
+                        {"text": "Ачивки", "callback_data": "ui:top:achievements:1"},
                     ],
                     [{"text": "Профиль", "callback_data": "ui:profile"}, {"text": "Апелляции", "callback_data": "ui:appeals"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
             return text, markup
@@ -445,7 +847,10 @@ class ControlPanelRenderer:
             return "\n".join(lines).strip(), markup
         return self.public_home_text, {
             "inline_keyboard": [
-                [{"text": "Мой профиль", "callback_data": "ui:profile"}, {"text": "Топы", "callback_data": "ui:top"}],
+                [{"text": "Мой профиль", "callback_data": "ui:profile"}, {"text": "Все топы", "callback_data": "ui:top"}],
+                [{"text": "Достижения", "callback_data": "ui:achievements"}, {"text": "Рейтинг ачивок", "callback_data": "ui:top:achievements:1"}],
+                [{"text": "Реакции+", "callback_data": "ui:top:reactions:1"}, {"text": "За неделю", "callback_data": "ui:top:week:1"}],
+                [{"text": "Сообщения", "callback_data": "ui:top:messages:1"}, {"text": "Полезность", "callback_data": "ui:top:helpful:1"}],
                 [{"text": "Апелляции", "callback_data": "ui:appeals"}],
             ]
         }
@@ -456,25 +861,7 @@ class ControlPanelRenderer:
         if not has_full_access:
             return self.build_public_control_panel(bridge, user_id, section, payload)
         if section == "admin_warns" and user_id == self.owner_user_id:
-            warn_lines = ["JARVIS • НАСТРОЙКИ ПРЕДУПРЕЖДЕНИЙ", ""]
-            with bridge.state.db_lock:
-                rows = bridge.state.db.execute(
-                    "SELECT chat_id, warn_limit, warn_mode, warn_expire_seconds FROM warn_settings ORDER BY chat_id DESC LIMIT 8"
-                ).fetchall()
-            if not rows:
-                warn_lines.append("Явных настроек warn по чатам пока нет.")
-            else:
-                for row in rows:
-                    warn_lines.append(
-                        f"chat={int(row[0])} • limit={int(row[1])} • mode={row[2]} • ttl={self.format_duration_seconds(int(row[3])) if int(row[3]) > 0 else 'off'}"
-                    )
-            markup = {
-                "inline_keyboard": [
-                    [{"text": "Модерация", "callback_data": "ui:adm:moderation"}, {"text": "Очередь апелляций", "callback_data": "ui:adm:queue"}],
-                    [{"text": "Главная", "callback_data": "ui:home"}],
-                ]
-            }
-            return "\n".join(warn_lines), markup
+            return self._build_admin_warns_panel(bridge, payload)
         if section == "admin_moderation" and user_id == self.owner_user_id:
             with bridge.state.db_lock:
                 total_actions = bridge.state.db.execute("SELECT COUNT(*) FROM moderation_actions").fetchone()[0]
@@ -521,23 +908,99 @@ class ControlPanelRenderer:
             text = (
                 "JARVIS • ПАНЕЛЬ ВЛАДЕЛЬЦА\n\n"
                 "Это короткая owner-only панель без публичного и декоративного слоя.\n"
-                "Здесь оставлены только рабочие контуры: runtime, git/logs, память, модерация и автовосстановление.\n\n"
+                "Здесь оставлены только рабочие контуры: runtime, git/logs, память, файлы, команды, модерация и автовосстановление.\n\n"
                 "Как пользоваться:\n"
                 "• разделы ниже открывают экраны с пояснениями и быстрыми сводками\n"
                 "• команды с параметрами запускай текстом из owner-чата\n"
+                "• если забыл синтаксис, сначала открывай «Все команды»\n"
                 "• панель больше не пытается быть публичным help/меню для остальных\n\n"
                 "Разделы:\n"
                 "• Среда и рантайм: здоровье процесса, ресурсы, owner-report\n"
+                "• Jarvis Control: режим, доступ, инструкции, память и Telegram-сценарии\n"
                 "• Git и логи: состояние дерева, хвост ошибок, последние коммиты\n"
-                "• Память: history, recall, digest, portraits, export\n"
+                "• Карта системы: один экран со всеми owner-разделами, автоматикой и ограничениями\n"
+                "• Что умеет Jarvis: карта возможностей, режимов и owner-сценариев\n"
+                "• Авто-режимы и алерты: что бот делает сам, какие сигналы шлёт и с каким cooldown\n"
+                "• Память и чаты: history, recall, digest, deep-profile, whois, conflicts\n"
+                "• Обзор чатов: что происходит по группам, быстрые daily/24h срезы\n"
+                "• Люди и связи: whois, watchlist, reliable, ownergraph, cross-chat пересечения\n"
+                "• Owner Identity: основной аккаунт, alias-аккаунты и их статусы по чатам\n"
+                "• Файлы и медиа: sdcard, сохранение и пересылка вложений\n"
+                "• Все команды: полный owner/admin реестр с доступом и источниками данных\n"
                 "• Модерация: санкции, warnings, welcome, owner-report\n"
                 "• Автовосстановление: инциденты, статус, bounded repair playbooks"
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Среда и рантайм", "callback_data": "ui:panel:owner_runtime"}, {"text": "Git и логи", "callback_data": "ui:panel:owner_git"}],
-                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
-                    [{"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
+                    [{"text": "Среда и рантайм", "callback_data": "ui:panel:owner_runtime"}, {"text": "Jarvis Control", "callback_data": "ui:panel:owner_jarvis"}],
+                    [{"text": "Git и логи", "callback_data": "ui:panel:owner_git"}, {"text": "Карта системы", "callback_data": "ui:panel:owner_system_map"}],
+                    [{"text": "Что умеет Jarvis", "callback_data": "ui:panel:owner_capabilities"}, {"text": "Авто-режимы и алерты", "callback_data": "ui:panel:owner_automation"}],
+                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Обзор чатов", "callback_data": "ui:panel:owner_overview"}],
+                    [{"text": "Люди и связи", "callback_data": "ui:panel:owner_people"}, {"text": "Owner Identity", "callback_data": "ui:panel:owner_identity"}],
+                    [{"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}, {"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
+                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}, {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_jarvis" and user_id == self.owner_user_id:
+            return self._build_owner_jarvis_panel(bridge, payload)
+        if section == "owner_identity" and user_id == self.owner_user_id:
+            text = (
+                "JARVIS • OWNER IDENTITY\n\n"
+                "Здесь собраны основной owner-аккаунт и alias-аккаунты владельца.\n"
+                "Для каждого аккаунта видно, в каких чатах он состоит и какой у него статус.\n\n"
+                + bridge.owner_handlers.render_owner_identity_text(bridge)
+                + "\n\nПояснение:\n"
+                "• если статус `создатель` или `админ`, бот не применяет auto-moderation к этому аккаунту\n"
+                "• если статус `участник`, ограничение по статусу не мешает модерации\n"
+                "• названия чатов берутся из runtime cache, а не из случайного внешнего слепка"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Люди и связи", "callback_data": "ui:panel:owner_people"}, {"text": "Среда и рантайм", "callback_data": "ui:panel:owner_runtime"}],
+                    [{"text": "Карта системы", "callback_data": "ui:panel:owner_system_map"}, {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_system_map" and user_id == self.owner_user_id:
+            text = (
+                "JARVIS • КАРТА СИСТЕМЫ\n\n"
+                "Это общий owner-экран: что есть в системе, где это искать и что работает автоматически.\n\n"
+                "Разделы панели:\n"
+                "• Среда и рантайм — здоровье bridge, heartbeat, ресурсы, owner-report\n"
+                "• Git и логи — состояние дерева, ошибки, route/runtime хвосты\n"
+                "• Что умеет Jarvis — user-facing и owner-facing возможности\n"
+                "• Авто-режимы и алерты — scheduled процессы, digests, alert-сигналы\n"
+                "• Память и чаты — facts, memory layers, digest, history, export\n"
+                "• Обзор чатов — быстрый срез по группам и deep-profile по конкретному чату\n"
+                "• Люди и связи — whois, portrait, ownergraph, cross-chat relation context\n"
+                "• Owner Identity — owner и alias-аккаунты, статусы по чатам и ограничения модерации\n"
+                "• Файлы и медиа — sdcard, вложения, документы, фото\n"
+                "• Модерация — санкции, warn-system, welcome, appeals\n"
+                "• Автовосстановление — incidents, playbooks, approve/deny, owner autofix\n"
+                "• Все команды — структурированный реестр команд с доступом и источниками данных\n\n"
+                "Автоматика уже работает сама:\n"
+                "• health-aware supervisor\n"
+                "• owner daily/weekly digests\n"
+                "• memory refresh\n"
+                "• owner alerts по конфликту, активности, unanswered, newcomer\n"
+                "• self-heal diagnostics\n\n"
+                "Главные owner-команды по ролям:\n"
+                "• группы: /whatshappening, /chatdeep, /summary24h, /conflicts\n"
+                "• люди: /whois, /profilecheck, /watchlist, /reliable, /suspects, /portrait, /history, /ownergraph, /achaudit\n"
+                "• техсостояние: /ownerreport, /qualityreport, /gitstatus, /errors, /routes\n"
+                "• repair: /selfhealstatus, /selfhealrun, /selfhealapprove, /selfhealdeny\n\n"
+                "Ключевые ограничения:\n"
+                "• owner alerts идут с cooldown и не должны засыпать личку дублями\n"
+                "• restart supervisor не должен валить enterprise_server\n"
+                "• ответы Jarvis должны опираться на память, историю и локальный контекст, а не на выдумку"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Что умеет Jarvis", "callback_data": "ui:panel:owner_capabilities"}, {"text": "Авто-режимы и алерты", "callback_data": "ui:panel:owner_automation"}],
+                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}, {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
                     [{"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
@@ -548,37 +1011,191 @@ class ControlPanelRenderer:
             return self._build_owner_runtime_summary(bridge)
         if section == "owner_git" and user_id == self.owner_user_id:
             return self._build_owner_git_panel(bridge, payload)
+        if section == "owner_capabilities" and user_id == self.owner_user_id:
+            text = (
+                "JARVIS • ЧТО УМЕЕТ JARVIS\n\n"
+                "Это карта возможностей системы без внутреннего маркетинга и без скрытых режимов.\n\n"
+                "Основные контуры:\n"
+                "• Локальный chat reasoning по истории, reply-thread и памяти\n"
+                "• Память по чатам, участникам, relation-layer и owner cross-chat context\n"
+                "• Group analysis: /chatdeep, /whatshappening, /summary24h, /conflicts\n"
+                "• Профили людей: /whois, /profilecheck, /watchlist, /reliable, /suspects, /history, /portrait, /memoryuser, /ownergraph\n"
+                "• Runtime/ops: /ownerreport, /qualityreport, /gitstatus, /errors, /routes\n"
+                "• Файлы и медиа: /sdls, /sdsend, /sdsave, анализ документов и фото\n"
+                "• Runtime hardening: supervisor, health-check, self-heal, owner alerts\n\n"
+                "Что умеет автоматически:\n"
+                "• daily/weekly owner digests\n"
+                "• memory refresh по чатам\n"
+                "• owner alerts по конфликту, всплеску активности, вопросам без ответа и новым заметным участникам\n"
+                "• self-heal diagnostics и bounded repair playbooks\n\n"
+                "Как лучше пользоваться:\n"
+                "• для одной группы: /chatdeep или /summary24h\n"
+                "• для всех групп сразу: /whatshappening\n"
+                "• для человека: /whois или /portrait\n"
+                "• для общей картины по Дмитрию: /ownergraph\n"
+                "• для техсостояния: owner runtime / git / selfheal панели"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Авто-режимы и алерты", "callback_data": "ui:panel:owner_automation"}, {"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}],
+                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands"}, {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_automation" and user_id == self.owner_user_id:
+            text = (
+                "JARVIS • АВТО-РЕЖИМЫ И АЛЕРТЫ\n\n"
+                "Здесь описано, что бот делает сам без ручной команды владельца.\n\n"
+                "Автоматические процессы:\n"
+                "• heartbeat и runtime health-check\n"
+                "• health-aware supervisor loop\n"
+                "• scheduled backup\n"
+                "• memory refresh по активным чатам\n"
+                "• daily owner digest\n"
+                "• weekly owner report\n"
+                "• self-heal diagnostics и bounded repair loop\n\n"
+                "Owner alerts сейчас шлются по сигналам:\n"
+                "• конфликт/шум\n"
+                "• всплеск активности\n"
+                "• вопросы без ответа\n"
+                "• новый заметный участник\n\n"
+                "Как устроены ограничения:\n"
+                "• по каждому чату и типу сигнала есть cooldown\n"
+                "• алерты не должны лупить бесконечно по одному и тому же событию\n"
+                "• если сигналов нет, owner-личка не засоряется\n\n"
+                "Что смотреть руками:\n"
+                "• owner runtime panel — для процесса и среды\n"
+                "• owner selfheal panel — для инцидентов и repair\n"
+                "• owner overview / owner people — для содержательного контекста"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Что умеет Jarvis", "callback_data": "ui:panel:owner_capabilities"}, {"text": "Автовосстановление", "callback_data": "ui:panel:owner_selfheal"}],
+                    [{"text": "Среда и рантайм", "callback_data": "ui:panel:owner_runtime"}, {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
         if section == "owner_memory" and user_id == self.owner_user_id:
             text = (
                 "JARVIS • ПАМЯТЬ И ЧАТЫ\n\n"
                 "Owner-only контур памяти и поиска по истории.\n"
                 "Здесь только инженерные инструменты: поднять контекст, проверить память, собрать digest, найти источник фразы.\n\n"
-                "Команды раздела:\n"
+                "Память и поиск:\n"
                 "• /remember <факт> — записать факт в память чата\n"
                 "• /recall [запрос] — поднять релевантные факты и события\n"
                 "• /search <запрос> — поиск по chat_events\n"
                 "• /memorychat [запрос] — показать текущий chat memory слой\n"
                 "• /memoryuser @username|user_id — показать user memory по участнику\n"
                 "• /memorysummary — показать summary memory snapshots\n"
+                "• /whois @username|user_id — профиль участника с памятью, поведением и следами по чатам\n"
+                "• /profilecheck @username|user_id — усиленная проверка профиля с visual/repeat сигналами\n"
+                "• /watchlist [chat_id] — рисковые и проблемные участники по группе\n"
+                "• /reliable [chat_id] — самые надёжные и полезные участники по группе\n"
+                "• /suspects [chat_id] — suspect/scam/bait сигналы по людям с учётом тихого анализа фото\n\n"
+                "История и digest:\n"
                 "• /who_said <запрос> — кто чаще писал фразу/слово\n"
                 "• /history @username — timeline участника\n"
                 "• /daily [YYYY-MM-DD] — активность за день в текущем чате\n"
                 "• /digest [YYYY-MM-DD] — digest по текущему чату\n"
                 "• /chatdigest <chat_id> [YYYY-MM-DD] — digest по конкретной группе из owner-лички\n"
+                "• /chatdeep [chat_id] — глубокий профиль группы и её памяти\n"
+                "• /whatshappening [chat_id] — обзор по активным чатам или конкретной группе\n"
+                "• /summary24h [chat_id] — краткий digest за 24 часа\n"
+                "• /conflicts [chat_id] — конфликтные сигналы и напряжённые reply-пары\n"
+                "• /portrait [@username] — AI-портрет участника по текущему чату\n"
+                "• /achaudit [количество] — последние выдачи ачивок по людям и чатам\n\n"
+                "Экспорт и сервис:\n"
                 "• /export chat|today|@username|user_id — выгрузка событий\n"
-                "• /portrait [@username] — профиль участника\n"
                 "• /reset — очистка контекста текущего чата\n\n"
                 "Подсказки:\n"
-                "• /history и /portrait можно вызывать через reply на сообщение\n"
+                "• /history, /portrait и /whois можно вызывать через reply на сообщение\n"
+                "• /whatshappening без chat_id показывает сводку по активным чатам владельца\n"
+                "• /chatdeep, /summary24h и /conflicts в группе можно вызывать без chat_id\n"
                 "• это owner-инструменты, публичный memory/help слой для остальных отключён"
             )
             markup = {
                 "inline_keyboard": [
+                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands:memory_audit"}, {"text": "Файлы и медиа", "callback_data": "ui:panel:owner_files"}],
                     [{"text": "Среда и рантайм", "callback_data": "ui:panel:owner_runtime"}, {"text": "Модерация", "callback_data": "ui:panel:owner_moderation"}],
                     [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
             return text, markup
+        if section == "owner_overview" and user_id == self.owner_user_id:
+            text = (
+                "JARVIS • ОБЗОР ЧАТОВ\n\n"
+                "Раздел для быстрого понимания, что происходит по группам без ручного ковыряния истории.\n\n"
+                "Главные команды:\n"
+                "• /whatshappening — сводка по активным чатам за последние 24 часа\n"
+                "• /whatshappening <chat_id> — deep-view по конкретной группе\n"
+                "• /chatdeep [chat_id] — глубокий профиль группы и памяти\n"
+                "• /summary24h [chat_id] — краткий digest за сутки\n"
+                "• /chatdigest <chat_id> [YYYY-MM-DD] — digest по конкретному дню\n"
+                "• /conflicts [chat_id] — признаки срача, грубости и напряжённых reply-пар\n\n"
+                "Новые срезы по людям внутри deep-analysis:\n"
+                "• /chatdeep теперь включает watchlist и reliable блоки прямо в профиле чата\n"
+                "• /watchlist [chat_id] — быстрый список проблемных участников\n"
+                "• /reliable [chat_id] — быстрый список надёжных участников\n"
+                "• /suspects [chat_id] — визуально/поведенчески подозрительные аккаунты\n\n"
+                "Когда что использовать:\n"
+                "• если нужен общий срез по всем чатам: /whatshappening\n"
+                "• если нужно понять одну группу глубже: /chatdeep\n"
+                "• если нужно быстрое краткое summary: /summary24h\n"
+                "• если подозреваешь конфликт или шум: /conflicts"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Люди и связи", "callback_data": "ui:panel:owner_people"}],
+                    [{"text": "Watchlist", "callback_data": "ui:panel:owner_watchlist"}, {"text": "Suspects", "callback_data": "ui:panel:owner_suspects"}],
+                    [{"text": "Надёжные", "callback_data": "ui:panel:owner_reliable"}],
+                    [{"text": "Что умеет Jarvis", "callback_data": "ui:panel:owner_capabilities"}, {"text": "Карта системы", "callback_data": "ui:panel:owner_system_map"}],
+                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands:memory_audit"}, {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_people" and user_id == self.owner_user_id:
+            text = (
+                "JARVIS • ЛЮДИ И СВЯЗИ\n\n"
+                "Этот экран про участников, пересечения и social context вокруг Дмитрия.\n\n"
+                "Главные команды:\n"
+                "• /whois @username|user_id — профиль участника с памятью, поведением и следами по чатам\n"
+                "• /profilecheck @username|user_id — расширенная проверка профиля и visual memory\n"
+                "• /watchlist [chat_id] — проблемные/рисковые участники по группе\n"
+                "• /reliable [chat_id] — надёжные и полезные участники по группе\n"
+                "• /suspects [chat_id] — suspect/scam/bait и bot-like сигналы по группе\n"
+                "• /ownergraph — cross-chat social graph владельца\n"
+                "• /achaudit [количество] — аудит последних ачивок\n"
+                "• /memoryuser @username|user_id — сырой user memory слой\n"
+                "• /history @username — timeline участника в текущем чате\n"
+                "• /portrait [@username] — AI-портрет участника\n\n"
+                "Подсказки:\n"
+                "• /whois, /history и /portrait можно вызывать reply на сообщение\n"
+                "• /watchlist полезен, когда нужно быстро понять, кто шумит, конфликтует или флудит\n"
+                "• /reliable полезен, когда нужно понять, на кого можно опереться в группе\n"
+                "• /suspects полезен, когда нужно поймать bait/scam/bot-like аккаунты и визуальные сигналы по фото\n"
+                "• /ownergraph полезен, когда нужно понять, кто чаще всего пересекается с Дмитрием по разным чатам\n"
+                "• /memoryuser полезен для проверки, что именно лежит в памяти, без AI-обработки"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "Обзор чатов", "callback_data": "ui:panel:owner_overview"}, {"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}],
+                    [{"text": "Watchlist", "callback_data": "ui:panel:owner_watchlist"}, {"text": "Suspects", "callback_data": "ui:panel:owner_suspects"}],
+                    [{"text": "Надёжные", "callback_data": "ui:panel:owner_reliable"}],
+                    [{"text": "Что умеет Jarvis", "callback_data": "ui:panel:owner_capabilities"}, {"text": "Карта системы", "callback_data": "ui:panel:owner_system_map"}],
+                    [{"text": "Все команды", "callback_data": "ui:panel:owner_commands:memory_audit"}, {"text": "Панель владельца", "callback_data": "ui:panel:owner_root"}],
+                    [{"text": "Главная", "callback_data": "ui:home"}],
+                ]
+            }
+            return text, markup
+        if section == "owner_watchlist" and user_id == self.owner_user_id:
+            return self._build_owner_people_live_panel(bridge, "watchlist", payload)
+        if section == "owner_suspects" and user_id == self.owner_user_id:
+            return self._build_owner_people_live_panel(bridge, "suspects", payload)
+        if section == "owner_reliable" and user_id == self.owner_user_id:
+            return self._build_owner_people_live_panel(bridge, "reliable", payload)
         if section == "owner_files" and user_id == self.owner_user_id:
             text = (
                 "JARVIS • ФАЙЛЫ И МЕДИА\n\n"
@@ -599,7 +1216,7 @@ class ControlPanelRenderer:
             )
             markup = {
                 "inline_keyboard": [
-                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Live-данные", "callback_data": "ui:panel:owner_live"}],
+                    [{"text": "Память и чаты", "callback_data": "ui:panel:owner_memory"}, {"text": "Все команды", "callback_data": "ui:panel:owner_commands:runtime_audit"}],
                     [{"text": "Назад", "callback_data": "ui:panel:owner_root"}, {"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
@@ -752,10 +1369,15 @@ class ControlPanelRenderer:
                 return self.build_control_panel(bridge, user_id, "owner_root")
             return self.build_public_control_panel(bridge, user_id, section, payload)
         if section == "achievements":
-            text = "JARVIS • ДОСТИЖЕНИЯ\n\n" + bridge.legacy.render_achievements(user_id)
+            text = (
+                "JARVIS • ДОСТИЖЕНИЯ\n\n"
+                "Коллекция участника: открытые ачивки, скрытые слоты и ближайший прогресс.\n\n"
+                + bridge.legacy.render_achievements(user_id)
+            )
             markup = {
                 "inline_keyboard": [
                     [{"text": "Профиль", "callback_data": "ui:profile"}, {"text": "Топы", "callback_data": "ui:top"}],
+                    [{"text": "Рейтинг", "callback_data": "ui:top:achievements:1"}, {"text": "Реакции", "callback_data": "ui:top:reactions:1"}],
                     [{"text": "Главная", "callback_data": "ui:home"}],
                 ]
             }
