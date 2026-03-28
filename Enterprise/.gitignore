@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.capacitor/
+.vite/
+_references/repos/
+_references/repos/*.tar.gz
+android/.gradle/
+android/local.properties
+android/app/build/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
