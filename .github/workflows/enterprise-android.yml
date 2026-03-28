@@ -18,6 +18,7 @@ env:
   NODE_VERSION: "18"
   ANDROID_COMPILE_SDK: "34"
   ANDROID_BUILD_TOOLS: "34.0.0"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   verify_web:
@@ -40,8 +41,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: Enterprise/package-lock.json
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -88,8 +87,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: Enterprise/package-lock.json
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -138,8 +135,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: Enterprise/package-lock.json
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
