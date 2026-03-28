@@ -250,6 +250,7 @@ from services.runtime_service import RuntimeService, RuntimeServiceDeps
 from services.text_route_service import TextRouteService, TextRouteServiceDeps
 from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
 from services.enterprise_console_webapp import build_enterprise_console_html, run_enterprise_console_server
+from services.ask_codex_service import ask_codex as _ask_codex_service
 from services.reply_context_service import (
     build_active_subject_context as _build_active_subject_context_service,
     build_reply_context as _build_reply_context_service,
@@ -7815,236 +7816,35 @@ class TelegramBridge:
         spontaneous_group_reply: bool = False,
         suppress_status_messages: bool = False,
     ) -> str:
-        started_at = time.perf_counter()
-        reply_context = self.build_reply_context(chat_id, message)
-        active_subject_context = self.build_active_subject_context(chat_id, user_id, user_text, message)
-        if active_subject_context:
-            reply_context = f"{reply_context}\n\n{active_subject_context}" if reply_context else active_subject_context
-        meta_identity_answer = build_meta_identity_answer(user_text, persona=assistant_persona or "jarvis")
-        if meta_identity_answer:
-            return postprocess_answer(meta_identity_answer, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
-        if user_id == OWNER_USER_ID and not reply_context:
-            owner_contact_reply = build_owner_contact_reply(user_text, persona=assistant_persona or "jarvis")
-            if owner_contact_reply:
-                return postprocess_answer(owner_contact_reply, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
-        initial_route_decision = analyze_request_route(
-            user_text,
-            assistant_persona=assistant_persona,
-            chat_type=chat_type,
-            user_id=user_id,
-            reply_context=reply_context,
-        )
-        operational_state = self.refresh_world_state_registry("ask_codex", chat_id=chat_id)
-        drive_scores = self.recompute_drive_scores(operational_state)
-        route_decision = self.apply_persistent_pressures_to_route(initial_route_decision, user_text)
-        current_goals = (
-            "сохранить continuity и честность; "
-            f"закрыть текущий запрос через {route_decision.route_kind}; "
-            f"снизить uncertainty={drive_scores.get('uncertainty_pressure', 0):.0f} и runtime-risk={drive_scores.get('runtime_risk_pressure', 0):.0f}"
-        )
-        active_constraints = (
-            f"route={route_decision.route_kind}; guardrails={', '.join(route_decision.guardrails)}; "
-            f"safe_chat_only={'yes' if self.config.safe_chat_only else 'no'}"
-        )
-        self.state.update_self_model_state(
-            active_mode=self.state.get_mode(chat_id),
-            current_goals=current_goals,
-            active_constraints=active_constraints,
-            last_route_kind=route_decision.route_kind,
-        )
-        early_status_message_id: Optional[int] = None
-        allow_status_message = (not suppress_status_messages) and (
-            chat_type not in {"group", "supergroup"}
-            or (chat_type in {"group", "supergroup"} and user_id == OWNER_USER_ID and assistant_persona == "enterprise")
-        )
-        initial_status = OWNER_AGENT_RUNNING_TEXT if route_decision.persona == "enterprise" else JARVIS_AGENT_RUNNING_TEXT
-        progress_target_label = build_progress_target_label(message, user_id)
-        log(
-            "ask_codex route "
-            f"chat={chat_id} user={user_id} route={route_decision.route_kind} "
-            f"persona={route_decision.persona} intent={route_decision.intent} "
-            f"use_live={route_decision.use_live} use_web={route_decision.use_web} "
-            f"use_events={route_decision.use_events} use_db={route_decision.use_database} "
-            f"use_reply={route_decision.use_reply} query_len={len(user_text or '')}"
-        )
-        if allow_status_message and spontaneous_group_reply:
-            early_status_message_id = self.send_status_message(chat_id, initial_status)
-        elif allow_status_message and user_id == OWNER_USER_ID:
-            early_status_message_id = self.send_status_message(chat_id, initial_status)
-        if detect_local_chat_query(user_text) and drive_scores.get("stale_memory_pressure", 0.0) >= 35.0:
-            self.state.refresh_relation_memory(chat_id)
-
-        if (
-            route_decision.persona == "enterprise"
-            and route_decision.intent == "runtime_status"
-            and route_decision.use_workspace
-            and is_explicit_runtime_probe_request(user_text)
-        ):
-            runtime_snapshot = self.get_enterprise_runtime_status()
-            if runtime_snapshot:
-                direct_answer = (
-                    "Состояние runtime через Enterprise server:\n"
-                    f"- supervisor PID: {runtime_snapshot.get('supervisor_pid') or '-'}\n"
-                    f"- supervisor alive: {'yes' if runtime_snapshot.get('supervisor_alive') else 'no'}\n"
-                    f"- bridge PID: {runtime_snapshot.get('bridge_pid') or '-'}\n"
-                    f"- bridge alive: {'yes' if runtime_snapshot.get('bridge_alive') else 'no'}\n"
-                    f"- enterprise PID: {runtime_snapshot.get('enterprise_pid') or '-'}\n"
-                    f"- enterprise alive: {'yes' if runtime_snapshot.get('enterprise_alive') else 'no'}"
-                )
-            else:
-                direct_answer = render_enterprise_runtime_report()
-            report = enrich_self_check_report(
-                apply_self_check_contract(direct_answer, route_decision),
-                route_decision=route_decision,
-                notes="runtime route requires direct local probe",
-            )
-            self.state.update_self_model_state(last_outcome=report.outcome)
-            self.run_post_task_reflection(
-                chat_id=chat_id,
-                user_id=user_id,
-                route_decision=route_decision,
-                user_text=user_text,
-                report=report,
-                source="enterprise_runtime_probe",
-            )
-            if allow_status_message:
-                status_message_id = early_status_message_id
-                if status_message_id is None:
-                    status_message_id = self.send_status_message(chat_id, f"{OWNER_AGENT_RUNNING_TEXT}\n\nСнимаю прямой runtime probe...")
-                if status_message_id is not None:
-                    self.edit_status_message(
-                        chat_id,
-                        status_message_id,
-                        f"{OWNER_AGENT_RUNNING_TEXT}\n\n✔ Готово.\nРезультат отправлен отдельным сообщением.",
-                    )
-            self.record_route_diagnostic(
-                chat_id=chat_id,
-                user_id=user_id,
-                route_decision=route_decision,
-                report=report,
-                started_at=started_at,
-                query_text=user_text,
-            )
-            return report.answer
-
-        lowered_user_text = normalize_whitespace(user_text).lower()
-        if (
-            route_decision.persona == "enterprise"
-            and route_decision.use_workspace
-            and is_explicit_runtime_restart_request(lowered_user_text)
-        ):
-            restart_result = self.restart_bridge_via_enterprise_server()
-            if restart_result:
-                runtime = restart_result.get("runtime") or {}
-                ok = bool(restart_result.get("ok"))
-                direct_answer = (
-                    ("Рестарт bridge через Enterprise server выполнен.\n" if ok else "Рестарт bridge через Enterprise server завершился с ошибкой.\n")
-                    + f"- returncode: {restart_result.get('returncode')}\n"
-                    + f"- stdout: {truncate_text(str(restart_result.get('stdout') or '-'), 200)}\n"
-                    + f"- stderr: {truncate_text(str(restart_result.get('stderr') or '-'), 200)}\n"
-                    + f"- supervisor PID: {runtime.get('supervisor_pid') or '-'}\n"
-                    + f"- bridge PID: {runtime.get('bridge_pid') or '-'}\n"
-                    + f"- enterprise PID: {runtime.get('enterprise_pid') or '-'}"
-                )
-                return postprocess_answer(direct_answer, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
-
-        context_progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
-        with HeartbeatGuard(self), ProgressStatusGuard(
+        return _ask_codex_service(
             self,
             chat_id=chat_id,
-            status_message_id=early_status_message_id,
-            initial_status=initial_status,
-            progress_style=context_progress_style,
-        ):
-            preparation = self.text_route_service.prepare(
-                self,
-                chat_id=chat_id,
-                user_text=user_text,
-                route_decision=route_decision,
-                user_id=user_id,
-                message=message,
-                reply_context=reply_context,
-                spontaneous_group_reply=spontaneous_group_reply,
-                initial_status_message_id=early_status_message_id,
-                chat_type=chat_type,
-            )
-        context_bundle = preparation.context_bundle
-        prompt = preparation.prompt
-        replace_status_with_answer = preparation.replace_status_with_answer
-        delivery_chat_id = self.resolve_enterprise_delivery_chat_id(chat_id, chat_type, route_decision.persona)
-        effective_initial_status = initial_status
-        if chat_type == "private" and route_decision.persona == "enterprise":
-            effective_initial_status = (
-                f"{initial_status}\n\n"
-                f"{build_context_budget_status(prompt_len=preparation.prompt_len, history_items=preparation.history_items, history_limit=self.config.history_limit, soft_limit=self.config.bridge_context_soft_limit)}"
-            )
-
-        if route_decision.use_workspace:
-            workspace_timeout_seconds = (
-                self.config.enterprise_task_timeout
-                if self.config.enterprise_task_timeout is not None
-                else DEFAULT_ENTERPRISE_WORKSPACE_TIMEOUT
-            )
-            raw_answer = self.run_codex_with_progress(
-                chat_id,
-                prompt,
-                initial_status=effective_initial_status,
-                sandbox_mode="danger-full-access",
-                approval_policy="never",
-                json_output=True,
-                timeout_seconds=workspace_timeout_seconds,
-                progress_style="enterprise",
-                replace_status_with_answer=replace_status_with_answer,
-                status_message_id=early_status_message_id,
-                show_status_message=allow_status_message,
-                target_label=progress_target_label,
-                delivery_chat_id=delivery_chat_id,
-            )
-        else:
-            log(
-                "ask_codex model_start "
-                f"chat={chat_id} route={route_decision.route_kind} timeout={preparation.route_timeout_seconds}"
-            )
-            raw_answer = self.run_codex_with_progress(
-                chat_id,
-                prompt,
-                initial_status=effective_initial_status,
-                progress_style=preparation.progress_style,
-                replace_status_with_answer=replace_status_with_answer,
-                status_message_id=early_status_message_id,
-                show_status_message=allow_status_message,
-                timeout_seconds=preparation.route_timeout_seconds,
-                target_label=progress_target_label,
-                delivery_chat_id=delivery_chat_id,
-            )
-            log(
-                "ask_codex model_end "
-                f"chat={chat_id} route={route_decision.route_kind} answer_len={len(raw_answer or '')}"
-            )
-
-        report = enrich_self_check_report(
-            apply_self_check_contract(raw_answer, route_decision),
-            route_decision=route_decision,
-            context_bundle=context_bundle,
-        )
-        self.state.update_self_model_state(last_outcome=report.outcome)
-        self.run_post_task_reflection(
-            chat_id=chat_id,
-            user_id=user_id,
-            route_decision=route_decision,
             user_text=user_text,
-            report=report,
-            source="enterprise_route",
-        )
-        self.record_route_diagnostic(
-            chat_id=chat_id,
             user_id=user_id,
-            route_decision=route_decision,
-            report=report,
-            started_at=started_at,
-            query_text=user_text,
+            chat_type=chat_type,
+            assistant_persona=assistant_persona,
+            message=message,
+            spontaneous_group_reply=spontaneous_group_reply,
+            suppress_status_messages=suppress_status_messages,
+            build_meta_identity_answer_func=build_meta_identity_answer,
+            build_owner_contact_reply_func=build_owner_contact_reply,
+            analyze_request_route_func=analyze_request_route,
+            enrich_self_check_report_func=enrich_self_check_report,
+            apply_self_check_contract_func=apply_self_check_contract,
+            render_enterprise_runtime_report_func=render_enterprise_runtime_report,
+            build_context_budget_status_func=build_context_budget_status,
+            build_progress_target_label_func=build_progress_target_label,
+            detect_local_chat_query_func=detect_local_chat_query,
+            is_explicit_runtime_probe_request_func=is_explicit_runtime_probe_request,
+            is_explicit_runtime_restart_request_func=is_explicit_runtime_restart_request,
+            postprocess_answer_func=postprocess_answer,
+            owner_user_id=OWNER_USER_ID,
+            owner_agent_running_text=OWNER_AGENT_RUNNING_TEXT,
+            jarvis_agent_running_text=JARVIS_AGENT_RUNNING_TEXT,
+            default_enterprise_workspace_timeout=DEFAULT_ENTERPRISE_WORKSPACE_TIMEOUT,
+            heartbeat_guard_cls=HeartbeatGuard,
+            progress_status_guard_cls=ProgressStatusGuard,
         )
-        return report.answer
 
     def build_reply_context(self, chat_id: int, message: Optional[dict]) -> str:
         return _build_reply_context_service(self, chat_id, message)
