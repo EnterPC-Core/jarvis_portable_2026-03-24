@@ -7571,6 +7571,12 @@ class TelegramBridge:
             transcript = self._transcribe_voice_offline(source_path, chat_id=chat_id)
         if not transcript:
             return ""
+        try:
+            file_size = int(source_path.stat().st_size)
+        except OSError:
+            file_size = 0
+        if file_size and file_size <= 96_000:
+            return transcript
         improved = self.cleanup_voice_transcript_with_ai(chat_id, transcript)
         if improved != transcript:
             log(f"voice transcript improved chat={chat_id} old={shorten_for_log(transcript)} new={shorten_for_log(improved)}")
@@ -7625,7 +7631,11 @@ class TelegramBridge:
         del chat_id
         model_name = (self.config.audio_transcribe_model or "").strip()
         if model_name.startswith("gpt-") or not model_name:
-            model_name = "small"
+            try:
+                file_size = int(source_path.stat().st_size)
+            except OSError:
+                file_size = 0
+            model_name = "tiny" if file_size and file_size <= 160_000 else "small"
         log(f"offline voice transcription start model={model_name} file={source_path.name}")
         try:
             model = getattr(self, "_offline_whisper_model", None)
