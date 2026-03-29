@@ -1074,7 +1074,9 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("3. Где мнения расходятся", prompt)
         self.assertIn("4. Что подтверждено / что пока только предположение", prompt)
         self.assertIn("5. Что сейчас обсуждают practically", prompt)
-        self.assertIn("Внутренние сигналы трения/шума для grounding", prompt)
+        self.assertIn("Всегда явно отделяй: что видно напрямую, что является выводом, где есть неопределённость", prompt)
+        self.assertIn("Не используй унижающие или провокационные ярлыки", prompt)
+        self.assertIn("Внутренние сигналы трения для grounding", prompt)
         self.assertIn("@noise id=22", prompt)
         self.assertIn("только к этой выборке", prompt)
         self.assertEqual(len(sent_messages), 1)
@@ -1083,7 +1085,9 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("report ready", sent_messages[0][1])
         self.assertIn("6. Границы и уверенность", sent_messages[0][1])
         self.assertIn("не по всей истории чата", sent_messages[0][1])
-        self.assertIn("уверенность по активности участников", sent_messages[0][1])
+        self.assertIn("что видно напрямую в сообщениях", sent_messages[0][1])
+        self.assertIn("что является выводом", sent_messages[0][1])
+        self.assertIn("где есть неопределённость", sent_messages[0][1])
         self.assertEqual(finished, [-100])
 
     def test_who_said_appends_scope_boundaries(self):

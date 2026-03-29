@@ -159,6 +159,7 @@ Controlled migration note:
 - attachment and enterprise flows therefore write lifecycle first, and truth-marker second.
 - `task_events` preserve causality across restarts and long-running jobs instead of inferring it from a single final row.
 - chat-watch and local discussion summaries must explicitly mark sample boundaries and confidence, so a summary of recent messages is not presented as a claim about the whole chat history.
+- chat-analysis answers must separate direct observations, derived conclusions and uncertainty; they must avoid moderator-style labels unless the route is explicitly moderation-focused.
 
 ## 4. Improved Data Contracts
 
