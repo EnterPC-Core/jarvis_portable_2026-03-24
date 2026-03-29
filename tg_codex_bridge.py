@@ -360,6 +360,7 @@ from services.text_task_service import (
 from services.media_task_service import (
     ask_codex_with_document as _ask_codex_with_document_service,
     ask_codex_with_image as _ask_codex_with_image_service,
+    run_audio_task as _run_audio_task_service,
     run_document_task as _run_document_task_service,
     run_photo_task as _run_photo_task_service,
     run_voice_task as _run_voice_task_service,
@@ -5566,6 +5567,21 @@ class TelegramBridge:
 
     def run_voice_task(self, chat_id: int, user_id: Optional[int], file_id: str, message: Optional[dict] = None) -> None:
         _run_voice_task_service(
+            self,
+            chat_id,
+            user_id,
+            file_id,
+            message=message,
+            safe_mode_reply=SAFE_MODE_REPLY,
+            build_download_name_func=build_download_name,
+            build_voice_transcription_help_func=build_voice_transcription_help,
+            contains_voice_trigger_name_func=contains_voice_trigger_name,
+            should_process_group_message_func=should_process_group_message,
+            is_dangerous_request_func=is_dangerous_request,
+        )
+
+    def run_audio_task(self, chat_id: int, user_id: Optional[int], file_id: str, message: Optional[dict] = None) -> None:
+        _run_audio_task_service(
             self,
             chat_id,
             user_id,

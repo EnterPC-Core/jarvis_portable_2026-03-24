@@ -263,6 +263,47 @@ class TelegramMessageHandlers:
             bridge.log_exception(f"voice handler failed chat={chat_id}", error, limit=8)
             bridge.safe_send_text(chat_id, "Ошибка при обработке голосового. Детали записаны в лог.")
 
+    def handle_audio_message(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], message: dict) -> None:
+        try:
+            audio = message.get("audio") or {}
+            file_id = audio.get("file_id")
+            duration = audio.get("duration")
+            title = audio.get("title") or audio.get("file_name") or "audio"
+            chat = message.get("chat") or {}
+            chat_type = (chat.get("type") or "private").lower()
+            bridge.log(
+                f"incoming audio chat={chat_id} user={user_id} duration={duration} "
+                f"title={bridge.shorten_for_log(title)}"
+            )
+
+            is_owner = self._is_owner(bridge, user_id)
+            if chat_type in {"group", "supergroup"} and not is_owner:
+                bridge.log(f"group non-owner audio ignored chat={chat_id} user={user_id}")
+                return
+
+            if not file_id:
+                bridge.safe_send_text(chat_id, "Не удалось получить аудиофайл.")
+                return
+
+            if chat_type in {"group", "supergroup"}:
+                if not bridge.should_process_group_message(message, (message.get("caption") or "").strip()) and not is_owner:
+                    bridge.log(f"audio trigger not found chat={chat_id} file_id={file_id}")
+                    return
+
+            if not bridge.state.try_start_chat_task(chat_id):
+                bridge.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
+                return
+
+            worker = Thread(
+                target=bridge.run_audio_task,
+                args=(chat_id, user_id, file_id, message),
+                daemon=True,
+            )
+            worker.start()
+        except Exception as error:
+            bridge.log_exception(f"audio handler failed chat={chat_id}", error, limit=8)
+            bridge.safe_send_text(chat_id, "Ошибка при обработке аудио. Детали записаны в лог.")
+
     def build_voice_initial_prompt(self, bridge: "TelegramBridge", chat_id: int, strict_trigger: bool = False) -> str:
         terms = bridge.state.get_voice_prompt_terms(chat_id, limit=28)
         joined_terms = ", ".join(terms[:28])

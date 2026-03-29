@@ -80,10 +80,14 @@ def handle_telegram_update(bridge: "TelegramBridge", item: dict) -> None:
             bridge.handle_photo_message(chat_id, user_id, message)
             return
         if message.get("voice"):
+            bridge.handle_voice_message(chat_id, user_id, message)
+            return
+        if message.get("audio"):
+            bridge.handle_audio_message(chat_id, user_id, message)
             return
         if message.get("animation"):
             return
-        if any(message.get(key) for key in ["sticker", "document", "video", "video_note", "audio", "contact", "location", "new_chat_members", "left_chat_member", "pinned_message", "new_chat_title", "new_chat_photo"]):
+        if any(message.get(key) for key in ["sticker", "document", "video", "video_note", "contact", "location", "new_chat_members", "left_chat_member", "pinned_message", "new_chat_title", "new_chat_photo"]):
             return
         bridge.safe_send_text(chat_id, bridge.UNSUPPORTED_FILE_REPLY)
     except RequestException as error:

@@ -478,5 +478,97 @@ def run_voice_task(
         bridge.state.finish_chat_task(chat_id)
 
 
+def run_audio_task(
+    bridge: "TelegramBridge",
+    chat_id: int,
+    user_id: Optional[int],
+    file_id: str,
+    message: Optional[dict] = None,
+    *,
+    safe_mode_reply: str,
+    build_download_name_func,
+    build_voice_transcription_help_func,
+    contains_voice_trigger_name_func,
+    should_process_group_message_func,
+    is_dangerous_request_func,
+) -> None:
+    try:
+        message = message or {}
+        message_id = message.get("message_id")
+        chat = message.get("chat") or {}
+        chat_type = (chat.get("type") or "private").lower()
+        from_user = message.get("from") or {}
+        owner_label = bridge.build_user_autofix_label(from_user)
+        status_message_id = bridge.send_status_message(chat_id, "Распознаю аудио...")
+
+        with bridge.temp_workspace() as workspace:
+            file_info = bridge.get_file_info(file_id)
+            file_path = file_info.get("file_path")
+            if not file_path:
+                bridge.safe_send_text(chat_id, "Telegram не вернул путь к аудиофайлу.")
+                return
+
+            local_path = workspace / build_download_name_func(file_path, fallback_name="audio.bin")
+            bridge.download_telegram_file(file_path, local_path)
+            transcript = bridge.transcribe_voice_with_ai(local_path, chat_id=chat_id)
+
+        if not transcript:
+            bridge.safe_send_text(chat_id, build_voice_transcription_help_func(bridge.config))
+            return
+
+        bridge.log(f"audio transcript chat={chat_id} text={bridge.shorten_for_log(transcript)}")
+        transcript_message = (
+            f"Аудио от {owner_label}\n\nРасшифровка:\n{transcript}"
+            if chat_type in {"group", "supergroup"}
+            else f"Расшифровка аудио:\n{transcript}"
+        )
+        bridge.state.update_event_text(
+            chat_id,
+            message_id,
+            f"[Аудио: {transcript}]",
+            message_type="audio",
+            has_media=1,
+            file_kind="audio",
+        )
+        if status_message_id is not None:
+            if not bridge.edit_status_message(chat_id, status_message_id, transcript_message):
+                bridge.safe_send_text(chat_id, transcript_message)
+        else:
+            bridge.safe_send_text(chat_id, transcript_message)
+
+        if chat_type in {"group", "supergroup"}:
+            should_handle_as_bot = (
+                should_process_group_message_func(
+                    message,
+                    transcript,
+                    bridge.bot_username,
+                    bridge.config.trigger_name,
+                    bot_user_id=bridge.bot_user_id,
+                    allow_owner_reply=False,
+                )
+                or contains_voice_trigger_name_func(transcript, bridge.config.trigger_name, bridge.bot_username)
+            )
+            if not should_handle_as_bot:
+                bridge.log(f"audio trigger not found chat={chat_id} text={bridge.shorten_for_log(transcript)}")
+                return
+
+        if bridge.config.safe_chat_only and is_dangerous_request_func(transcript):
+            bridge.state.append_history(chat_id, "user", f"[Аудио: {transcript}]")
+            bridge.safe_send_text(chat_id, safe_mode_reply)
+            return
+
+        bridge.send_chat_action(chat_id, "typing")
+        answer = bridge.ask_codex(chat_id, transcript)
+        bridge.state.append_history(chat_id, "user", f"[Аудио: {transcript}]")
+        bridge.state.append_history(chat_id, "assistant", answer)
+        bridge.state.record_event(chat_id, None, "assistant", "answer", answer)
+        delivered_via_status = bridge.consume_answer_delivered_via_status(chat_id)
+        if not delivered_via_status:
+            bridge.safe_send_text(chat_id, answer, reply_to_message_id=message_id if chat_type in {"group", "supergroup"} else None)
+        bridge.clear_pending_enterprise_jobs_for_chat(chat_id)
+    finally:
+        bridge.state.finish_chat_task(chat_id)
+
+
 if TYPE_CHECKING:
     from tg_codex_bridge import TelegramBridge
