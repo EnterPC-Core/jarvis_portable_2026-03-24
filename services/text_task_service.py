@@ -99,8 +99,52 @@ def _normalize_chat_watch_report_answer(answer: str) -> str:
     cleaned = cleaned.replace("Jarvis", "бот")
     cleaned = cleaned.replace("jarvis", "бот")
     cleaned = cleaned.replace("бот в адрес бота", "в адрес бота")
+    cleaned = cleaned.replace("по этой выборке", "здесь")
+    cleaned = cleaned.replace("в этой выборке", "здесь")
+    cleaned = cleaned.replace("в этом окне", "здесь")
+    cleaned = cleaned.replace("текущего окна сообщений", "текущих сообщений")
+    cleaned = re.sub(r"(?m)^\s*-\s*это ничего не говорит.*$", "", cleaned)
+    cleaned = re.sub(r"(?m)^\s*-\s*по .* нельзя .*$", "", cleaned)
+    cleaned = _compact_chat_watch_sections(cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned
+
+
+def _compact_chat_watch_sections(text: str) -> str:
+    lines = [line.rstrip() for line in (text or "").splitlines()]
+    result: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if result and result[-1] != "":
+                result.append("")
+            continue
+        if re.match(r"^\d+\.\s", stripped) or stripped.startswith("Статус:") or stripped.startswith("🕒"):
+            if result and result[-1] == "":
+                result.pop()
+            result.append(stripped)
+            continue
+        if stripped.startswith("- "):
+            result.append(stripped)
+            continue
+        short = stripped
+        short = re.sub(r"^Явного .* не видно\.\s*", "Явного расхождения не видно. ", short)
+        short = re.sub(r"^Если .* то .*?\.\s*", "", short)
+        short = re.sub(r"^Основная тема .*?:\s*", "", short)
+        short = re.sub(r"^В конце .*?:\s*", "", short)
+        short = re.sub(r"^Ближе к концу .*?:\s*", "", short)
+        short = re.sub(r"\bнапрямую видно\b[:,]?\s*", "", short, flags=re.IGNORECASE)
+        short = re.sub(r"\bпо метрике активности\b[:,]?\s*", "", short, flags=re.IGNORECASE)
+        short = re.sub(r"\bпо метрике выборки\b[:,]?\s*", "", short, flags=re.IGNORECASE)
+        short = re.sub(r"\bздесь\b", "в чате", short, count=1)
+        short = re.sub(r"\s{2,}", " ", short).strip()
+        if len(short) > 260:
+            parts = re.split(r"(?<=[.!?])\s+", short)
+            short = " ".join(parts[:2]).strip()
+        result.append(short)
+    while result and result[-1] == "":
+        result.pop()
+    return "\n".join(result)
 
 
 def run_text_task(
