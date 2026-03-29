@@ -760,8 +760,18 @@ def main() -> int:
 
 
 def _heartbeat_loop(heartbeat_path: Path, job_manager: EnterpriseJobManager) -> None:
+    heartbeat_write_disabled = False
     while True:
-        heartbeat_path.write_text(str(now_ts()), encoding="utf-8")
+        if not heartbeat_write_disabled:
+            try:
+                heartbeat_path.write_text(str(now_ts()), encoding="utf-8")
+            except OSError as error:
+                heartbeat_write_disabled = True
+                print(
+                    f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] "
+                    f"enterprise heartbeat disabled path={heartbeat_path} error={error}",
+                    flush=True,
+                )
         job_manager.cleanup()
         time.sleep(5)
 
