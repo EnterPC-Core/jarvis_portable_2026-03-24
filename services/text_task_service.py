@@ -60,6 +60,31 @@ def _fallback_render_chat_troublemaker_summary(
     return f"Кто гонит беса:\n- {actor}: {examples.get(actor, '')}".strip()
 
 
+def _derive_chat_watch_confidence(rows: List[tuple]) -> Dict[str, str]:
+    sample_size = len(rows)
+    return {
+        "activity": "высокая" if sample_size >= 40 else "средняя" if sample_size >= 15 else "низкая",
+        "topic": "средняя" if sample_size >= 30 else "низкая",
+        "interpretation": "средняя" if sample_size >= 50 else "низкая",
+    }
+
+
+def _build_chat_watch_truthfulness_footer(*, rows: List[tuple], from_stamp: str, to_stamp: str) -> str:
+    confidence = _derive_chat_watch_confidence(rows)
+    return "\n".join(
+        [
+            "",
+            "6. Границы и уверенность",
+            f"- вывод только по последним {len(rows)} сообщениям ({from_stamp} .. {to_stamp}), не по всей истории чата",
+            "- прямые наблюдения: тексты сообщений, их порядок и число сообщений по участникам в этой выборке",
+            "- паттерны: серии подряд, повторы, грубая лексика и реакционная активность только в пределах этой выборки",
+            f"- уверенность по активности участников: {confidence['activity']}",
+            f"- уверенность по основным темам выборки: {confidence['topic']}",
+            f"- уверенность по конфликтам и \"кто гонит беса\": {confidence['interpretation']}; это эвристическая интерпретация, а не подтверждённый факт",
+        ]
+    )
+
+
 def run_text_task(
     bridge: "TelegramBridge",
     chat_id: int,
@@ -162,6 +187,9 @@ def run_recent_chat_report_task(
             prompt = (
                 "Сделай краткий отчёт по содержанию Telegram-чата на основе последних 100 сообщений.\n"
                 "Нельзя выдумывать факты вне лога.\n"
+                "Явно указывай, что вывод относится только к этой выборке, а не ко всей истории чата.\n"
+                "Не выдавай интерпретации, риски и вероятных провокаторов за подтверждённые факты.\n"
+                "Если вывод основан на паттернах сообщений, прямо называй это оценкой по паттернам в выборке.\n"
                 "Ответ нужен на русском и строго в формате:\n"
                 "1. Что происходит\n"
                 "2. Кто самый активный\n"
@@ -188,6 +216,11 @@ def run_recent_chat_report_task(
                 assistant_persona="jarvis",
                 message=message,
                 suppress_status_messages=True,
+            )
+            answer = (answer or "").rstrip() + _build_chat_watch_truthfulness_footer(
+                rows=rows,
+                from_stamp=from_stamp,
+                to_stamp=to_stamp,
             )
         bridge.state.append_history(chat_id, "assistant", answer)
         bridge.state.record_event(chat_id, user_id, "assistant", "chat_watch_report", answer)

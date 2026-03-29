@@ -212,7 +212,11 @@ def build_current_discussion_context(
         blocks.append("\n".join(summary_lines))
 
     if ranked_recent_rows:
-        window_label = "Focused active thread window:" if active_thread and focused_rows else "Recent chat window (ranked selection from last 100 messages):"
+        window_label = (
+            "Focused active thread window (only within the recent local thread slice, not full chat history):"
+            if active_thread and focused_rows
+            else "Recent chat window (ranked selection from last 100 messages, not full chat history):"
+        )
         lines = [window_label]
         for created_at, event_user_id, username, first_name, last_name, role, message_type, content in ranked_recent_rows:
             stamp = datetime.fromtimestamp(created_at).strftime("%H:%M") if created_at else "--:--"
@@ -223,7 +227,7 @@ def build_current_discussion_context(
         blocks.append(
             "\n".join(
                 [
-                    "Recent chat window (ranked selection from last 100 messages):",
+                    "Recent chat window (ranked selection from last 100 messages, not full chat history):",
                     f"- [--:--] {current_speaker} (text): {truncate_text_func(query_text, 180)}",
                 ]
             )

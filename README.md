@@ -395,6 +395,7 @@ Moderation enforcement не смешивается с search pipeline и prompt 
 - внутри основной базы теперь есть `chat_participants` и `chat_runtime_cache` для локального знания об участниках, админах и `member_count`
 - внутри основной базы есть `task_runs` и `task_events` для честного восстановления task flow по фазам, а не только по финальному статусу
 - event/database retrieval для `ContextBundle` теперь собран не внутри entrypoint, а через отдельный `services/bridge_context_state.py`, чтобы `BridgeState` не оставался единственным местом для context assembly glue
+- chat-watch summaries теперь обязаны явно помечать границы выборки и степень уверенности, чтобы отчёт по последним сообщениям не выглядел как вывод по всей истории чата
 
 ## Как это работает сейчас
 

@@ -918,6 +918,7 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("@noise id=22", summary)
         self.assertIn("грубость/агрессия", summary)
         self.assertIn("повторы", summary)
+        self.assertIn("не по всей истории чата", summary)
 
     def test_owner_chat_alert_detects_conflict_signal(self):
         bridge = TelegramBridge.__new__(TelegramBridge)
@@ -1071,7 +1072,14 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("4. Кто гонит беса", prompt)
         self.assertIn("Кто гонит беса:", prompt)
         self.assertIn("@noise id=22", prompt)
-        self.assertEqual(sent_messages, [(-100, "report ready", 77)])
+        self.assertIn("только к этой выборке", prompt)
+        self.assertEqual(len(sent_messages), 1)
+        self.assertEqual(sent_messages[0][0], -100)
+        self.assertEqual(sent_messages[0][2], 77)
+        self.assertIn("report ready", sent_messages[0][1])
+        self.assertIn("6. Границы и уверенность", sent_messages[0][1])
+        self.assertIn("не по всей истории чата", sent_messages[0][1])
+        self.assertIn("уверенность по активности участников", sent_messages[0][1])
         self.assertEqual(finished, [-100])
 
     def test_public_control_panel_keeps_rating_and_appeal_entry_points(self):

@@ -9729,9 +9729,11 @@ def render_chat_troublemaker_summary(
 
     ranked_rows.sort(key=lambda item: (-item[0], -int(item[2]["messages"]), item[1]))
     if not ranked_rows:
-        return "Кто гонит беса: по последним 100 сообщениям явного провокатора не видно."
+        return "Кто гонит беса: по этой выборке последних 100 сообщений явного провокатора не видно; это не вывод по всей истории чата."
 
-    lines = ["Кто гонит беса: вероятные источники шума по окну последних 100 сообщений."]
+    lines = [
+        "Кто гонит беса: вероятные источники шума только по этой выборке последних 100 сообщений, не по всей истории чата."
+    ]
     for score, actor, stats in ranked_rows[:top_limit]:
         reasons: List[str] = [f"сообщений={int(stats['messages'])}"]
         if int(stats["risk_hits"]):
@@ -9744,7 +9746,7 @@ def render_chat_troublemaker_summary(
             reasons.append(f"серии подряд={int(stats['burst_hits'])}")
         if int(stats["duplicate_hits"]):
             reasons.append(f"повторы={int(stats['duplicate_hits'])}")
-        line = f"- {actor}: риск={score}; " + ", ".join(reasons)
+        line = f"- {actor}: эвристический_шум_score={score}; " + ", ".join(reasons)
         examples = stats["examples"]
         if isinstance(examples, list) and examples:
             line += f"; примеры: {' | '.join(examples)}"

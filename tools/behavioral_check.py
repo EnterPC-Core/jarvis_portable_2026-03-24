@@ -145,7 +145,7 @@ def main() -> int:
             user_id=7001,
             active_group_followup=True,
         )
-        if "Focused active thread window:" not in discussion_context and "active_thread_keywords:" not in discussion_context:
+        if "Focused active thread window (" not in discussion_context and "active_thread_keywords:" not in discussion_context:
             raise RuntimeError("thread-aware discussion context was not built")
         if not bot.is_group_discussion_continuation(chat_id, second_participant_join, second_participant_join["text"]):
             raise RuntimeError("meaningful second-participant join was not accepted")

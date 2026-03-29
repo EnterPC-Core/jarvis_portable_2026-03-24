@@ -543,7 +543,10 @@ def main() -> int:
             )
             if not discussion_context or "Discussion summary:" not in discussion_context:
                 raise RuntimeError("group discussion context was not built")
-            if "ranked selection from last 100 messages" not in discussion_context and "Focused active thread window:" not in discussion_context:
+            if (
+                "ranked selection from last 100 messages" not in discussion_context
+                and "Focused active thread window (" not in discussion_context
+            ):
                 raise RuntimeError("group discussion context did not include any recent/focused window")
             if "current_speaker:" not in discussion_context:
                 raise RuntimeError("group discussion context did not include current speaker")
