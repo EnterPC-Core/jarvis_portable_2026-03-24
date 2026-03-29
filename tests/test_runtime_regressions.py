@@ -2464,6 +2464,17 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["progress_chat_id"], OWNER_USER_ID)
 
+    def test_bridge_exposes_routing_and_public_access_helpers_as_methods(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+
+        self.assertTrue(callable(bridge.detect_news_query))
+        self.assertTrue(callable(bridge.detect_current_fact_query))
+        self.assertTrue(callable(bridge.detect_weather_location))
+        self.assertTrue(callable(bridge.detect_currency_pair))
+        self.assertTrue(callable(bridge.detect_crypto_asset))
+        self.assertTrue(callable(bridge.detect_stock_symbol))
+        self.assertTrue(callable(bridge.has_public_command_access))
+
     def test_enterprise_group_progress_is_created_in_owner_private_chat(self):
         status_calls = []
         wait_calls = []

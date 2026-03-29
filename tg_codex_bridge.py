@@ -4286,6 +4286,24 @@ class TelegramBridge:
     def extract_assistant_persona(self, text: str) -> Tuple[str, str]:
         return extract_assistant_persona(text)
 
+    def detect_weather_location(self, text: str) -> str:
+        return detect_weather_location(text)
+
+    def detect_currency_pair(self, text: str) -> Optional[Tuple[str, str]]:
+        return detect_currency_pair(text)
+
+    def detect_crypto_asset(self, text: str) -> str:
+        return detect_crypto_asset(text)
+
+    def detect_stock_symbol(self, text: str) -> str:
+        return detect_stock_symbol(text)
+
+    def detect_news_query(self, text: str) -> str:
+        return detect_news_query(text)
+
+    def detect_current_fact_query(self, text: str) -> str:
+        return detect_current_fact_query(text)
+
     def detect_local_chat_query(self, user_text: str) -> bool:
         return detect_local_chat_query(user_text)
 
@@ -4358,6 +4376,9 @@ class TelegramBridge:
 
     def parse_mode_command(self, text: str) -> Optional[str]:
         return parse_mode_command(text)
+
+    def has_public_command_access(self, text: str) -> bool:
+        return has_public_command_access(text)
 
     def has_public_callback_access(self, data: str) -> bool:
         return has_public_callback_access(data)
