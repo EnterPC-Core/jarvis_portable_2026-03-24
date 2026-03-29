@@ -3952,11 +3952,32 @@ class TelegramBridge:
             jobs = json.loads(raw)
         except ValueError:
             jobs = []
+        if not jobs:
+            return
+        self.state.set_meta("pending_enterprise_jobs", "[]")
         for job in jobs:
             job_id = str(job.get("job_id") or "")
+            chat_id = int(job.get("chat_id") or 0)
             if not job_id:
                 continue
-            Thread(target=self._resume_pending_enterprise_job, args=(job,), daemon=True).start()
+            if hasattr(self.state, "update_task_run"):
+                self.state.update_task_run(
+                    job_id,
+                    status="cleared",
+                    verification_state="unknown",
+                    outcome="cleared_after_restart",
+                    evidence_text="pending enterprise job cleared on bridge restart without redelivery",
+                )
+            if hasattr(self.state, "record_task_event"):
+                self.state.record_task_event(
+                    task_id=job_id,
+                    chat_id=chat_id,
+                    request_trace_id=str(job.get("request_trace_id") or ""),
+                    phase="job_resume_skipped",
+                    status="cleared",
+                    detail="pending enterprise job cleared after restart",
+                )
+            log(f"cleared pending enterprise job after restart job={job_id} chat={chat_id}")
 
     def _resume_pending_enterprise_job(self, job: dict) -> None:
         job_id = str(job.get("job_id") or "")
