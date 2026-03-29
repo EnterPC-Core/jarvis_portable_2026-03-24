@@ -585,7 +585,12 @@ class EnterpriseJobManager:
             chat_id = int(payload.get("chat_id") or 0)
             session_entries = self._load_session_entries(chat_id)
             effective_prompt = payload.get("prompt") or ""
+            session_context = build_session_context(session_entries)
+            session_summary = build_session_summary(session_entries)
             memory_note = build_memory_note(session_entries)
+            prefix_parts = [part for part in (session_summary, session_context) if part]
+            if prefix_parts:
+                effective_prompt = f"{chr(10).join(prefix_parts)}\n\nТекущая задача:\n{effective_prompt}"
 
             job_dir = self._job_dir(job_id)
             job_dir.mkdir(parents=True, exist_ok=True)

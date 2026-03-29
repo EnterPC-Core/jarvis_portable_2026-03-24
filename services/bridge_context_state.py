@@ -4,6 +4,29 @@ from typing import List, Optional, TYPE_CHECKING
 from utils.report_utils import render_event_rows
 
 
+def _fallback_build_actor_name(user_id: Optional[int], username: str, first_name: str, last_name: str, role: str) -> str:
+    if role != "user":
+        return role or "assistant"
+    if username:
+        handle = username if username.startswith("@") else f"@{username}"
+        if user_id is not None:
+            return f"{handle} id={user_id}"
+        return handle
+    full_name = " ".join(part for part in [first_name or "", last_name or ""] if part).strip()
+    if full_name:
+        return full_name
+    return str(user_id or "user")
+
+
+def _fallback_truncate_text(text: str, limit: int) -> str:
+    cleaned = (text or "").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    if limit <= 3:
+        return cleaned[:limit]
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
 def get_event_context(state: "BridgeState", chat_id: int, user_text: str, limit: int = 24) -> str:
     rows = state.search_events(chat_id, user_text, limit=limit, prefer_fts=True)
     summary_recall = state.get_summary_recall_context(chat_id, user_text, limit=4)
@@ -13,12 +36,14 @@ def get_event_context(state: "BridgeState", chat_id: int, user_text: str, limit:
     if summary_recall:
         blocks.append(summary_recall)
     if rows:
+        build_actor_name_func = getattr(state, "build_actor_name", _fallback_build_actor_name)
+        truncate_text_func = getattr(state, "truncate_text", _fallback_truncate_text)
         blocks.append(
             render_event_rows(
                 rows,
                 title="События",
-                build_actor_name_func=state.build_actor_name,
-                truncate_text_func=state.truncate_text,
+                build_actor_name_func=build_actor_name_func,
+                truncate_text_func=truncate_text_func,
             )
         )
     return "\n\n".join(block for block in blocks if block.strip())

@@ -214,10 +214,22 @@ def get_worker_protected_paths(payload: Optional[dict] = None) -> tuple[str, ...
 
 
 def protect_prompt(prompt: str, payload: Optional[dict] = None) -> str:
+    protected_paths = get_worker_protected_paths(payload)
+    protected = "\n".join(f"- {path}" for path in protected_paths)
+    runtime_prompt = normalize_whitespace(str((payload or {}).get("runtime_prompt") or ""))
+    memory_note = normalize_whitespace(str((payload or {}).get("memory_note") or ""))
     parts = [
         "Ты Enterprise.",
         "Пользователь: Дмитрий.",
+        "Этот worker работает по проекту, но не имеет права менять защищённые управляющие пути server-core.",
+        "Можно работать с кодом проекта, тестами, docs, обычными scripts, диагностикой, git-операциями по репо и файлами workspace.",
+        "Если задача просит трогать именно защищённые пути, откажись и объясни, что это server-core.",
+        "Защищённые server-core пути:\n" + protected,
     ]
+    if runtime_prompt:
+        parts.append("Инструкции runtime:\n" + runtime_prompt)
+    if memory_note:
+        parts.append(memory_note)
     clean_prompt = normalize_whitespace(prompt)
     if clean_prompt:
         parts.append(clean_prompt)
