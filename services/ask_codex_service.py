@@ -6,6 +6,17 @@ from models.contracts import LiveProviderRecord
 from services.route_enforcer import build_execution_trace
 
 
+def _is_reply_invocation_only(user_text: str, persona: str) -> bool:
+    cleaned = " ".join((user_text or "").split()).strip().lower()
+    if not cleaned:
+        return False
+    if persona == "enterprise":
+        variants = {"enterprise", "enterprise?"}
+    else:
+        variants = {"jarvis", "jarvis?"}
+    return cleaned in variants
+
+
 def _build_direct_live_answer(
     bridge: "TelegramBridge",
     route_decision: "RouteDecision",
@@ -76,15 +87,18 @@ def ask_codex(
 ) -> str:
     started_at = time.perf_counter()
     request_trace_id = f"req-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+    has_explicit_reply_target = bool(((message or {}).get("reply_to_message") or {}))
+    if has_explicit_reply_target and _is_reply_invocation_only(user_text, assistant_persona or "jarvis"):
+        user_text = "Ответь на сообщение, на которое я ответил."
     reply_context = bridge.build_reply_context(chat_id, message)
     active_subject_context = bridge.build_active_subject_context(chat_id, user_id, user_text, message)
     if active_subject_context:
         reply_context = f"{reply_context}\n\n{active_subject_context}" if reply_context else active_subject_context
     effective_persona = assistant_persona or "jarvis"
     meta_identity_answer = build_meta_identity_answer_func(user_text, persona=effective_persona)
-    if meta_identity_answer and effective_persona != "enterprise":
+    if meta_identity_answer and effective_persona != "enterprise" and not has_explicit_reply_target:
         return postprocess_answer_func(meta_identity_answer, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
-    if user_id == owner_user_id and not reply_context:
+    if user_id == owner_user_id and not reply_context and not has_explicit_reply_target:
         owner_contact_reply = build_owner_contact_reply_func(user_text, persona=effective_persona)
         if owner_contact_reply and effective_persona == "enterprise":
             owner_contact_reply = ""

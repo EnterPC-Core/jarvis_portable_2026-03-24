@@ -9098,8 +9098,7 @@ def is_prompt_meta_query(text: str) -> bool:
 
 def build_meta_identity_answer(user_text: str, *, persona: str) -> str:
     if is_model_identity_query(user_text):
-        del persona
-        return "Я Enterprise."
+        return "Я Enterprise." if persona == "enterprise" else "Я Jarvis."
     if is_prompt_meta_query(user_text):
         del persona
         return (
