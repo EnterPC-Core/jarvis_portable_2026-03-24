@@ -112,22 +112,22 @@ class PromptProfileTests(unittest.TestCase):
             summary_memory_text="summary-memory",
         )
         self.assertIn("Ты Enterprise Core v194.95.", prompt)
-        self.assertIn("User profile:\nДмитрий (owner)", prompt)
-        self.assertIn("Relevant chat context:", prompt)
-        self.assertIn("User: старый контекст 9", prompt)
+        self.assertIn("Профиль пользователя:\nДмитрий (owner)", prompt)
+        self.assertIn("Контекст диалога:", prompt)
+        self.assertIn("Пользователь: старый контекст 9", prompt)
         self.assertIn("Jarvis: промежуточный ответ 9", prompt)
-        self.assertIn("User message:\nПроверь это", prompt)
-        self.assertIn("Reply context:", prompt)
+        self.assertIn("Запрос:\nПроверь это", prompt)
+        self.assertIn("Ответ на сообщение:", prompt)
         self.assertNotIn("Route contract:", prompt)
         self.assertNotIn("Guardrails:", prompt)
         self.assertNotIn("Rolling summary:", prompt)
-        self.assertIn("Facts:", prompt)
-        self.assertIn("Discussion context:", prompt)
-        self.assertIn("Event context:", prompt)
-        self.assertIn("Database context:", prompt)
-        self.assertNotIn("Relation memory:", prompt)
-        self.assertNotIn("Chat memory:", prompt)
-        self.assertNotIn("Summary memory:", prompt)
+        self.assertIn("Факты:", prompt)
+        self.assertIn("Текущая ветка:", prompt)
+        self.assertIn("События:", prompt)
+        self.assertIn("База:", prompt)
+        self.assertNotIn("Связи:", prompt)
+        self.assertNotIn("Память чата:", prompt)
+        self.assertNotIn("Память сводок:", prompt)
 
     def test_enterprise_prompt_keeps_wider_dm_history_window(self):
         history = []
@@ -165,9 +165,9 @@ class PromptProfileTests(unittest.TestCase):
             chat_memory_text="chat-memory",
             summary_memory_text="summary-memory",
         )
-        self.assertIn("User: сообщение пользователя 14", prompt)
+        self.assertIn("Пользователь: сообщение пользователя 14", prompt)
         self.assertIn("Jarvis: ответ ассистента 14", prompt)
-        self.assertIn("User: сообщение пользователя 12", prompt)
+        self.assertIn("Пользователь: сообщение пользователя 12", prompt)
 
     def test_enterprise_prompt_uses_lighter_context_for_short_requests(self):
         history = []
@@ -187,8 +187,8 @@ class PromptProfileTests(unittest.TestCase):
             max_history_item_chars=120,
             user_memory_text="Дмитрий (owner): " + ("x" * 1000),
         )
-        self.assertIn("User: короткий вопрос 14", prompt)
-        self.assertNotIn("User: короткий вопрос 10", prompt)
+        self.assertIn("Пользователь: короткий вопрос 14", prompt)
+        self.assertNotIn("Пользователь: короткий вопрос 10", prompt)
         self.assertLess(len(prompt), 1800)
 
     def test_jarvis_prompt_blocks_internal_architecture_talk(self):
@@ -238,7 +238,7 @@ class PromptProfileTests(unittest.TestCase):
             discussion_context="Discussion summary: ...",
             chat_memory_text="Chat memory: ...",
         )
-        self.assertIn("Discussion context:\nDiscussion summary: ...", prompt)
+        self.assertIn("Текущая ветка:\nDiscussion summary: ...", prompt)
         self.assertNotIn("Response contract:\n", prompt)
 
     def test_prompt_builder_ignores_owner_and_persona_fragments(self):
@@ -290,10 +290,10 @@ class PromptProfileTests(unittest.TestCase):
             reply_context="старый reply context",
         )
         self.assertIn("Ты Jarvis.", prompt)
-        self.assertIn("User message:\nПривет", prompt)
+        self.assertIn("Запрос:\nПривет", prompt)
         self.assertIn("Ответь естественно и коротко.", prompt)
-        self.assertNotIn("Relevant chat context:", prompt)
-        self.assertNotIn("Reply context:", prompt)
+        self.assertNotIn("Контекст диалога:", prompt)
+        self.assertNotIn("Ответ на сообщение:", prompt)
 
     def test_prompt_builder_includes_user_profile_when_present(self):
         prompt = build_prompt(
@@ -309,7 +309,7 @@ class PromptProfileTests(unittest.TestCase):
             max_history_item_chars=120,
             user_memory_text="Дмитрий (owner): любит короткие ответы и часто пишет про проект.",
         )
-        self.assertIn("User profile:", prompt)
+        self.assertIn("Профиль пользователя:", prompt)
         self.assertIn("Дмитрий (owner)", prompt)
 
     def test_prompt_builder_includes_discussion_and_memory_blocks_for_jarvis(self):
@@ -335,16 +335,16 @@ class PromptProfileTests(unittest.TestCase):
             chat_memory_text="В чате тестируют Jarvis и проверяют память.",
             summary_memory_text="ai_rollup: owner тестирует reply-aware поведение.",
         )
-        self.assertIn("Facts:", prompt)
-        self.assertIn("Event context:", prompt)
-        self.assertIn("Database context:", prompt)
-        self.assertIn("Reply context:", prompt)
-        self.assertIn("Discussion context:", prompt)
-        self.assertIn("Task continuity:", prompt)
+        self.assertIn("Факты:", prompt)
+        self.assertIn("События:", prompt)
+        self.assertIn("База:", prompt)
+        self.assertIn("Ответ на сообщение:", prompt)
+        self.assertIn("Текущая ветка:", prompt)
+        self.assertIn("Непрерывность задачи:", prompt)
         self.assertIn("Memory trace:", prompt)
-        self.assertIn("Relation memory:", prompt)
-        self.assertIn("Chat memory:", prompt)
-        self.assertIn("Summary memory:", prompt)
+        self.assertIn("Связи:", prompt)
+        self.assertIn("Память чата:", prompt)
+        self.assertIn("Память сводок:", prompt)
         self.assertIn("Дмитрий (owner)", prompt)
 
     def test_prompt_builder_includes_database_event_and_task_blocks_for_enterprise(self):
@@ -370,11 +370,11 @@ class PromptProfileTests(unittest.TestCase):
             world_state_text="bridge_alive=yes",
             user_memory_text="owner prefers direct answers",
         )
-        self.assertIn("Summary:", prompt)
-        self.assertIn("Facts:", prompt)
-        self.assertIn("Event context:", prompt)
-        self.assertIn("Database context:", prompt)
-        self.assertIn("Task continuity:", prompt)
+        self.assertIn("Сводка:", prompt)
+        self.assertIn("Факты:", prompt)
+        self.assertIn("События:", prompt)
+        self.assertIn("База:", prompt)
+        self.assertIn("Непрерывность задачи:", prompt)
         self.assertIn("Memory trace:", prompt)
 
     def test_postprocess_rewrites_gpt_identity_leak(self):
