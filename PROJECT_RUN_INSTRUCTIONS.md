@@ -19,6 +19,7 @@
 - [`services/ask_codex_service.py`](./services/ask_codex_service.py) — codex orchestration wrapper
 - [`services/reply_context_service.py`](./services/reply_context_service.py) — reply-context and subject resolver
 - [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — Telegram ingress/update dispatch
+- [`handlers/owner_panel_sections.py`](./handlers/owner_panel_sections.py) — owner panel sections extracted from renderer
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — supervisor для постоянного процесса
 - [`run_enterprise_supervisor.sh`](./run_enterprise_supervisor.sh) — supervisor для `enterprise_server.py`
 - [`restart_jarvis_supervisor.sh`](./restart_jarvis_supervisor.sh) — безопасный single-flight рестарт bridge-supervisor

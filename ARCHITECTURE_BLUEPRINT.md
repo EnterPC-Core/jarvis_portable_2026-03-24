@@ -32,6 +32,7 @@ This keeps source permissions explicit instead of relying on stacked heuristics.
 This blueprint is no longer purely aspirational. The following slices are already extracted from the legacy monolith:
 
 - `handlers/update_dispatcher.py`
+- `handlers/owner_panel_sections.py`
 - `services/bridge_state_schema.py`
 - `services/bridge_chat_state.py`
 - `services/bridge_memory_profiles.py`
@@ -72,6 +73,8 @@ Current residual monolith areas:
   owner/public panel rendering separated from callback transport and bridge lifecycle; still a candidate for further split
 - `handlers/update_dispatcher.py`
   Telegram update ingress and dispatch separated from bridge lifecycle
+- `handlers/owner_panel_sections.py`
+  extracted owner-only panel sections for runtime, git/logs, Jarvis control and command registry views
 - `services/live_gateway.py`
   normalized live-provider access, provider status, live route execution surface
 - `services/runtime_service.py`

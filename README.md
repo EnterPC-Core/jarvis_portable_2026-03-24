@@ -88,6 +88,7 @@ sh start_jarvis_on_termux.sh
 - [`enterprise_server.py`](./enterprise_server.py) — отдельный локальный server для Enterprise jobs, session memory, runtime-control и persistent job storage
 - [`enterprise_worker.py`](./enterprise_worker.py) — отдельный worker-процесс, который исполняет конкретную Enterprise-задачу вне bridge-runtime
 - [`handlers/`](./handlers) — Telegram message handlers, callback transport, панели и dispatcher
+- [`handlers/owner_panel_sections.py`](./handlers/owner_panel_sections.py) — owner runtime/git/Jarvis Control sections, вынесенные из renderer
 - [`services/`](./services) — основная зона декомпозиции монолита
 - [`services/bridge_state_schema.py`](./services/bridge_state_schema.py) — bootstrap схемы и миграции `BridgeState`
 - [`services/bridge_chat_state.py`](./services/bridge_chat_state.py) — chat history, facts, summaries, chat events
@@ -119,7 +120,7 @@ sh start_jarvis_on_termux.sh
 - `tg_codex_bridge.py` уже не единственный носитель state/orchestration; часть storage и task-flow вынесена в `services/bridge_*`, `ask_codex_service`, `text_task_service`, `reply_context_service`, `media_task_service`, `enterprise_console_webapp`, `handlers/update_dispatcher`
 - owner-only `Jarvis Control` живёт в inline owner-панели и не выводится в обычную пользовательскую панель
 - публичный контур ограничен рейтингами, профилем, топами и апелляциями; свободный диалог и runtime-команды остаются owner-only
-- главный остаточный монолит сейчас: часть `BridgeState`, media-task orchestration, `control_panel_renderer.py` и крупный regression suite
+- главный остаточный монолит сейчас: часть `BridgeState`, часть owner/public UI flow и крупный regression suite
 
 ## Модель Доступа
 
