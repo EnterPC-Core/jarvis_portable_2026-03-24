@@ -3611,7 +3611,6 @@ class TelegramBridge:
                 normalize_location_query_func=normalize_location_query,
                 build_location_query_variants_func=build_location_query_variants,
                 format_signed_value_func=format_signed_value,
-                summarize_current_fact_results_func=self.summarize_current_fact_results,
                 weather_code_labels=WEATHER_CODE_LABELS,
             )
         )
@@ -7083,28 +7082,6 @@ class TelegramBridge:
     def fetch_current_fact_answer(self, query: str, limit: int = 3) -> str:
         answer, _records = self.live_gateway.fetch_current_fact_answer(query, limit=limit)
         return answer
-
-    def summarize_current_fact_results(self, query: str, items: List[Tuple[str, str, str]]) -> str:
-        source_lines = []
-        for index, (title, snippet, url) in enumerate(items, start=1):
-            source_lines.append(
-                f"{index}. TITLE: {truncate_text(title, 180)}\n"
-                f"SNIPPET: {truncate_text(snippet or 'нет фрагмента', 320)}\n"
-                f"URL: {truncate_text(url, 260)}"
-            )
-        prompt = (
-            "Ниже поисковые сниппеты по запросу на актуальный факт.\n"
-            "Сделай короткий вывод на русском в 2-4 предложениях.\n"
-            "Требования:\n"
-            "- если факт не подтверждается уверенно, прямо скажи это\n"
-            "- если подтверждается, назови ответ и укажи, что это вывод по найденным источникам\n"
-            "- не выдумывай деталей вне сниппетов\n"
-            "- в конце добавь короткую строку вида 'Подтверждение: источник 1, источник 2'\n\n"
-            f"Запрос: {query}\n\n"
-            "Источники:\n"
-            + "\n\n".join(source_lines)
-        )
-        return self.run_codex_short(prompt, timeout_seconds=25)
 
     def ask_codex_with_image(self, chat_id: int, image_path: Path, caption: str, message: Optional[dict] = None) -> str:
         return _ask_codex_with_image_service(

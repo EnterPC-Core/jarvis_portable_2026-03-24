@@ -2,7 +2,46 @@ import secrets
 import time
 from typing import Callable, Optional, Type
 
+from models.contracts import LiveProviderRecord
 from services.route_enforcer import build_execution_trace
+
+
+def _build_direct_live_answer(
+    bridge: "TelegramBridge",
+    route_decision: "RouteDecision",
+    user_text: str,
+) -> tuple[str, tuple[LiveProviderRecord, ...]]:
+    if route_decision.route_kind == "live_weather":
+        location_query = bridge.detect_weather_location(user_text)
+        if not location_query:
+            return "", ()
+        return bridge.live_gateway.fetch_weather_answer(location_query)
+    if route_decision.route_kind == "live_fx":
+        currency_pair = bridge.detect_currency_pair(user_text)
+        if not currency_pair:
+            return "", ()
+        return bridge.live_gateway.fetch_exchange_rate_answer(currency_pair[0], currency_pair[1])
+    if route_decision.route_kind == "live_crypto":
+        crypto_asset = bridge.detect_crypto_asset(user_text)
+        if not crypto_asset:
+            return "", ()
+        return bridge.live_gateway.fetch_crypto_price_answer(crypto_asset)
+    if route_decision.route_kind == "live_stocks":
+        stock_symbol = bridge.detect_stock_symbol(user_text)
+        if not stock_symbol:
+            return "", ()
+        return bridge.live_gateway.fetch_stock_price_answer(stock_symbol)
+    if route_decision.route_kind == "live_news":
+        news_query = bridge.detect_news_query(user_text)
+        if not news_query:
+            return "", ()
+        return bridge.live_gateway.fetch_news_answer(news_query, limit=3)
+    if route_decision.route_kind == "live_current_fact":
+        fact_query = bridge.detect_current_fact_query(user_text)
+        if not fact_query:
+            return "", ()
+        return bridge.live_gateway.fetch_current_fact_answer(fact_query, limit=3)
+    return "", ()
 
 
 def ask_codex(
@@ -182,6 +221,51 @@ def ask_codex(
                 + f"- enterprise PID: {runtime.get('enterprise_pid') or '-'}"
             )
             return postprocess_answer_func(direct_answer, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
+
+    if route_decision.use_live and not route_decision.use_workspace:
+        direct_answer, live_records = _build_direct_live_answer(bridge, route_decision, user_text)
+        if direct_answer:
+            direct_execution_trace = build_execution_trace(
+                route_decision,
+                raw_answer=direct_answer,
+                live_records=live_records,
+                permission_checked=(user_id == owner_user_id),
+            )
+            report = enrich_self_check_report_func(
+                apply_self_check_contract_func(
+                    direct_answer,
+                    route_decision,
+                    execution_trace=direct_execution_trace,
+                ),
+                route_decision=route_decision,
+                execution_trace=direct_execution_trace,
+                notes="direct live route without secondary LLM synthesis",
+            )
+            bridge.state.update_self_model_state(last_outcome=report.outcome)
+            bridge.run_post_task_reflection(
+                chat_id=chat_id,
+                user_id=user_id,
+                route_decision=route_decision,
+                user_text=user_text,
+                report=report,
+                source="direct_live_route",
+            )
+            bridge.record_route_diagnostic(
+                chat_id=chat_id,
+                user_id=user_id,
+                route_decision=route_decision,
+                report=report,
+                started_at=started_at,
+                query_text=user_text,
+                request_trace_id=request_trace_id,
+                task_id=bridge.state.find_latest_task_id_by_request_trace(request_trace_id),
+                execution_trace=direct_execution_trace,
+                live_records=live_records,
+            )
+            return postprocess_answer_func(
+                report.answer,
+                latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+            )
 
     context_progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
     with heartbeat_guard_cls(bridge), progress_status_guard_cls(

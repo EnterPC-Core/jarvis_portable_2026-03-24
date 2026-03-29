@@ -30,6 +30,7 @@ from enterprise_worker import extract_json_answer, get_worker_protected_paths, p
 from enterprise_server import PROTECTED_SERVER_CORE_PATHS
 from owner.handlers import OwnerCommandService
 from services.answer_postprocess import postprocess_answer
+from services.ask_codex_service import ask_codex
 from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
 from services.prompt_input_policy import select_prompt_inputs
 from services.reply_context_service import build_reply_context
@@ -38,7 +39,7 @@ from services.text_route_service import TextRouteService, TextRouteServiceDeps
 from services.text_task_service import _render_chat_watch_report
 from services.context_assembly import build_attachment_context_bundle, build_text_context_bundle
 from services.diagnostics_pipeline import derive_memory_used, enrich_self_check_report
-from models.contracts import ContextBundle, ExecutionTrace, RouteDecision, SelfCheckReport
+from models.contracts import ContextBundle, ExecutionTrace, LiveProviderRecord, RouteDecision, SelfCheckReport
 from legacy_jarvis_adapter import LegacyJarvisAdapter
 from rating_service import RatingService
 from tg_codex_bridge import (
@@ -311,6 +312,112 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         self.assertEqual(enriched.mode, "inferred")
         self.assertIn("current-fact-snippets-not-direct-proof", enriched.notes)
+
+    def test_live_news_route_returns_without_main_model_call(self):
+        route_decision = RouteDecision(
+            persona="jarvis",
+            intent="short_question",
+            chat_type="private",
+            route_kind="live_news",
+            source_label="google-news-rss",
+            use_live=True,
+            use_web=False,
+            use_events=False,
+            use_database=False,
+            use_reply=False,
+            use_workspace=False,
+            guardrails=("freshness", "cite-source"),
+            request_kind="live",
+            required_tools=("live_route",),
+        )
+        recorded = {"diagnostic": None, "reflection": None}
+        bridge = SimpleNamespace(
+            build_reply_context=lambda _chat_id, _message: "",
+            build_active_subject_context=lambda _chat_id, _user_id, _user_text, _message: "",
+            refresh_world_state_registry=lambda *_args, **_kwargs: {},
+            recompute_drive_scores=lambda _state: {"uncertainty_pressure": 0.0, "runtime_risk_pressure": 0.0, "stale_memory_pressure": 0.0},
+            apply_persistent_pressures_to_route=lambda decision, _user_text: decision,
+            state=SimpleNamespace(
+                update_self_model_state=lambda **_kwargs: None,
+                refresh_relation_memory=lambda _chat_id: None,
+                find_latest_task_id_by_request_trace=lambda _trace_id: None,
+                get_mode=lambda _chat_id: "jarvis",
+            ),
+            config=SimpleNamespace(safe_chat_only=False, enterprise_task_timeout=None),
+            log=lambda _message: None,
+            normalize_whitespace=lambda text: text.strip(),
+            truncate_text=lambda text, limit: text[:limit],
+            detect_news_query=lambda text: text if "смартфоны" in text.lower() else "",
+            detect_current_fact_query=lambda _text: "",
+            detect_weather_location=lambda _text: "",
+            detect_currency_pair=lambda _text: None,
+            detect_crypto_asset=lambda _text: "",
+            detect_stock_symbol=lambda _text: "",
+            live_gateway=SimpleNamespace(
+                fetch_news_answer=lambda query, limit=3: (
+                    f"Свежие новости по запросу «{query}»:\n• Источник A\n  https://example.com/a",
+                    (
+                        LiveProviderRecord(
+                            provider="Google News RSS",
+                            category="news",
+                            data=query,
+                            freshness="live",
+                            status="ok",
+                            reliability=0.86,
+                            normalized=True,
+                        ),
+                    ),
+                )
+            ),
+            run_post_task_reflection=lambda **kwargs: recorded.__setitem__("reflection", kwargs),
+            record_route_diagnostic=lambda **kwargs: recorded.__setitem__("diagnostic", kwargs),
+            text_route_service=SimpleNamespace(
+                prepare=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("main model route must not be used for live_news"))
+            ),
+            resolve_enterprise_delivery_chat_id=lambda chat_id, _chat_type, _persona: chat_id,
+            send_status_message=lambda *_args, **_kwargs: None,
+            edit_status_message=lambda *_args, **_kwargs: None,
+        )
+
+        answer = ask_codex(
+            bridge,
+            chat_id=1,
+            user_text="Найди свежие смартфоны",
+            user_id=42,
+            chat_type="private",
+            assistant_persona="jarvis",
+            message=None,
+            spontaneous_group_reply=False,
+            suppress_status_messages=True,
+            build_meta_identity_answer_func=lambda *_args, **_kwargs: "",
+            build_owner_contact_reply_func=lambda *_args, **_kwargs: "",
+            analyze_request_route_func=lambda *_args, **_kwargs: route_decision,
+            enrich_self_check_report_func=lambda report, **_kwargs: report,
+            apply_self_check_contract_func=lambda answer, _route_decision, execution_trace=None: SelfCheckReport(
+                outcome="ok",
+                answer=answer,
+                flags=(),
+                observed_basis=tuple(execution_trace.source_records) if execution_trace else (),
+                mode="verified",
+            ),
+            render_enterprise_runtime_report_func=lambda: "",
+            build_context_budget_status_func=lambda **_kwargs: "",
+            build_progress_target_label_func=lambda _message, _user_id: "",
+            detect_local_chat_query_func=lambda _text: False,
+            is_explicit_runtime_probe_request_func=lambda _text: False,
+            is_explicit_runtime_restart_request_func=lambda _text: False,
+            postprocess_answer_func=lambda text, latency_ms=None: text,
+            owner_user_id=OWNER_USER_ID,
+            owner_agent_running_text="owner",
+            jarvis_agent_running_text="jarvis",
+            default_enterprise_workspace_timeout=60,
+            heartbeat_guard_cls=lambda _bridge: nullcontext(),
+            progress_status_guard_cls=lambda *_args, **_kwargs: nullcontext(),
+        )
+
+        self.assertIn("Свежие новости", answer)
+        self.assertIsNotNone(recorded["diagnostic"])
+        self.assertEqual(recorded["diagnostic"]["execution_trace"].tools_succeeded, ("live_route",))
 
     def test_runtime_log_treats_status_edit_429_as_warning_not_severe(self):
         with TemporaryDirectory() as tmp_dir:

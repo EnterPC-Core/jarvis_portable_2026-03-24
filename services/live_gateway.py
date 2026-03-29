@@ -22,7 +22,6 @@ class LiveGatewayDeps:
     normalize_location_query_func: Callable[[str], str]
     build_location_query_variants_func: Callable[[str], List[str]]
     format_signed_value_func: Callable[[object], str]
-    summarize_current_fact_results_func: Callable[[str, List[Tuple[str, str, str]]], str]
     weather_code_labels: dict
 
 
