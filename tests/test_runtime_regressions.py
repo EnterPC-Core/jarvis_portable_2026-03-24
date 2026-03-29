@@ -1033,7 +1033,7 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("newcomer_signal:", summary)
         self.assertIn("@newguy id=55", summary)
 
-    def test_recent_chat_report_prompt_requests_troublemaker_section(self):
+    def test_recent_chat_report_prompt_uses_chat_intelligence_structure(self):
         prompts = []
         sent_messages = []
         history = []
@@ -1069,8 +1069,12 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         self.assertEqual(len(prompts), 1)
         prompt = prompts[0][1]
-        self.assertIn("4. Кто гонит беса", prompt)
-        self.assertIn("Кто гонит беса:", prompt)
+        self.assertIn("1. Главная тема обсуждения", prompt)
+        self.assertIn("2. Самые активные участники", prompt)
+        self.assertIn("3. Где мнения расходятся", prompt)
+        self.assertIn("4. Что подтверждено / что пока только предположение", prompt)
+        self.assertIn("5. Что сейчас обсуждают practically", prompt)
+        self.assertIn("Внутренние сигналы трения/шума для grounding", prompt)
         self.assertIn("@noise id=22", prompt)
         self.assertIn("только к этой выборке", prompt)
         self.assertEqual(len(sent_messages), 1)
