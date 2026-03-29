@@ -476,6 +476,89 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIsNotNone(rendered)
         self.assertIn("Комментарий", rendered)
 
+    def test_js_enterprise_remote_completion_marks_rerouted_delivery(self):
+        service = JSEnterpriseService(
+            JSEnterpriseServiceDeps(
+                build_codex_command_func=lambda **_kwargs: [],
+                build_subprocess_env_func=lambda: {},
+                heartbeat_guard_factory=lambda: nullcontext(),
+                normalize_whitespace_func=lambda text: " ".join((text or "").split()),
+                postprocess_answer_func=lambda text, _latency: text,
+                build_codex_failure_answer_func=lambda *_args, **_kwargs: "error",
+                extract_usable_codex_stdout_func=lambda text: text,
+                shorten_for_log_func=lambda text, _limit: text,
+                log_func=lambda _message: None,
+                send_chat_action_func=lambda *_args, **_kwargs: None,
+                send_status_message_func=lambda *_args, **_kwargs: None,
+                edit_status_message_func=lambda *_args, **_kwargs: True,
+                update_progress_status_func=lambda *_args, **_kwargs: None,
+                finish_progress_status_func=lambda *_args, **_kwargs: None,
+                codex_timeout=60,
+                progress_update_seconds=1.0,
+                jarvis_offline_text="offline",
+                upgrade_timeout_text="timeout",
+            )
+        )
+
+        rendered = service._render_remote_completion_text(
+            "Запрос принят. Запускаю Enterprise...",
+            {"events": ["• Старт\n└ Сессия запущена"]},
+            "Готовый ответ",
+            delivery_rerouted=True,
+        )
+
+        self.assertIn("Итог отправлен владельцу в ЛС", rendered)
+
+    def test_js_enterprise_progress_chat_stays_in_source_chat_when_delivery_rerouted(self):
+        registered = {}
+        service = JSEnterpriseService(
+            JSEnterpriseServiceDeps(
+                build_codex_command_func=lambda **_kwargs: [],
+                build_subprocess_env_func=lambda: {},
+                heartbeat_guard_factory=lambda: nullcontext(),
+                normalize_whitespace_func=lambda text: " ".join((text or "").split()),
+                postprocess_answer_func=lambda text, _latency: text,
+                build_codex_failure_answer_func=lambda *_args, **_kwargs: "error",
+                extract_usable_codex_stdout_func=lambda text: text,
+                shorten_for_log_func=lambda text, _limit: text,
+                log_func=lambda _message: None,
+                send_chat_action_func=lambda *_args, **_kwargs: None,
+                send_status_message_func=lambda chat_id, _text: 555 if chat_id == 10 else None,
+                edit_status_message_func=lambda *_args, **_kwargs: True,
+                update_progress_status_func=lambda *_args, **_kwargs: None,
+                finish_progress_status_func=lambda *_args, **_kwargs: None,
+                codex_timeout=60,
+                progress_update_seconds=1.0,
+                jarvis_offline_text="offline",
+                upgrade_timeout_text="timeout",
+                register_pending_job_func=lambda payload: registered.update(payload),
+            )
+        )
+
+        with patch.object(service, "_post_json", return_value={"job_id": "job-1"}), patch.object(
+            service, "wait_for_job", return_value="answer"
+        ):
+            answer = service.run_with_progress(
+                chat_id=10,
+                prompt="test",
+                initial_status="Запрос принят. Запускаю Enterprise...",
+                sandbox_mode="danger-full-access",
+                approval_policy="never",
+                json_output=True,
+                postprocess=True,
+                timeout_seconds=60,
+                progress_style="enterprise",
+                replace_status_with_answer=False,
+                show_status_message=True,
+                target_label="",
+                delivery_chat_id=20,
+            )
+
+        self.assertEqual(answer, "answer")
+        self.assertEqual(registered["progress_chat_id"], 10)
+        self.assertEqual(registered["delivery_chat_id"], 20)
+        self.assertEqual(registered["status_message_id"], 555)
+
     def test_runtime_log_treats_status_edit_429_as_warning_not_severe(self):
         with TemporaryDirectory() as tmp_dir:
             log_path = Path(tmp_dir) / "tg_codex_bridge.log"
@@ -2807,7 +2890,7 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertTrue(callable(bridge.detect_stock_symbol))
         self.assertTrue(callable(bridge.has_public_command_access))
 
-    def test_enterprise_group_progress_is_created_in_owner_private_chat(self):
+    def test_enterprise_group_progress_stays_in_source_chat_even_when_delivery_is_rerouted(self):
         status_calls = []
         wait_calls = []
         deps = JSEnterpriseServiceDeps(
@@ -2845,9 +2928,10 @@ class RuntimeRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(answer, "ok")
-        self.assertEqual(status_calls, [(OWNER_USER_ID, "running")])
-        self.assertEqual(wait_calls[0][1]["progress_chat_id"], OWNER_USER_ID)
-        self.assertEqual(wait_calls[1][1]["progress_chat_id"], OWNER_USER_ID)
+        self.assertEqual(status_calls, [(-1002377918916, "running")])
+        self.assertEqual(wait_calls[0][1]["progress_chat_id"], -1002377918916)
+        self.assertEqual(wait_calls[1][1]["progress_chat_id"], -1002377918916)
+        self.assertEqual(wait_calls[0][1]["delivery_chat_id"], OWNER_USER_ID)
 
     def test_enterprise_worker_extracts_final_agent_message_from_json_stream(self):
         stream = "\n".join(

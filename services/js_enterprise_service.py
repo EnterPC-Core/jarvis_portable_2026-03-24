@@ -149,7 +149,14 @@ class JSEnterpriseService:
             return initial_status
         return f"{initial_status}\n\n" + "\n".join(lines)
 
-    def _render_remote_completion_text(self, initial_status: str, snapshot: Dict[str, object], answer: str) -> str:
+    def _render_remote_completion_text(
+        self,
+        initial_status: str,
+        snapshot: Dict[str, object],
+        answer: str,
+        *,
+        delivery_rerouted: bool = False,
+    ) -> str:
         base = self._render_remote_events_text(initial_status, snapshot)
         if answer in {self.deps.jarvis_offline_text}:
             tail = "✖ Завершение\n└ Enterprise сейчас недоступен"
@@ -159,6 +166,8 @@ class JSEnterpriseService:
             tail = "⚠ Завершение\n└ Выполнение завершилось с ошибкой"
         else:
             tail = "✔ Завершение\n└ Выполнение завершено"
+        if delivery_rerouted:
+            tail += "\n└ Итог отправлен владельцу в ЛС"
         return f"{base}\n{tail}".strip()
 
     def _stepwise_events_snapshot(
@@ -315,7 +324,12 @@ class JSEnterpriseService:
             self.deps.edit_status_message_func(
                 progress_chat_id,
                 status_message_id,
-                self._render_remote_completion_text(initial_status, final_snapshot, answer),
+                self._render_remote_completion_text(
+                    initial_status,
+                    final_snapshot,
+                    answer,
+                    delivery_rerouted=delivery_chat_id not in {None, 0, chat_id},
+                ),
             )
         else:
             self.deps.finish_progress_status_func(
@@ -398,9 +412,9 @@ class JSEnterpriseService:
         message_id: Optional[int] = None,
         summary: str = "",
     ) -> str:
-        progress_chat_id = int(delivery_chat_id or chat_id or 0)
+        progress_chat_id = int(chat_id or 0)
         if progress_chat_id == 0:
-            progress_chat_id = chat_id
+            progress_chat_id = int(delivery_chat_id or 0)
         if show_status_message and status_message_id is None:
             status_message_id = self.deps.send_status_message_func(progress_chat_id, initial_status)
         effective_timeout = self._resolve_timeout(timeout_seconds, self.deps.codex_timeout)
