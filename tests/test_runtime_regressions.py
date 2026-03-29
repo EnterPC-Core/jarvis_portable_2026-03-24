@@ -1109,11 +1109,13 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         self.assertEqual(len(prompts), 1)
         prompt = prompts[0][1]
-        self.assertIn("1. Главная тема обсуждения", prompt)
-        self.assertIn("2. Самые активные участники", prompt)
-        self.assertIn("3. Где мнения расходятся", prompt)
-        self.assertIn("4. Что подтверждено / что пока только предположение", prompt)
-        self.assertIn("5. Что по сути сейчас обсуждают", prompt)
+        self.assertIn("Верни только JSON без пояснений и без markdown.", prompt)
+        self.assertIn('"status": "короткая строка"', prompt)
+        self.assertIn('"main_topic": "1-2 коротких предложения"', prompt)
+        self.assertIn('"disagreements": "1-2 коротких предложения"', prompt)
+        self.assertIn('"confirmed": ["до 5 коротких пунктов"]', prompt)
+        self.assertIn('"assumptions": ["до 3 коротких пунктов"]', prompt)
+        self.assertIn('"practical": "1-2 коротких предложения"', prompt)
         self.assertIn("Пиши коротко, плотно и без воды.", prompt)
         self.assertIn("Не используй английские слова и вкрапления.", prompt)
         self.assertIn("Не используй унижающие или провокационные ярлыки", prompt)

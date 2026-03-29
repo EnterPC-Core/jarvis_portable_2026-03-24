@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Dict, List, Optional
 
@@ -75,6 +76,69 @@ def _build_chat_watch_truthfulness_footer(*, rows: List[tuple], from_stamp: str,
             f"🕒 `{timestamp}`",
         ]
     )
+
+
+def _extract_chat_watch_json(answer: str) -> Dict[str, object]:
+    raw = (answer or "").strip()
+    if not raw:
+        return {}
+    candidates = [raw]
+    match = re.search(r"(?s)\{.*\}", raw)
+    if match:
+        candidates.insert(0, match.group(0))
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _normalize_chat_watch_list(value: object, *, limit: int) -> List[str]:
+    if isinstance(value, str):
+        items = [part.strip(" -") for part in re.split(r"[;\n]+", value) if part.strip()]
+    elif isinstance(value, list):
+        items = [str(part).strip(" -") for part in value if str(part).strip()]
+    else:
+        items = []
+    normalized: List[str] = []
+    for item in items:
+        cleaned = re.sub(r"\s{2,}", " ", item).strip()
+        if not cleaned:
+            continue
+        normalized.append(cleaned)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _render_chat_watch_report(
+    *,
+    payload: Dict[str, object],
+    participant_counts: Dict[str, int],
+    footer: str,
+) -> str:
+    status = str(payload.get("status") or "чат выглядит как локальное обсуждение без явного большого конфликта").strip()
+    main_topic = str(payload.get("main_topic") or "Основная тема не выделена уверенно.").strip()
+    disagreements = str(payload.get("disagreements") or "Явного содержательного расхождения не видно.").strip()
+    practical = str(payload.get("practical") or "В конце обсуждают текущую ситуацию в чате и последние сообщения.").strip()
+    confirmed = _normalize_chat_watch_list(payload.get("confirmed"), limit=5)
+    assumptions = _normalize_chat_watch_list(payload.get("assumptions"), limit=3)
+    lines = [f"Статус: {status}", "", "1. Главная тема обсуждения", main_topic, "", "2. Самые активные участники"]
+    for actor, count in sorted(participant_counts.items(), key=lambda item: (-item[1], item[0]))[:8]:
+        lines.append(f"- {actor} — {count}")
+    lines.extend(["", "3. Где мнения расходятся", disagreements, "", "4. Что подтверждено / что пока только предположение"])
+    if confirmed:
+        lines.append("Подтверждено:")
+        lines.extend(f"- {item}" for item in confirmed)
+    if assumptions:
+        lines.append("")
+        lines.append("Пока только вывод:")
+        lines.extend(f"- {item}" for item in assumptions)
+    lines.extend(["", "5. Что по сути сейчас обсуждают", practical])
+    return "\n".join(lines).rstrip() + footer
 
 
 def _normalize_chat_watch_report_answer(answer: str) -> str:
@@ -247,7 +311,7 @@ def run_recent_chat_report_task(
                     build_actor_name_func=build_actor_name_func,
                 )
             prompt = (
-                "Сделай краткий отчёт по содержанию Telegram-чата на основе текущего окна сообщений.\n"
+                "Сделай краткий отчёт по содержанию Telegram-чата на основе текущих сообщений.\n"
                 "Опирайся только на реально доступные локальные сообщения и контекст этой выборки.\n"
                 "Нельзя выдумывать факты, причины, мотивы и действия людей вне лога.\n"
                 "Пиши коротко, плотно и без воды.\n"
@@ -259,15 +323,16 @@ def run_recent_chat_report_task(
                 "Не используй английские слова и вкрапления.\n"
                 "Не добавляй внутри разделов подпункты 'Напрямую видно', 'Вывод', 'Неопределённость'.\n"
                 "Не делай текст про самого бота центральной темой, если речь не о проверке его поведения.\n"
-                "Время должно быть только одной строкой в самом низу ответа.\n"
-                "Ответ нужен на русском и строго в формате:\n"
-                "Статус: одна короткая строка\n"
-                "1. Главная тема обсуждения\n"
-                "2. Самые активные участники\n"
-                "3. Где мнения расходятся\n"
-                "4. Что подтверждено / что пока только предположение\n"
-                "5. Что по сути сейчас обсуждают\n"
-                "Если явного расхождения мнений нет, так и напиши.\n\n"
+                "Верни только JSON без пояснений и без markdown.\n"
+                "Схема JSON:\n"
+                "{\n"
+                '  "status": "короткая строка",\n'
+                '  "main_topic": "1-2 коротких предложения",\n'
+                '  "disagreements": "1-2 коротких предложения",\n'
+                '  "confirmed": ["до 5 коротких пунктов"],\n'
+                '  "assumptions": ["до 3 коротких пунктов"],\n'
+                '  "practical": "1-2 коротких предложения"\n'
+                "}\n\n"
                 f"Чат: {chat_title or chat_id}\n"
                 f"chat_id={chat_id}\n"
                 f"Сообщений в выборке: {len(rows)}\n"
@@ -289,12 +354,21 @@ def run_recent_chat_report_task(
                 message=message,
                 suppress_status_messages=True,
             )
-            answer = _normalize_chat_watch_report_answer(answer)
-            answer = answer.rstrip() + _build_chat_watch_truthfulness_footer(
+            footer = _build_chat_watch_truthfulness_footer(
                 rows=rows,
                 from_stamp=from_stamp,
                 to_stamp=to_stamp,
             )
+            payload = _extract_chat_watch_json(answer)
+            if payload:
+                answer = _render_chat_watch_report(
+                    payload=payload,
+                    participant_counts=participant_counts,
+                    footer=footer,
+                )
+            else:
+                answer = _normalize_chat_watch_report_answer(answer)
+                answer = answer.rstrip() + footer
         bridge.state.append_history(chat_id, "assistant", answer)
         bridge.state.record_event(chat_id, user_id, "assistant", "chat_watch_report", answer)
         bridge.safe_send_text(chat_id, answer, reply_to_message_id=(message or {}).get("message_id"))
