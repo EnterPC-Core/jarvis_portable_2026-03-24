@@ -41,6 +41,18 @@ class OwnerCommandService:
         self.reflections_usage_text = reflections_usage_text
         self.chat_digest_usage_text = chat_digest_usage_text
 
+    def _append_truthfulness_scope(
+        self,
+        text: str,
+        *,
+        scope_line: str,
+        evidence_lines: List[str],
+    ) -> str:
+        lines = [(text or "").rstrip(), "", "Границы ответа:"]
+        lines.append(f"- {scope_line}")
+        lines.extend(f"- {item}" for item in evidence_lines)
+        return "\n".join(lines)
+
     def handle_memory_chat_command(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], query: str) -> bool:
         if user_id != self.owner_user_id:
             bridge.safe_send_text(chat_id, "Команда доступна только владельцу.")
@@ -358,7 +370,14 @@ class OwnerCommandService:
             lines.append("")
             lines.append("Ключевые куски дня:")
             lines.extend(f"- {item}" for item in highlights)
-        return "\n".join(lines)
+        return self._append_truthfulness_scope(
+            "\n".join(lines),
+            scope_line=f"сводка только за {target_day} по найденным chat_events, не по всей истории чата",
+            evidence_lines=[
+                "прямые наблюдения: события за этот день, типы сообщений, число сообщений по участникам",
+                "интерпретация минимальная; это operational digest, а не полный semantic summary всего чата",
+            ],
+        )
 
     def render_chat_deep_text(self, bridge: "TelegramBridge", target_chat_id: int) -> str:
         title = bridge.state.get_chat_title(target_chat_id) or str(target_chat_id)
@@ -390,7 +409,14 @@ class OwnerCommandService:
             lines.extend(["", reliable_text])
         if highlights:
             lines.extend(["", "Последние реплики:", *highlights])
-        return "\n".join(lines)
+        return self._append_truthfulness_scope(
+            "\n".join(lines),
+            scope_line="ответ собран из chat memory, summary memory, watchlist/reliable слоёв и последних 12 реплик; это не полный экспорт всей истории",
+            evidence_lines=[
+                "прямые наблюдения: последние 12 реплик и текущие persisted memory blocks",
+                "memory слои могут быть неполными или отстающими по времени относительно полного архива",
+            ],
+        )
 
     def render_whois_text(self, bridge: "TelegramBridge", chat_id: int, target_user_id: int) -> str:
         bridge.state.refresh_participant_behavior_profile(target_user_id, chat_id=chat_id)
@@ -430,7 +456,14 @@ class OwnerCommandService:
                 lines.append(f"- {truncate_text(chat_title, 80)}: сообщений={int(row['cnt'] or 0)}; ID чата={int(row['chat_id'] or 0)}")
         if profile_context:
             lines.extend(["", profile_context])
-        return "\n".join(lines)
+        return self._append_truthfulness_scope(
+            "\n".join(lines),
+            scope_line="профиль собран из participant profile, behavior signals, user/relation memory и recent global presence, а не из полного ручного аудита всей истории",
+            evidence_lines=[
+                "прямые наблюдения: persisted profile rows, behavior signals, chat presence counts",
+                "интерпретация: user/relation memory и behavior profile могут содержать агрегированные эвристики",
+            ],
+        )
 
     def render_whats_happening_text(self, bridge: "TelegramBridge", chat_id: int, payload: str) -> str:
         cleaned = (payload or "").strip()
@@ -476,7 +509,14 @@ class OwnerCommandService:
             summary_text = summary_map.get(chat_id_value, "")
             if summary_text:
                 lines.append(f"  {truncate_text(summary_text, 220)}")
-        return "\n".join(lines)
+        return self._append_truthfulness_scope(
+            "\n".join(lines),
+            scope_line="это обзор только по групповой активности за последние 24 часа, а не по всей истории всех чатов",
+            evidence_lines=[
+                "прямые наблюдения: user chat_events за последние 24 часа",
+                "summary строки взяты из последних persisted summary snapshots и могут быть старше текущих последних сообщений",
+            ],
+        )
 
     def render_summary24h_text(self, bridge: "TelegramBridge", target_chat_id: int) -> str:
         return self.render_chat_digest_text(bridge, target_chat_id, "")
@@ -532,7 +572,14 @@ class OwnerCommandService:
             lines.extend(conflict_examples[:5])
         if len(lines) == 2:
             lines.extend(["", "Явных конфликтных сигналов в последних сообщениях не видно."])
-        return "\n".join(lines)
+        return self._append_truthfulness_scope(
+            "\n".join(lines),
+            scope_line="анализ конфликтов идёт только по последним 80 сообщениям и top reply-парам из базы, не по всей истории чата",
+            evidence_lines=[
+                "прямые наблюдения: грубая лексика в последних сообщениях и reply counts из chat_events",
+                "напряжённые пары и конфликтность являются эвристикой, а не доказанным намерением участников",
+            ],
+        )
 
     def render_ownergraph_text(self, bridge: "TelegramBridge") -> str:
         cross_chat = bridge.state.get_owner_cross_chat_memory_context(limit=6)

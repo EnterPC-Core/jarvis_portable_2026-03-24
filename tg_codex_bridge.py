@@ -6361,7 +6361,13 @@ class TelegramBridge:
             return True
         summary = "\n".join(f"- {name}: {count}" for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:10])
         details = render_event_rows(user_rows[:8], title=f"Кто писал: {query}")
-        self.safe_send_text(chat_id, f"Совпадения по авторам:\n{summary}\n\n{details}")
+        footer = (
+            "\n\nГраницы ответа:\n"
+            "- это результат локального поиска по chat_events для текущего запроса, а не полный вывод по всей истории чата\n"
+            "- прямые наблюдения: найденные совпадения и их авторы в этой поисковой выборке\n"
+            "- если старые или нерелевантные сообщения не попали в поиск, ответ может быть неполным\n"
+        )
+        self.safe_send_text(chat_id, f"Совпадения по авторам:\n{summary}\n\n{details}{footer}")
         return True
 
     def handle_history_command(self, chat_id: int, raw_target: str, message: Optional[dict]) -> bool:

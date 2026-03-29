@@ -1082,6 +1082,52 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("уверенность по активности участников", sent_messages[0][1])
         self.assertEqual(finished, [-100])
 
+    def test_who_said_appends_scope_boundaries(self):
+        sent_messages = []
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        bridge.state = SimpleNamespace(
+            search_events=lambda chat_id, query, limit=12: [
+                (1710000000, 22, "noise", "Noise", "", "user", "text", "MAX это ломает"),
+                (1710000001, 22, "noise", "Noise", "", "user", "text", "MAX это ломает"),
+            ]
+        )
+        bridge.safe_send_text = lambda chat_id, text: sent_messages.append((chat_id, text))
+
+        self.assertTrue(bridge.handle_who_said_command(-100, "MAX"))
+        self.assertEqual(len(sent_messages), 1)
+        self.assertIn("Границы ответа:", sent_messages[0][1])
+        self.assertIn("локального поиска по chat_events", sent_messages[0][1])
+        self.assertIn("не полный вывод по всей истории чата", sent_messages[0][1])
+
+    def test_conflicts_text_appends_scope_boundaries(self):
+        service = OwnerCommandService(
+            owner_user_id=OWNER_USER_ID,
+            is_owner_private_chat_func=lambda *_args, **_kwargs: True,
+            memory_user_usage_text="",
+            reflections_usage_text="",
+            chat_digest_usage_text="",
+        )
+        bridge = SimpleNamespace(
+            build_actor_name=lambda user_id, username, first_name, last_name, role: f"@{username}" if username else str(user_id),
+            state=SimpleNamespace(
+                get_recent_chat_rows=lambda chat_id, limit=80: [
+                    (1710000000, 22, "noise", "Noise", "", "user", "text", "ЗАТКНИСЬ УЖЕ"),
+                ],
+                get_chat_title=lambda chat_id: "Test Chat",
+                resolve_chat_user=lambda chat_id, raw: (22, "@noise"),
+                db_lock=nullcontext(),
+                db=SimpleNamespace(
+                    execute=lambda *_args, **_kwargs: SimpleNamespace(fetchall=lambda: [])
+                ),
+            ),
+        )
+
+        text = service.render_conflicts_text(bridge, -100)
+
+        self.assertIn("Границы ответа:", text)
+        self.assertIn("последним 80 сообщениям", text)
+        self.assertIn("эвристикой", text)
+
     def test_public_control_panel_keeps_rating_and_appeal_entry_points(self):
         renderer = ControlPanelRenderer(
             owner_user_id=1,
