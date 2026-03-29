@@ -164,11 +164,9 @@ def build_prompt(
     task_context_text: str = "",
     memory_trace_text: str = "",
 ) -> str:
-    del mode_prompts, base_system_prompt
+    del mode_prompts, base_system_prompt, detect_intent_func, response_shape_hint_func
     profile = load_runtime_profile(mode, default=default_mode_name)
     system_prefix = f"{profile.system_prompt}\n\n" if profile.system_prompt else ""
-    intent = detect_intent_func(user_text)
-    response_shape_hint = response_shape_hint_func(intent)
     if is_simple_greeting(user_text):
         return (
             f"{system_prefix}"
@@ -187,15 +185,10 @@ def build_prompt(
         skill_block = f"Skill memory:\n{truncate_text_func(skill_memory_text, 700)}\n\n" if skill_memory_text else ""
         drive_block = f"Drive state:\n{truncate_text_func(drive_state_text, 500)}\n\n" if drive_state_text else ""
         user_memory_block = f"User profile:\n{truncate_text_func(user_memory_text, 320)}\n\n" if user_memory_text else ""
-        relation_memory_block = f"Relation memory:\n{truncate_text_func(relation_memory_text, 700)}\n\n" if relation_memory_text else ""
-        chat_memory_block = f"Chat memory:\n{truncate_text_func(chat_memory_text, 800)}\n\n" if chat_memory_text else ""
-        summary_memory_block = f"Summary memory:\n{truncate_text_func(summary_memory_text, 700)}\n\n" if summary_memory_text else ""
         reply_block = f"Reply context:\n{truncate_text_func(reply_context, 900)}\n\n" if reply_context else ""
         discussion_block = f"Discussion context:\n{truncate_text_func(discussion_context, 1000)}\n\n" if discussion_context else ""
         task_block = f"Task continuity:\n{truncate_text_func(task_context_text, 1100)}\n\n" if task_context_text else ""
         world_state_block = f"World state:\n{truncate_text_func(world_state_text, 700)}\n\n" if world_state_text else ""
-        route_block = f"Route contract:\n{truncate_text_func(route_summary, 500)}\n\n" if route_summary else ""
-        guardrail_block = f"Guardrails:\n{truncate_text_func(guardrail_note, 500)}\n\n" if guardrail_note else ""
         memory_trace_block = f"{truncate_text_func(memory_trace_text, 500)}\n\n" if memory_trace_text else ""
         del (
             attachment_note,
@@ -214,9 +207,6 @@ def build_prompt(
         )
         return (
             f"{system_prefix}"
-            f"Response contract:\n{response_shape_hint}\n\n"
-            f"{route_block}"
-            f"{guardrail_block}"
             f"{summary_block}"
             f"{facts_block}"
             f"{web_block}"
@@ -232,9 +222,6 @@ def build_prompt(
             f"{world_state_block}"
             f"{memory_trace_block}"
             f"{user_memory_block}"
-            f"{relation_memory_block}"
-            f"{chat_memory_block}"
-            f"{summary_memory_block}"
             f"Relevant chat context:\n{history_block}\n\n"
             f"User message:\n{user_text}"
         )
@@ -262,14 +249,9 @@ def build_prompt(
     )
     task_block = f"Task continuity:\n{truncate_text_func(task_context_text, 1200)}\n\n" if task_context_text else ""
     memory_trace_block = f"{truncate_text_func(memory_trace_text, 500)}\n\n" if memory_trace_text else ""
-    route_block = f"Route contract:\n{truncate_text_func(route_summary, 500)}\n\n" if route_summary else ""
-    guardrail_block = f"Guardrails:\n{truncate_text_func(guardrail_note, 500)}\n\n" if guardrail_note else ""
     del identity_label, include_identity_prompt, persona_note, owner_note
     return (
         f"{system_prefix}"
-        f"Response contract:\n{response_shape_hint}\n\n"
-        f"{route_block}"
-        f"{guardrail_block}"
         f"{attachment_block}"
         f"{summary_block}"
         f"{facts_block}"

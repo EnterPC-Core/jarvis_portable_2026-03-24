@@ -33,7 +33,8 @@ class PromptProfileTests(unittest.TestCase):
         enterprise = load_runtime_profile("enterprise").system_prompt
         self.assertIn("Ты Enterprise Core v194.95.", enterprise)
         self.assertIn("Ты профиль Дмитрия.", enterprise)
-        self.assertIn("Опирайся на знание о Дмитрии.", enterprise)
+        self.assertIn("Не ври о выполненных действиях.", enterprise)
+        self.assertIn("Всегда разделяй observed, inferred и unknown.", enterprise)
         self.assertNotEqual(jarvis, enterprise)
         self.assertNotIn("Ты Jarvis.", enterprise)
 
@@ -117,8 +118,8 @@ class PromptProfileTests(unittest.TestCase):
         self.assertIn("Jarvis: промежуточный ответ 9", prompt)
         self.assertIn("User message:\nПроверь это", prompt)
         self.assertIn("Reply context:", prompt)
-        self.assertNotIn("Route context:", prompt)
-        self.assertIn("Guardrails:", prompt)
+        self.assertNotIn("Route contract:", prompt)
+        self.assertNotIn("Guardrails:", prompt)
         self.assertNotIn("Rolling summary:", prompt)
         self.assertIn("Facts:", prompt)
         self.assertIn("Discussion context:", prompt)
@@ -218,7 +219,9 @@ class PromptProfileTests(unittest.TestCase):
         self.assertNotIn("Response shape:\n", prompt)
         self.assertNotIn("Route summary:\n", prompt)
         self.assertNotIn("Self-check and guardrails:\n", prompt)
-        self.assertIn("Response contract:\n", prompt)
+        self.assertNotIn("Response contract:\n", prompt)
+        self.assertNotIn("Route contract:\n", prompt)
+        self.assertNotIn("Guardrails:\n", prompt)
 
     def test_chat_dynamics_prompt_includes_stronger_response_contract(self):
         prompt = build_prompt(
@@ -235,8 +238,8 @@ class PromptProfileTests(unittest.TestCase):
             discussion_context="Discussion summary: ...",
             chat_memory_text="Chat memory: ...",
         )
-        self.assertIn("Response contract:\nСначала коротко, потом блоки по участникам и динамике.", prompt)
         self.assertIn("Discussion context:\nDiscussion summary: ...", prompt)
+        self.assertNotIn("Response contract:\n", prompt)
 
     def test_prompt_builder_ignores_owner_and_persona_fragments(self):
         prompt = build_prompt(
