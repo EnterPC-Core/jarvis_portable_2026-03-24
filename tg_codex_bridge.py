@@ -392,6 +392,9 @@ MAX_BRIDGE_CONTEXT_SOFT_LIMIT = 400000
 CODEX_PROGRESS_UPDATE_SECONDS = 6
 DEFAULT_STT_BACKEND = "disabled"
 DEFAULT_AUDIO_TRANSCRIBE_MODEL = ""
+DEFAULT_VOICE_TRANSCRIPTION_ENABLED = False
+DEFAULT_PUBLIC_ACHIEVEMENT_ANNOUNCEMENTS = False
+DEFAULT_ACHIEVEMENT_ANNOUNCE_MAX_AGE_SECONDS = 180
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_STT_LANGUAGE = "ru"
 DEFAULT_SAFE_CHAT_ONLY = False
@@ -1008,6 +1011,20 @@ class BotConfig:
         self.tmp_dir = prepare_tmp_dir(os.getenv("TMP_DIR", "").strip())
         self.stt_backend = (os.getenv("STT_BACKEND", DEFAULT_STT_BACKEND).strip() or DEFAULT_STT_BACKEND).lower()
         self.audio_transcribe_model = os.getenv("AUDIO_TRANSCRIBE_MODEL", DEFAULT_AUDIO_TRANSCRIBE_MODEL).strip() or DEFAULT_AUDIO_TRANSCRIBE_MODEL
+        self.voice_transcription_enabled = read_bool_env(
+            "VOICE_TRANSCRIPTION_ENABLED",
+            DEFAULT_VOICE_TRANSCRIPTION_ENABLED,
+        )
+        self.public_achievement_announcements = read_bool_env(
+            "PUBLIC_ACHIEVEMENT_ANNOUNCEMENTS",
+            DEFAULT_PUBLIC_ACHIEVEMENT_ANNOUNCEMENTS,
+        )
+        self.achievement_announce_max_age_seconds = read_int_env(
+            "ACHIEVEMENT_ANNOUNCE_MAX_AGE_SECONDS",
+            DEFAULT_ACHIEVEMENT_ANNOUNCE_MAX_AGE_SECONDS,
+            minimum=0,
+            maximum=86400,
+        )
         self.stt_language = (os.getenv("STT_LANGUAGE", DEFAULT_STT_LANGUAGE).strip() or DEFAULT_STT_LANGUAGE).lower()
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
         self.openai_base_url = (os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL).rstrip("/")
@@ -3602,6 +3619,7 @@ class TelegramBridge:
         self.owner_user_id = OWNER_USER_ID
         self.owner_alias_user_ids = OWNER_ALIAS_USER_IDS
         self.state = BridgeState(config.history_limit, config.default_mode, config.db_path)
+        self.process_started_at = int(time.time())
         self.legacy = LegacyJarvisAdapter(config.legacy_jarvis_db_path, config.db_path)
         self.appeals = AppealsService(config.db_path, config.legacy_jarvis_db_path)
         self.session = Session()
@@ -3946,6 +3964,28 @@ class TelegramBridge:
             self.state.set_meta(meta_key, str(now_ts))
             fresh.append(item)
         return fresh
+
+    def should_announce_achievement_unlocks(self, event_ts: Optional[int], *, now_ts: Optional[int] = None) -> bool:
+        if not bool(getattr(self.config, "public_achievement_announcements", False)):
+            return False
+        max_age_seconds = max(0, int(getattr(self.config, "achievement_announce_max_age_seconds", 0) or 0))
+        if max_age_seconds <= 0:
+            return True
+        try:
+            event_time = int(event_ts or 0)
+        except (TypeError, ValueError):
+            event_time = 0
+        if event_time <= 0:
+            return True
+        current_ts = int(now_ts or time.time())
+        age_seconds = max(0, current_ts - event_time)
+        if age_seconds <= max_age_seconds:
+            return True
+        log(
+            f"achievement announcement suppressed as stale "
+            f"event_ts={event_time} age_seconds={age_seconds} max_age_seconds={max_age_seconds}"
+        )
+        return False
 
     def resume_pending_enterprise_jobs(self) -> None:
         raw = self.state.get_meta("pending_enterprise_jobs", "[]")
@@ -5132,6 +5172,9 @@ class TelegramBridge:
                 text=text,
             )
             if unlocked:
+                event_ts = message.get("date")
+                if not self.should_announce_achievement_unlocks(event_ts):
+                    return
                 unlocked = self._filter_new_achievement_announcements(int(chat_id), int(user_id), unlocked)
                 display_name = (from_user.get("first_name") or from_user.get("username") or str(user_id)).strip()
                 announce_text = self.legacy.achievements.format_unlock_announcement(display_name, unlocked)
@@ -5389,6 +5432,21 @@ class TelegramBridge:
 
     def handle_voice_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
         self.telegram_handlers.handle_voice_message(self, chat_id, user_id, message)
+
+    def handle_audio_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
+        self.telegram_handlers.handle_audio_message(self, chat_id, user_id, message)
+
+    def handle_video_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
+        self.telegram_handlers.handle_video_message(self, chat_id, user_id, message)
+
+    def handle_video_note_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
+        self.telegram_handlers.handle_video_note_message(self, chat_id, user_id, message)
+
+    def handle_animation_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
+        self.telegram_handlers.handle_animation_message(self, chat_id, user_id, message)
+
+    def handle_sticker_message(self, chat_id: int, user_id: Optional[int], message: dict) -> None:
+        self.telegram_handlers.handle_sticker_message(self, chat_id, user_id, message)
 
     def build_voice_initial_prompt(self, chat_id: int, strict_trigger: bool = False) -> str:
         return self.telegram_handlers.build_voice_initial_prompt(self, chat_id, strict_trigger)
@@ -10722,6 +10780,9 @@ def main() -> None:
         "config loaded "
         f"mode={config.default_mode} history_limit={config.history_limit} "
         f"owner_only=yes safe_chat_only={config.safe_chat_only} stt_backend={config.stt_backend} db_path={config.db_path} "
+        f"public_achievement_announcements={config.public_achievement_announcements} "
+        f"achievement_announce_max_age_seconds={config.achievement_announce_max_age_seconds} "
+        f"voice_transcription_enabled={config.voice_transcription_enabled} "
         f"lock_path={config.lock_path} codex_timeout={config.codex_timeout}s"
     )
     try:

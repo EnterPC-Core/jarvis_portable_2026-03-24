@@ -1,0 +1,1 @@
+{"ok": true, "answer": "Суть: нет, сам не перезагружал.\n\nЕсли речь про рестарт через `run_jarvis_supervisor.sh`, `restart_jarvis_supervisor.sh`, `run_enterprise_supervisor.sh` или другие управляющие пути `server-core`, я их не трогаю.", "latency_ms": 12650}

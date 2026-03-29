@@ -1,0 +1,3 @@
+/home/userland/projects/bots/jarvis_portable_2026-03-24/run_enterprise_supervisor.sh: 39: python3: Function not implemented
+/home/userland/projects/bots/jarvis_portable_2026-03-24/run_enterprise_supervisor.sh: 61: date: Function not implemented
+/home/userland/projects/bots/jarvis_portable_2026-03-24/run_enterprise_supervisor.sh: 61: cannot create /home/userland/projects/bots/jarvis_portable_2026-03-24/enterprise_supervisor_boot.log: Function not implemented

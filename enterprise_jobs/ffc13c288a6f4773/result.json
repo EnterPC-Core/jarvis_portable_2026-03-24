@@ -1,0 +1,1 @@
+{"ok": true, "answer": "Я Enterprise Core.\n\nОтдельный серверный runtime Дмитрия, не Telegram-бот и не bridge.\n\nПо текущему подтверждённому контексту:\n- partial runtime issue есть\n- полного outage нет\n- live source сейчас `ok`\n- git state `dirty`\n\nЕсли нужен статус, дам короткий runtime-summary по среде.", "latency_ms": 9449}

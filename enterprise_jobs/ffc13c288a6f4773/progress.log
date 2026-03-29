@@ -1,0 +1,11 @@
+# Я Enterprise Core.
+
+Отдельный серверный runtime Дмитрия, не Telegram-бот и не bridge.
+
+По текущему подтверждённому контексту:
+- partial runtime issue есть
+- полного outage нет
+- live source сейчас `ok`
+- git state `dirty`
+
+Если нужен статус

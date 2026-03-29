@@ -1023,6 +1023,47 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(len(started), 1)
         self.assertEqual(started[0][1], "посмотри выше")
 
+    def test_owner_voice_message_stays_silent_when_transcription_disabled(self):
+        sent_messages = []
+        logs = []
+        handler = TelegramMessageHandlers(owner_user_id=1, safe_mode_reply="safe")
+        bridge = SimpleNamespace(
+            config=SimpleNamespace(voice_transcription_enabled=False),
+            log=lambda message: logs.append(message),
+            safe_send_text=lambda chat_id, text: sent_messages.append((chat_id, text)),
+        )
+
+        handler.handle_voice_message(
+            bridge,
+            chat_id=-100,
+            user_id=1,
+            message={"voice": {"file_id": "voice-file", "duration": 2}, "message_id": 15},
+        )
+
+        self.assertEqual(sent_messages, [])
+        self.assertTrue(any("voice transcription disabled" in row for row in logs))
+
+    def test_owner_audio_message_stays_silent_when_transcription_disabled(self):
+        sent_messages = []
+        logs = []
+        handler = TelegramMessageHandlers(owner_user_id=1, safe_mode_reply="safe")
+        bridge = SimpleNamespace(
+            config=SimpleNamespace(voice_transcription_enabled=False),
+            shorten_for_log=lambda text: text,
+            log=lambda message: logs.append(message),
+            safe_send_text=lambda chat_id, text: sent_messages.append((chat_id, text)),
+        )
+
+        handler.handle_audio_message(
+            bridge,
+            chat_id=-100,
+            user_id=1,
+            message={"audio": {"file_id": "audio-file", "duration": 5, "file_name": "note.mp3"}, "message_id": 16},
+        )
+
+        self.assertEqual(sent_messages, [])
+        self.assertTrue(any("audio transcription disabled" in row for row in logs))
+
     def test_private_non_owner_noise_is_not_recorded_before_block(self):
         bridge = TelegramBridge.__new__(TelegramBridge)
         recorded = []
@@ -1084,6 +1125,56 @@ class RuntimeRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(recorded, [])
+
+    def test_video_messages_are_ignored_without_chat_reply(self):
+        logs = []
+        handler = TelegramMessageHandlers(owner_user_id=1, safe_mode_reply="safe")
+        bridge = SimpleNamespace(
+            log=lambda message: logs.append(message),
+            safe_send_text=lambda *_args, **_kwargs: self.fail("video ignore must stay silent"),
+            safe_send_status=lambda *_args, **_kwargs: self.fail("video ignore must stay silent"),
+            state=SimpleNamespace(try_start_chat_task=lambda *_args, **_kwargs: self.fail("video ignore must not start task")),
+        )
+
+        handler.handle_video_message(
+            bridge,
+            chat_id=-100,
+            user_id=1,
+            message={"video": {"file_id": "vid"}, "chat": {"id": -100, "type": "supergroup"}},
+        )
+
+        self.assertTrue(any("video processing disabled" in row for row in logs))
+
+    def test_handler_exception_is_logged_without_user_error_reply(self):
+        sent_messages = []
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        bridge.state = SimpleNamespace(
+            is_duplicate_message=lambda _chat_id, _message_id: False,
+            authorized_user_ids={1},
+        )
+        bridge.should_record_incoming_event = lambda *_args, **_kwargs: False
+        bridge.record_incoming_event = lambda *_args, **_kwargs: None
+        bridge.maybe_refresh_chat_participants_snapshot = lambda *_args, **_kwargs: None
+        bridge.maybe_handle_owner_moderation_override = lambda *_args, **_kwargs: False
+        bridge.maybe_apply_auto_moderation = lambda *_args, **_kwargs: False
+        bridge.has_chat_access = lambda _authorized_user_ids, _user_id: True
+        bridge.handle_text_message = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+        bridge.safe_send_text = lambda chat_id, text: sent_messages.append((chat_id, text))
+        bridge.log = lambda *_args, **_kwargs: None
+        bridge.log_exception = lambda *_args, **_kwargs: None
+
+        bridge.handle_update(
+            {
+                "message": {
+                    "message_id": 12,
+                    "chat": {"id": 1, "type": "private"},
+                    "from": {"id": 1, "is_bot": False},
+                    "text": "привет",
+                }
+            }
+        )
+
+        self.assertEqual(sent_messages, [])
 
     def test_unauthorized_callback_is_ignored_without_access_denied_reply(self):
         sent_messages = []
@@ -2440,6 +2531,7 @@ class RuntimeRegressionTests(unittest.TestCase):
 
     def test_reply_context_uses_bridge_service_actor_name_wrapper(self):
         bridge = TelegramBridge.__new__(TelegramBridge)
+        bridge.config = SimpleNamespace(voice_transcription_enabled=False)
         bridge.state = SimpleNamespace(
             get_visual_signal_for_message=lambda *_args, **_kwargs: None,
             get_thread_context=lambda *_args, **_kwargs: [],
@@ -2463,6 +2555,36 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         self.assertIn("Reply target author: reply_user", text)
         self.assertIn("Reply target text: исходное сообщение", text)
+
+    def test_reply_context_skips_voice_transcription_when_disabled(self):
+        bridge = SimpleNamespace(
+            config=SimpleNamespace(voice_transcription_enabled=False),
+            state=SimpleNamespace(
+                get_visual_signal_for_message=lambda *_args, **_kwargs: None,
+                get_thread_context=lambda *_args, **_kwargs: [],
+            ),
+            build_service_actor_name=lambda payload: payload.get("username") or "участник",
+            get_file_info=lambda _file_id: self.fail("voice transcription must stay disabled"),
+            temp_workspace=lambda: self.fail("voice transcription must stay disabled"),
+            download_telegram_file=lambda *_args, **_kwargs: self.fail("voice transcription must stay disabled"),
+            transcribe_voice_with_ai=lambda *_args, **_kwargs: self.fail("voice transcription must stay disabled"),
+        )
+
+        text = build_reply_context(
+            bridge,
+            chat_id=-100,
+            message={
+                "reply_to_message": {
+                    "message_id": 56,
+                    "from": {"id": 7, "username": "reply_user"},
+                    "voice": {"file_id": "voice-file"},
+                }
+            },
+        )
+
+        self.assertIn("Reply target author: reply_user", text)
+        self.assertIn("Reply target media: voice", text)
+        self.assertNotIn("Reply target transcript:", text)
 
     def test_postprocess_answer_strips_markdown_emphasis(self):
         text = postprocess_answer(
@@ -2782,6 +2904,44 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual([item["code"] for item in first], ["silent_guard", "starter_pack"])
         self.assertEqual(second, [])
         self.assertEqual([item["code"] for item in other_chat], ["silent_guard", "starter_pack"])
+
+    def test_achievement_announcements_are_suppressed_for_stale_backlog_events(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        bridge.config = SimpleNamespace(
+            public_achievement_announcements=True,
+            achievement_announce_max_age_seconds=180,
+        )
+        bridge.log = lambda _message: None
+
+        self.assertFalse(
+            TelegramBridge.should_announce_achievement_unlocks(
+                bridge,
+                100,
+                now_ts=400,
+            )
+        )
+        self.assertTrue(
+            TelegramBridge.should_announce_achievement_unlocks(
+                bridge,
+                250,
+                now_ts=400,
+            )
+        )
+
+    def test_achievement_announcements_are_globally_disabled_when_flag_is_off(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        bridge.config = SimpleNamespace(
+            public_achievement_announcements=False,
+            achievement_announce_max_age_seconds=180,
+        )
+
+        self.assertFalse(
+            TelegramBridge.should_announce_achievement_unlocks(
+                bridge,
+                250,
+                now_ts=251,
+            )
+        )
 
     def test_achievement_reason_text_uses_russian_metric_labels(self):
         with TemporaryDirectory() as tmp_dir:

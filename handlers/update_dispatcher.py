@@ -101,7 +101,7 @@ def handle_telegram_update(bridge: "TelegramBridge", item: dict) -> None:
         bridge.safe_send_text(chat_id, "Не удалось обработать сообщение из-за ошибки Telegram API.")
     except Exception as error:
         bridge.log_exception(f"message handling error chat={chat_id}", error, limit=6)
-        bridge.safe_send_text(chat_id, "Не удалось обработать сообщение. Попробуй еще раз.")
+        return
 
 
 def handle_reaction_update(bridge: "TelegramBridge", reaction_update: dict) -> None:
@@ -154,6 +154,10 @@ def handle_reaction_update(bridge: "TelegramBridge", reaction_update: dict) -> N
             if reaction_delta > 0:
                 reaction_result = bridge.legacy.sync_reaction(int(chat_id), int(user_id), int(message_id or 0), reactions_added=reaction_delta)
                 actor_unlocked = reaction_result.get("actor_unlocked") or []
+                if actor_unlocked:
+                    event_ts = reaction_update.get("date")
+                    if not bridge.should_announce_achievement_unlocks(event_ts):
+                        actor_unlocked = []
                 if actor_unlocked:
                     actor_unlocked = bridge._filter_new_achievement_announcements(int(chat_id), int(user_id), actor_unlocked)
                     display_name = (first_name or username or str(user_id)).strip()

@@ -1,0 +1,37 @@
+• Старт
+└ Сессия Enterprise Core запущена
+• Начинаю
+└ Запрос принят в работу
+• Комментарий
+└ Проверю текущее состояние среды по доступным runtime/file данным: сначала git/worktree и свежие ошибки/логи вне `server-core`, потом сверю, есть ли подтверждённый активный сбой или только исторические ошибки.
+• Действие
+└ /bin/bash -lc "rg -n \"format_reaction_payload|unexpected error|Traceback|ERROR|Exception\" -S . --glob '"'!server-core/**'"' --glob '"'!**/.git/**'"' --glob '"'!enterprise_serv...
+• Действие
+└ /bin/bash -lc 'pwd && git status --short && git rev-parse --abbrev-ref HEAD'
+• Действие
+└ /bin/bash -lc "find . -maxdepth 3 \\( -name '*.log' -o -name '*.jsonl' -o -name '*heartbeat*' -o -name '*.out' \\) "'! -path '"'./.git/*' "'! -path '"'./server-core/*' | sort |...
+• Комментарий
+└ `rg` в среде нет, перехожу на `grep/find`. Сейчас сниму последние строки по runtime-логам и отдельно проверю, повторяется ли ошибка `format_reaction_payload` или это старый след.
+• Действие
+└ /bin/bash -lc 'for f in enterprise_server.log enterprise_server.out enterprise_server_boot.log enterprise_supervisor.out enterprise_supervisor_boot.log tg_codex_bridge.log tg_su...
+• Действие
+└ /bin/bash -lc "grep -RIn \"format_reaction_payload\\|unexpected error\\|Traceback\\|AttributeError\\|Exception\" . --exclude-dir=.git --exclude=enterprise_server.py --exclude=en...
+• Комментарий
+└ Картина уже видна: активный критический отказ не подтверждён, но в логах есть два класса проблем среды/рантайма. Добираю последний кусок: живы ли процессы сейчас и не упирается ли всё в старые heartbeat/FS-ограничения.
+• Действие
+└ /bin/bash -lc "grep -n \"Function not implemented\\|message to edit not found\\|unexpected main loop error\" tg_codex_bridge.log enterprise_server.log enterprise_server.out tg_s...
+• Действие
+└ /bin/bash -lc "ps -ef | grep -E 'tg_codex_bridge.py|enterprise_server.py' | grep -v grep"
+• Действие
+└ /bin/bash -lc "python3 - <<'PY'
+from pathlib import Path
+from datetime import datetime, timezone
+for name in ['tg_codex_bridge.log','enterprise_server.log','supervisor_boot.log'...
+• Комментарий
+└ Observed:
+- Да, в среде есть подтверждённые проблемы, но сейчас это не выглядит как полный outage.
+- Оба процесса сейчас живы: `enterprise_server.py` и `tg_codex_bridge.py` запущены.
+- Git-состояние чистое.
+- В логах есть подтверждённые оши
+• Завершаю
+└ Ход выполнения завершён

@@ -1,0 +1,2 @@
+[2026-03-25 16:56:11] config loaded mode=jarvis history_limit=16 allowed_users=[6102780373, 7087071466] safe_chat_only=True stt_backend=disabled db_path=/home/userland/projects/bots/jarvis_portable_2026-03-24/jarvis_memory.db lock_path=/home/userland/projects/bots/jarvis_portable_2026-03-24/tg_codex_bridge.lock codex_timeout=180s
+[2026-03-25 16:56:11] bot started

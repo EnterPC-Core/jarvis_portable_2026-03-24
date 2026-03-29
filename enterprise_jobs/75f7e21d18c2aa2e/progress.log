@@ -1,0 +1,11 @@
+$ /bin/bash -lc pwd
+$ /bin/bash -lc 'uname -a'
+$ /bin/bash -lc 'python3 --version'
+$ /bin/bash -lc 'git status --short --branch'
+$ /bin/bash -lc 'ls -la'
+$ /bin/bash -lc 'node --version'
+$ /bin/bash -lc "date -u '+%Y-%m-%d %H:%M:%S UTC'"
+$ /bin/bash -lc "ps -ef | rg 'enterprise_server|enterprise_worker|tg_codex_bridge|jarvis'"
+$ /bin/bash -lc 'git remote -v'
+$ /bin/bash -lc "sed -n '1,120p' requirements.txt"
+$ /bin/bash -lc "ps -ef | grep -E 'enterprise_server|enterprise_worker|tg_codex_bridge|jarvis' | grep -v grep"

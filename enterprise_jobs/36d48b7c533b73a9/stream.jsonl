@@ -1,0 +1,5 @@
+{"kind": "codex_json", "payload": {"type": "thread.started", "thread_id": "019d380d-6360-7750-8f11-58e3c328252a"}, "ts": 1774761894779}
+{"kind": "codex_json", "payload": {"type": "turn.started"}, "ts": 1774761894822}
+{"kind": "codex_json", "payload": {"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "Да.\n\nЯ `Enterprise`.\nПользователь: `Дмитрий`.\n\nЧем заняться?"}}, "ts": 1774761901592}
+{"kind": "assistant_text", "state": "completed", "text": "Да.\n\nЯ `Enterprise`.\nПользователь: `Дмитрий`.\n\nЧем заняться?", "ts": 1774761901593}
+{"kind": "codex_json", "payload": {"type": "turn.completed", "usage": {"input_tokens": 14798, "cached_input_tokens": 4480, "output_tokens": 66}}, "ts": 1774761901732}

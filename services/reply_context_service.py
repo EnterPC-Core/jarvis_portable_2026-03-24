@@ -1,10 +1,81 @@
 import json
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from utils.message_utils import describe_message_media_kind, summarize_message_for_pin
 from utils.text_utils import normalize_whitespace, truncate_text
+
+
+def _voice_transcription_enabled(bridge: "TelegramBridge") -> bool:
+    config = getattr(bridge, "config", None)
+    return bool(getattr(config, "voice_transcription_enabled", False))
+
+
+def _detect_transcribable_reply_kind(reply_to: dict, media_kind: str) -> str:
+    if media_kind in {"voice", "audio"}:
+        return media_kind
+    document = reply_to.get("document") or {}
+    mime_type = str(document.get("mime_type") or "").lower()
+    file_name = str(document.get("file_name") or "").lower()
+    if mime_type.startswith("audio/"):
+        return "audio"
+    if file_name.endswith((".mp3", ".m4a", ".wav", ".ogg", ".oga", ".opus", ".flac", ".aac", ".webm")):
+        return "audio"
+    return ""
+
+
+def _transcribe_reply_media_if_needed(
+    bridge: "TelegramBridge",
+    chat_id: int,
+    reply_to: dict,
+    media_kind: str,
+) -> str:
+    if not _voice_transcription_enabled(bridge):
+        return ""
+    transcribe_kind = _detect_transcribable_reply_kind(reply_to, media_kind)
+    if not transcribe_kind:
+        return ""
+    if reply_to.get("text") or reply_to.get("caption"):
+        return ""
+    file_blob = reply_to.get(transcribe_kind) or reply_to.get("document") or {}
+    file_id = str(file_blob.get("file_id") or "")
+    if not file_id:
+        return ""
+    try:
+        with bridge.temp_workspace() as workspace:
+            file_info = bridge.get_file_info(file_id)
+            file_path = str(file_info.get("file_path") or "")
+            if not file_path:
+                return ""
+            suffix = Path(file_path).suffix or (".ogg" if transcribe_kind == "voice" else ".bin")
+            local_path = workspace / f"reply_{transcribe_kind}{suffix}"
+            bridge.download_telegram_file(file_path, local_path)
+            transcript = bridge.transcribe_voice_with_ai(local_path, chat_id=chat_id)
+        transcript = normalize_whitespace(transcript or "")
+        if not transcript:
+            return ""
+        reply_message_id = reply_to.get("message_id")
+        if reply_message_id is not None:
+            try:
+                bridge.state.update_event_text(
+                    chat_id,
+                    int(reply_message_id),
+                    f"[{'Голосовое сообщение' if transcribe_kind == 'voice' else 'Аудио'}: {transcript}]",
+                    message_type=transcribe_kind,
+                    has_media=1,
+                    file_kind=transcribe_kind,
+                )
+            except Exception:
+                pass
+        return transcript
+    except Exception as error:
+        try:
+            bridge.log(f"reply {transcribe_kind or media_kind} transcription failed chat={chat_id}: {error}")
+        except Exception:
+            pass
+        return ""
 
 
 def build_reply_context(bridge: "TelegramBridge", chat_id: int, message: Optional[dict]) -> str:
@@ -31,6 +102,9 @@ def build_reply_context(bridge: "TelegramBridge", chat_id: int, message: Optiona
     media_kind = describe_message_media_kind(reply_to)
     if media_kind:
         lines.append(f"Reply target media: {media_kind}")
+    reply_transcript = _transcribe_reply_media_if_needed(bridge, chat_id, reply_to, media_kind)
+    if reply_transcript:
+        lines.append(f"Reply target transcript: {truncate_text(reply_transcript, 900)}")
     if reply_message_id is not None:
         visual_row = state.get_visual_signal_for_message(chat_id, int(reply_message_id))
         if visual_row:

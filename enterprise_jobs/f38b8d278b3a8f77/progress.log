@@ -1,0 +1,15 @@
+$ /bin/bash -lc 'cat /proc/meminfo'
+$ /bin/bash -lc 'free -h'
+$ /bin/bash -lc 'ps -eo pid,ppid,user,stat,%mem,%cpu,rss,vsz,etime,comm,args --sort=-rss | head -n 35'
+$ /bin/bash -lc 'swapon --show --bytes'
+$ /bin/bash -lc 'cat /proc/pressure/memory'
+$ /bin/bash -lc 'top -b -n 1 | head -n 40'
+$ /bin/bash -lc 'for p in /proc/[0-9]*; do pid=${p#/proc/}; [ -r "$p/status" ] || continue; name=$(awk '"'/"'^Name:/ {print $2}'"' \""'$p/status"); rss=$(awk '"'/"'^VmRSS:/ {print...
+$ /bin/bash -lc 'for p in /proc/[0-9]*; do pid=${p#/proc/}; [ -r "$p/status" ] || continue; name=$(awk '"'/"'^Name:/ {print $2}'"' \""'$p/status"); rss=$(awk '"'/"'^VmRSS:/ {print...
+$ /bin/bash -lc 'ps -eo pid,ppid,stat,etime,comm,args --sort=etime | tail -n 40'
+$ /bin/bash -lc 'grep -H . /proc/*/oom_score_adj 2>/dev/null | sort -t: -k2,2n | tail -n 20'
+$ /bin/bash -lc zramctl
+$ /bin/bash -lc 'for p in /proc/[0-9]*; do pid=${p#/proc/}; [ -r "$p/status" ] || continue; state=$(awk '"'/"'^State:/ {print $2}'"' \""'$p/status"); ppid=$(awk '"'/"'^PPid:/ {pri...
+$ /bin/bash -lc 'vmstat 1 5'
+$ /bin/bash -lc "grep -E 'pswpin|pswpout|pgscan|pgsteal' /proc/vmstat 2>/dev/null | sort"
+$ /bin/bash -lc 'for pid in 26110 16560 16547 16542 26088 31283 19083 12027 530 19122; do [ -r /proc/$pid/status ] || continue; echo "PID=$pid"; awk '"'/"'^(Name|State|VmRSS|VmSwa...

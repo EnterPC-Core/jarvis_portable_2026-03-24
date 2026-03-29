@@ -1,0 +1,6 @@
+/home/userland/projects/bots/jarvis_portable_2026-03-24/run_jarvis_supervisor.sh: 112: cannot create /dev/null: Function not implemented
+/home/userland/projects/bots/jarvis_portable_2026-03-24/run_jarvis_supervisor.sh: 130: cannot create /dev/null: Function not implemented
+/home/userland/projects/bots/jarvis_portable_2026-03-24/run_jarvis_supervisor.sh: 144: date: Function not implemented
+/home/userland/projects/bots/jarvis_portable_2026-03-24/run_jarvis_supervisor.sh: 144: cannot create /home/userland/projects/bots/jarvis_portable_2026-03-24/tg_codex_bridge.log: Function not implemented
+/home/userland/projects/bots/jarvis_portable_2026-03-24/run_jarvis_supervisor.sh: 17: cannot create /dev/null: Function not implemented
+/home/userland/projects/bots/jarvis_portable_2026-03-24/run_jarvis_supervisor.sh: 18: cannot create /dev/null: Function not implemented

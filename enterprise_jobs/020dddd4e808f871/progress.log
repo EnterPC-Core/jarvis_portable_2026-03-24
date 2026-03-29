@@ -1,0 +1,28 @@
+$ /bin/bash -lc 'rg -n "voice|audio|transcrib|whisper|faster_whisper|STT|speech|ogg|telegram voice|voice message" .'
+$ /bin/bash -lc 'rg --files .'
+$ /bin/bash -lc "find . -maxdepth 3 -type f | sed 's#"'^./##'"' | sort"
+$ /bin/bash -lc 'grep -RInE "voice|audio|transcrib|whisper|faster_whisper|speech|ogg|Voice|Audio" . --exclude-dir=.git --exclude=*.pyc'
+$ /bin/bash -lc "sed -n '220,330p' handlers/telegram_handlers.py"
+$ /bin/bash -lc "sed -n '60,95p' handlers/update_dispatcher.py"
+$ /bin/bash -lc "sed -n '380,520p' services/media_task_service.py"
+$ /bin/bash -lc "sed -n '1,140p' services/reply_context_service.py"
+$ /bin/bash -lc "sed -n '960,1045p' tg_codex_bridge.py"
+$ /bin/bash -lc "grep -RIn \"class BotConfig\\|dataclass.*BotConfig\\|audio_transcribe_model\" tg_codex_bridge.py services handlers --exclude=*.pyc"
+$ /bin/bash -lc 'grep -RInE "enable_|disable_|feature|toggle|safe_chat_only|ALLOW_|can_.*voice|voice_enabled|audio_enabled|transcrib" tg_codex_bridge.py handlers services --exclud...
+$ /bin/bash -lc "sed -n '930,980p' tg_codex_bridge.py"
+$ /bin/bash -lc "grep -n \"DEFAULT_STT_BACKEND\\|DEFAULT_AUDIO_TRANSCRIBE_MODEL\\|DEFAULT_SAFE_CHAT_ONLY\\|read_bool_env\" tg_codex_bridge.py"
+$ /bin/bash -lc "sed -n '1,180p' tg_codex_bridge.py"
+$ /bin/bash -lc "find tests -maxdepth 2 -type f | sort | xargs -I{} sh -c \"echo '###' {}; sed -n '1,220p' {}\""
+$ /bin/bash -lc "grep -RIn \"handle_voice_message\\|build_reply_context\\|TelegramMessageHandlers\\|reply_context_service\" tests . --exclude-dir=.git --exclude=*.pyc"
+$ /bin/bash -lc "sed -n '730,1025p' tests/test_runtime_regressions.py"
+$ /bin/bash -lc "sed -n '2430,2495p' tests/test_runtime_regressions.py"
+$ /bin/bash -lc "sed -n '1,80p' services/reply_context_service.py"
+$ /bin/bash -lc "grep -n \"def handle_audio_message\\|def handle_voice_message\" -n handlers/telegram_handlers.py"
+$ /bin/bash -lc "sed -n '1,120p' handlers/telegram_handlers.py"
+$ /bin/bash -lc "sed -n '1025,1105p' tests/test_runtime_regressions.py"
+$ /bin/bash -lc "grep -n \"voice\\|audio\" tests/test_runtime_regressions.py | sed -n '1,80p'"
+$ /bin/bash -lc "sed -n '380,410p' tg_codex_bridge.py && sed -n '10710,10735p' tg_codex_bridge.py"
+$ /bin/bash -lc 'python3 -m unittest tests.test_runtime_regressions.RuntimeRegressionTests.test_owner_voice_message_reports_transcription_disabled tests.test_runtime_regressions.R...
+$ /bin/bash -lc 'python3 -m unittest tests.test_prompt_profiles tests.test_runtime_regressions'
+$ /bin/bash -lc 'git diff -- handlers/telegram_handlers.py services/reply_context_service.py tg_codex_bridge.py tests/test_runtime_regressions.py'
+$ /bin/bash -lc 'git status --short'

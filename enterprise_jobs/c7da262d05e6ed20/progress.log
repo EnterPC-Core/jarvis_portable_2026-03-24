@@ -1,0 +1,73 @@
+$ /bin/bash -lc 'pwd && rg -n --hidden -S "whisper|stt|speech|transcrib|vosk|faster-whisper|recogn" .'
+$ /bin/bash -lc 'rg --files --hidden .'
+$ /bin/bash -lc "find . -maxdepth 4 -type f | sed 's#"'^./##'"' | sort"
+$ /bin/bash -lc 'grep -RIn --exclude-dir=.git -E "whisper|stt|speech|transcrib|vosk|faster-whisper|recogn" .'
+$ /bin/bash -lc "sed -n '7560,7665p' tg_codex_bridge.py"
+$ /bin/bash -lc "python3 - <<'PY'
+import importlib.util
+mods=['faster_whisper','psutil']
+for m in mods:
+print(m, bool(importlib.util.find_spec(m)))
+PY"
+$ /bin/bash -lc "find . -type f \\( -iname '*.ogg' -o -iname '*.oga' -o -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.opus' -o -iname '*.mp4' -o -iname '*.aac' \...
+$ /bin/bash -lc "grep -RIn --exclude-dir=.git -E \"offline voice transcription start|offline voice transcription done|voice transcription|transcribe_voice_with_ai\\(\" tg_codex_br...
+$ /bin/bash -lc 'grep -RIn --exclude-dir=.git -E "workspace|reply_voice|reply_audio|voice.*download|audio.*download|getFile|download" services tg_codex_bridge.py | head -n 250'
+$ /bin/bash -lc "find /tmp /var/tmp /home/userland -maxdepth 4 -type f \\( -iname '*.ogg' -o -iname '*.oga' -o -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.opus...
+$ /bin/bash -lc "find /home/userland/tmp/jarvis-bridge -type f \\( -iname 'file_8*.oga' -o -iname 'reply_audio.mp3' -o -iname 'reply_voice.oga' -o -iname 'file_7*.oga' \\) 2>/dev/...
+$ /bin/bash -lc "sed -n '4838,4868p' tg_codex_bridge.py"
+$ /bin/bash -lc "find /home/userland/tmp/jarvis-bridge -type f \\( -iname '*.ogg' -o -iname '*.oga' -o -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.opus' -o -in...
+$ /bin/bash -lc 'which ffprobe || which ffmpeg || which soxi || which mediainfo || which /usr/bin/time'
+$ /bin/bash -lc "python3 - <<'PY'
+import importlib.util
+print('ctranslate2', bool(importlib.util.find_spec('ctranslate2')))
+print('faster_whisper', bool(importlib.util.find_spec('...
+$ /bin/bash -lc "python3 - <<'PY'
+from pathlib import Path
+files=sorted(Path('/home/userland/tmp/jarvis-bridge').rglob('*.oga'))
+for p in files:
+print(p.stat().st_size, p)
+PY"
+$ /bin/bash -lc "python3 - <<'PY'
+mods=['soundfile','audioread','av']
+import importlib.util
+for m in mods:
+print(m, bool(importlib.util.find_spec(m)))
+PY"
+$ /bin/bash -lc "python3 - <<'PY'
+from pathlib import Path
+try:
+import soundfile as sf
+except Exception as e:
+print('soundfile import failed', e)
+raise SystemExit(0)
+for p in sort...
+$ /bin/bash -lc "python3 - <<'PY'
+import os, time, threading, psutil
+from pathlib import Path
+from faster_whisper import WhisperModel
+
+FILES=[
+Path('/home/userland/tmp/jarvis-brid...
+$ /bin/bash -lc "grep -n \"def cleanup_voice_transcript_with_ai\\|cleanup_voice\\|build_voice_initial_prompt\" -n tg_codex_bridge.py | head -n 20"
+$ /bin/bash -lc "sed -n '7480,7565p' tg_codex_bridge.py"
+$ /bin/bash -lc "python3 - <<'PY'
+from pathlib import Path
+import av
+for p in [Path('/home/userland/tmp/jarvis-bridge/tmp7ne6qkzw/file_42.oga'), Path('/home/userland/tmp/jarvis-br...
+$ /bin/bash -lc "sed -n '1,220p' utils/ops_utils.py"
+$ /bin/bash -lc "sed -n '995,1035p' tg_codex_bridge.py"
+$ /bin/bash -lc "grep -RIn --exclude-dir=.git -E \"def should_attempt_voice_ai_cleanup|should_attempt_voice_ai_cleanup\\(\" ."
+$ /bin/bash -lc "grep -n \"DEFAULT_AUDIO_TRANSCRIBE_MODEL\\|DEFAULT_STT_BACKEND\\|DEFAULT_STT_LANGUAGE\" tg_codex_bridge.py | head -n 20"
+$ /bin/bash -lc "sed -n '9590,9655p' tg_codex_bridge.py"
+$ /bin/bash -lc "python3 - <<'PY'
+import os, time, threading, psutil
+from pathlib import Path
+from faster_whisper import WhisperModel
+p=Path('/home/userland/tmp/jarvis-bridge/tmpo...
+$ /bin/bash -lc "grep -n \"offline voice transcription start model=small\\|offline voice transcription done model=small\\|offline voice transcription start model=tiny\\|offline vo...
+$ /bin/bash -lc 'grep -RIn --exclude-dir=.git -E "STT_BACKEND|AUDIO_TRANSCRIBE_MODEL|STT_LANGUAGE" .env.example README.md PORTABLE_RUN_INSTRUCTIONS.md PROJECT_RUN_INSTRUCTIONS.md...
+$ /bin/bash -lc "python3 - <<'PY'
+import os, psutil
+print('logical_cpus', psutil.cpu_count(logical=True))
+print('physical_cpus', psutil.cpu_count(logical=False))
+vm=psutil.virtual...
