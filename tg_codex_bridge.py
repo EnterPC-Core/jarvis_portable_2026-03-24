@@ -4277,6 +4277,12 @@ class TelegramBridge:
     def normalize_incoming_text(self, raw_text: str, bot_username: str) -> str:
         return normalize_incoming_text(raw_text, bot_username)
 
+    def format_reaction_payload(self, reactions: List[dict]) -> str:
+        return format_reaction_payload(reactions)
+
+    def format_reaction_count_payload(self, reactions: List[dict]) -> str:
+        return format_reaction_count_payload(reactions)
+
     def extract_assistant_persona(self, text: str) -> Tuple[str, str]:
         return extract_assistant_persona(text)
 
