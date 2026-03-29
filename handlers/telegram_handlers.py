@@ -235,23 +235,23 @@ class TelegramMessageHandlers:
             voice = message.get("voice") or {}
             file_id = voice.get("file_id")
             duration = voice.get("duration")
+            reply_to = message.get("reply_to_message") or {}
             chat = message.get("chat") or {}
             chat_type = (chat.get("type") or "private").lower()
             bridge.log(f"incoming voice chat={chat_id} user={user_id} duration={duration}")
 
             is_owner = self._is_owner(bridge, user_id)
-            if chat_type in {"group", "supergroup"} and not is_owner:
-                bridge.log(f"group non-owner voice ignored chat={chat_id} user={user_id}")
+            if not is_owner:
+                bridge.log(f"non-owner voice ignored chat={chat_id} user={user_id}")
+                return
+
+            if not reply_to:
+                bridge.log(f"voice without reply ignored chat={chat_id} user={user_id}")
                 return
 
             if not file_id:
                 bridge.safe_send_text(chat_id, "Не удалось получить голосовое сообщение.")
                 return
-
-            if chat_type in {"group", "supergroup"}:
-                if not bridge.should_process_group_message(message, "") and not is_owner:
-                    bridge.log(f"voice trigger not found chat={chat_id} file_id={file_id}")
-                    return
 
             if not bridge.state.try_start_chat_task(chat_id):
                 bridge.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
@@ -265,7 +265,7 @@ class TelegramMessageHandlers:
             worker.start()
         except Exception as error:
             bridge.log_exception(f"voice handler failed chat={chat_id}", error, limit=8)
-            bridge.safe_send_text(chat_id, "Ошибка при обработке голосового. Детали записаны в лог.")
+            return
 
     def handle_audio_message(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], message: dict) -> None:
         try:
@@ -273,6 +273,7 @@ class TelegramMessageHandlers:
             file_id = audio.get("file_id")
             duration = audio.get("duration")
             title = audio.get("title") or audio.get("file_name") or "audio"
+            reply_to = message.get("reply_to_message") or {}
             chat = message.get("chat") or {}
             chat_type = (chat.get("type") or "private").lower()
             bridge.log(
@@ -281,18 +282,17 @@ class TelegramMessageHandlers:
             )
 
             is_owner = self._is_owner(bridge, user_id)
-            if chat_type in {"group", "supergroup"} and not is_owner:
-                bridge.log(f"group non-owner audio ignored chat={chat_id} user={user_id}")
+            if not is_owner:
+                bridge.log(f"non-owner audio ignored chat={chat_id} user={user_id}")
+                return
+
+            if not reply_to:
+                bridge.log(f"audio without reply ignored chat={chat_id} user={user_id}")
                 return
 
             if not file_id:
                 bridge.safe_send_text(chat_id, "Не удалось получить аудиофайл.")
                 return
-
-            if chat_type in {"group", "supergroup"}:
-                if not bridge.should_process_group_message(message, (message.get("caption") or "").strip()) and not is_owner:
-                    bridge.log(f"audio trigger not found chat={chat_id} file_id={file_id}")
-                    return
 
             if not bridge.state.try_start_chat_task(chat_id):
                 bridge.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
@@ -306,7 +306,7 @@ class TelegramMessageHandlers:
             worker.start()
         except Exception as error:
             bridge.log_exception(f"audio handler failed chat={chat_id}", error, limit=8)
-            bridge.safe_send_text(chat_id, "Ошибка при обработке аудио. Детали записаны в лог.")
+            return
 
     def handle_video_message(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], message: dict) -> None:
         video = message.get("video") or {}

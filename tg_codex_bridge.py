@@ -7564,12 +7564,19 @@ class TelegramBridge:
         return cleaned
 
     def transcribe_voice_with_ai(self, source_path: Path, chat_id: int = 0) -> str:
-        if self.config.stt_backend not in {"openai", "ai"}:
-            log(f"unsupported STT backend: {self.config.stt_backend}")
+        transcript = ""
+        if self.config.stt_backend in {"openai", "ai"} and self.config.openai_api_key:
+            transcript = self._transcribe_voice_with_openai(source_path, chat_id=chat_id)
+        else:
+            transcript = self._transcribe_voice_offline(source_path, chat_id=chat_id)
+        if not transcript:
             return ""
-        if not self.config.openai_api_key:
-            log("voice transcription unavailable: OPENAI_API_KEY is missing")
-            return ""
+        improved = self.cleanup_voice_transcript_with_ai(chat_id, transcript)
+        if improved != transcript:
+            log(f"voice transcript improved chat={chat_id} old={shorten_for_log(transcript)} new={shorten_for_log(improved)}")
+        return improved
+
+    def _transcribe_voice_with_openai(self, source_path: Path, chat_id: int = 0) -> str:
         endpoint = f"{self.config.openai_base_url}/audio/transcriptions"
         upload_name = source_path.name
         suffix = source_path.suffix.lower()
@@ -7612,10 +7619,37 @@ class TelegramBridge:
         if not transcript:
             log("voice transcription returned empty text")
             return ""
-        improved = self.cleanup_voice_transcript_with_ai(chat_id, transcript)
-        if improved != transcript:
-            log(f"voice transcript improved chat={chat_id} old={shorten_for_log(transcript)} new={shorten_for_log(improved)}")
-        return improved
+        return transcript
+
+    def _transcribe_voice_offline(self, source_path: Path, chat_id: int = 0) -> str:
+        del chat_id
+        model_name = (self.config.audio_transcribe_model or "").strip()
+        if model_name.startswith("gpt-") or not model_name:
+            model_name = "small"
+        try:
+            model = getattr(self, "_offline_whisper_model", None)
+            current_name = getattr(self, "_offline_whisper_model_name", "")
+            if model is None or current_name != model_name:
+                from faster_whisper import WhisperModel
+
+                model = WhisperModel(model_name, device="cpu", compute_type="int8")
+                self._offline_whisper_model = model
+                self._offline_whisper_model_name = model_name
+            segments, _info = model.transcribe(
+                str(source_path),
+                language=(self.config.stt_language or "ru"),
+                vad_filter=True,
+                condition_on_previous_text=False,
+            )
+        except Exception as error:
+            log(f"offline voice transcription failed model={model_name}: {shorten_for_log(str(error))}")
+            return ""
+        parts = [normalize_whitespace(getattr(segment, "text", "")) for segment in segments]
+        transcript = normalize_whitespace(" ".join(part for part in parts if part))
+        if not transcript:
+            log("offline voice transcription returned empty text")
+            return ""
+        return transcript
 
     def send_chat_action(self, chat_id: int, action: str) -> None:
         try:

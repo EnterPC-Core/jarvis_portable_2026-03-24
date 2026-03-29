@@ -405,15 +405,11 @@ def run_voice_task(
         message_id = message.get("message_id")
         chat = message.get("chat") or {}
         chat_type = (chat.get("type") or "private").lower()
-        from_user = message.get("from") or {}
-        owner_label = bridge.build_user_autofix_label(from_user)
-        status_message_id = bridge.send_status_message(chat_id, "Распознаю голосовое...")
 
         with bridge.temp_workspace() as workspace:
             file_info = bridge.get_file_info(file_id)
             file_path = file_info.get("file_path")
             if not file_path:
-                bridge.safe_send_text(chat_id, "Telegram не вернул путь к голосовому сообщению.")
                 return
 
             local_path = workspace / build_download_name_func(file_path, fallback_name="voice.ogg")
@@ -421,15 +417,9 @@ def run_voice_task(
             transcript = bridge.transcribe_voice_with_ai(local_path, chat_id=chat_id)
 
         if not transcript:
-            bridge.safe_send_text(chat_id, build_voice_transcription_help_func(bridge.config))
             return
 
         bridge.log(f"voice transcript chat={chat_id} text={bridge.shorten_for_log(transcript)}")
-        transcript_message = (
-            f"Голосовое от {owner_label}\n\nРасшифровка:\n{transcript}"
-            if chat_type in {"group", "supergroup"}
-            else f"Расшифровка голосового:\n{transcript}"
-        )
         bridge.state.update_event_text(
             chat_id,
             message_id,
@@ -438,27 +428,6 @@ def run_voice_task(
             has_media=1,
             file_kind="voice",
         )
-        if status_message_id is not None:
-            if not bridge.edit_status_message(chat_id, status_message_id, transcript_message):
-                bridge.safe_send_text(chat_id, transcript_message)
-        else:
-            bridge.safe_send_text(chat_id, transcript_message)
-
-        if chat_type in {"group", "supergroup"}:
-            should_handle_as_bot = (
-                should_process_group_message_func(
-                    message,
-                    transcript,
-                    bridge.bot_username,
-                    bridge.config.trigger_name,
-                    bot_user_id=bridge.bot_user_id,
-                    allow_owner_reply=False,
-                )
-                or contains_voice_trigger_name_func(transcript, bridge.config.trigger_name, bridge.bot_username)
-            )
-            if not should_handle_as_bot:
-                bridge.log(f"voice trigger not found chat={chat_id} text={bridge.shorten_for_log(transcript)}")
-                return
 
         if bridge.config.safe_chat_only and is_dangerous_request_func(transcript):
             bridge.state.append_history(chat_id, "user", f"[Голосовое сообщение: {transcript}]")
@@ -497,15 +466,11 @@ def run_audio_task(
         message_id = message.get("message_id")
         chat = message.get("chat") or {}
         chat_type = (chat.get("type") or "private").lower()
-        from_user = message.get("from") or {}
-        owner_label = bridge.build_user_autofix_label(from_user)
-        status_message_id = bridge.send_status_message(chat_id, "Распознаю аудио...")
 
         with bridge.temp_workspace() as workspace:
             file_info = bridge.get_file_info(file_id)
             file_path = file_info.get("file_path")
             if not file_path:
-                bridge.safe_send_text(chat_id, "Telegram не вернул путь к аудиофайлу.")
                 return
 
             local_path = workspace / build_download_name_func(file_path, fallback_name="audio.bin")
@@ -513,15 +478,9 @@ def run_audio_task(
             transcript = bridge.transcribe_voice_with_ai(local_path, chat_id=chat_id)
 
         if not transcript:
-            bridge.safe_send_text(chat_id, build_voice_transcription_help_func(bridge.config))
             return
 
         bridge.log(f"audio transcript chat={chat_id} text={bridge.shorten_for_log(transcript)}")
-        transcript_message = (
-            f"Аудио от {owner_label}\n\nРасшифровка:\n{transcript}"
-            if chat_type in {"group", "supergroup"}
-            else f"Расшифровка аудио:\n{transcript}"
-        )
         bridge.state.update_event_text(
             chat_id,
             message_id,
@@ -530,27 +489,6 @@ def run_audio_task(
             has_media=1,
             file_kind="audio",
         )
-        if status_message_id is not None:
-            if not bridge.edit_status_message(chat_id, status_message_id, transcript_message):
-                bridge.safe_send_text(chat_id, transcript_message)
-        else:
-            bridge.safe_send_text(chat_id, transcript_message)
-
-        if chat_type in {"group", "supergroup"}:
-            should_handle_as_bot = (
-                should_process_group_message_func(
-                    message,
-                    transcript,
-                    bridge.bot_username,
-                    bridge.config.trigger_name,
-                    bot_user_id=bridge.bot_user_id,
-                    allow_owner_reply=False,
-                )
-                or contains_voice_trigger_name_func(transcript, bridge.config.trigger_name, bridge.bot_username)
-            )
-            if not should_handle_as_bot:
-                bridge.log(f"audio trigger not found chat={chat_id} text={bridge.shorten_for_log(transcript)}")
-                return
 
         if bridge.config.safe_chat_only and is_dangerous_request_func(transcript):
             bridge.state.append_history(chat_id, "user", f"[Аудио: {transcript}]")
