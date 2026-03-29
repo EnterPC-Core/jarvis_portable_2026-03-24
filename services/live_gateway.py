@@ -47,14 +47,22 @@ class LiveGateway:
             return "", ()
         query_variants = build_location_query_variants(normalized_location)
         geo_record = self._build_record(
-            provider="Open-Meteo Geocoding",
-            category="weather_geocoding",
-            freshness="request-time",
+            "Open-Meteo Geocoding",
+            "weather_geocoding",
+            normalized_location,
+            "request-time",
+            "pending",
+            0.0,
+            False,
         )
         weather_record = self._build_record(
-            provider="Open-Meteo",
-            category="weather",
-            freshness="request-time",
+            "Open-Meteo",
+            "weather",
+            normalized_location,
+            "request-time",
+            "pending",
+            0.0,
+            False,
         )
         try:
             results: List[dict] = []
