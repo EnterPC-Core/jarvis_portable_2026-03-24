@@ -14,12 +14,15 @@
 - [`services/bridge_memory_profiles.py`](./services/bridge_memory_profiles.py) — participant memory, visual signals, active subject
 - [`services/bridge_moderation_state.py`](./services/bridge_moderation_state.py) — moderation/warn/welcome/task locks
 - [`services/bridge_diagnostics_state.py`](./services/bridge_diagnostics_state.py) — diagnostics, repair journal, self-heal state
+- [`services/bridge_task_state.py`](./services/bridge_task_state.py) — persistent task lifecycle and continuity rendering
+- [`services/bridge_context_state.py`](./services/bridge_context_state.py) — event/database retrieval helpers extracted from `BridgeState`
 - [`services/text_task_service.py`](./services/text_task_service.py) — text-task execution
 - [`services/media_task_service.py`](./services/media_task_service.py) — photo/document/voice task flow
 - [`services/ask_codex_service.py`](./services/ask_codex_service.py) — codex orchestration wrapper
 - [`services/reply_context_service.py`](./services/reply_context_service.py) — reply-context and subject resolver
 - [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — Telegram ingress/update dispatch
 - [`handlers/owner_panel_sections.py`](./handlers/owner_panel_sections.py) — owner panel sections extracted from renderer
+- [`handlers/control_panel_aux.py`](./handlers/control_panel_aux.py) — helper builders extracted from `control_panel_renderer.py`
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — supervisor для постоянного процесса
 - [`run_enterprise_supervisor.sh`](./run_enterprise_supervisor.sh) — supervisor для `enterprise_server.py`
 - [`restart_jarvis_supervisor.sh`](./restart_jarvis_supervisor.sh) — безопасный single-flight рестарт bridge-supervisor
@@ -72,6 +75,7 @@
 - `ContextBundle` — собирает memory/context слои для prompt
 - `SelfCheckReport` — финальный self-check после ответа
 - `task_runs` / `task_events` — persistent task lifecycle и causal trace для long-running flow
+- event/database retrieval больше не привязан к одному большому entrypoint-классу и идёт через отдельный context-state helper layer
 
 Это упрощает отладку, делает `/routes` полезнее и снижает риск случайных route-расхождений между модулями.
 

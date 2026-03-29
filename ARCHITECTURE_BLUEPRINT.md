@@ -44,6 +44,7 @@ This blueprint is no longer purely aspirational. The following slices are alread
 - `services/bridge_moderation_state.py`
 - `services/bridge_diagnostics_state.py`
 - `services/bridge_task_state.py`
+- `services/bridge_context_state.py`
 - `services/reply_context_service.py`
 - `services/text_task_service.py`
 - `services/media_task_service.py`
@@ -52,12 +53,13 @@ This blueprint is no longer purely aspirational. The following slices are alread
 - `services/context_assembly.py`
 - `services/text_route_service.py`
 - `services/js_enterprise_service.py`
+- `handlers/control_panel_aux.py`
 
 Current residual monolith areas:
 
-- `BridgeState` still owns a meaningful amount of repository/state wiring
+- `BridgeState` still owns a meaningful amount of repository/state wiring, but event/database retrieval is already split into `services/bridge_context_state.py`
 - media-task orchestration still lives in `tg_codex_bridge.py`
-- `handlers/control_panel_renderer.py` remains a large UI renderer
+- `handlers/control_panel_renderer.py` remains a large UI renderer, but panel helper blocks are now partially extracted into `handlers/control_panel_aux.py`
 - `tests/test_runtime_regressions.py` remains a large regression umbrella file
 
 ## 3. Module Responsibilities
@@ -80,6 +82,8 @@ Current residual monolith areas:
   Telegram message handlers, callback/UI flow, command dispatch and parser normalization
 - `handlers/control_panel_renderer.py`
   owner/public panel rendering separated from callback transport and bridge lifecycle; still a candidate for further split
+- `handlers/control_panel_aux.py`
+  extracted control-panel helper builders for top navigation, people-live and admin warn/profile sections
 - `handlers/update_dispatcher.py`
   Telegram update ingress and dispatch separated from bridge lifecycle
 - `handlers/owner_panel_sections.py`
@@ -104,6 +108,8 @@ Current residual monolith areas:
   request diagnostics, repair journal, self-heal state and world-state row access
 - `services/bridge_task_state.py`
   persistent task lifecycle, `task_runs`, `task_events`, task continuity rendering
+- `services/bridge_context_state.py`
+  event/database retrieval helpers extracted from `BridgeState` so `ContextBundle` assembly does not depend on monolith-only methods
 - `services/media_task_service.py`
   photo/document/voice task orchestration and attachment-aware media prompting
 - `services/bridge_file_helpers.py`
@@ -143,6 +149,7 @@ Controlled migration note:
 - bridge helper wrappers are now progressively backed by `services/bridge_runtime_text.py`, `services/bridge_file_helpers.py` and `services/bridge_ops_helpers.py`
 - storage/state compatibility wrappers are now progressively backed by `services/bridge_state_schema.py`, `services/bridge_chat_state.py`, `services/bridge_memory_profiles.py`, `services/bridge_moderation_state.py` and `services/bridge_diagnostics_state.py`
 - task continuity wrappers are now progressively backed by `services/bridge_task_state.py`
+- bridge context retrieval wrappers are now progressively backed by `services/bridge_context_state.py`
 - this keeps behavior stable while reducing the legacy file incrementally instead of rewriting it in one pass
 
 ## 3.1 Truthfulness And Verification Discipline

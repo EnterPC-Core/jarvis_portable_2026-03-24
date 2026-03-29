@@ -96,6 +96,7 @@ sh start_jarvis_on_termux.sh
 - [`services/bridge_moderation_state.py`](./services/bridge_moderation_state.py) — moderation state, warnings, welcome, upgrade/task locks, dedupe
 - [`services/bridge_diagnostics_state.py`](./services/bridge_diagnostics_state.py) — request diagnostics, repair journal, self-heal incidents, world-state rows
 - [`services/bridge_task_state.py`](./services/bridge_task_state.py) — persistent task lifecycle, `task_runs`, `task_events`, task continuity rendering
+- [`services/bridge_context_state.py`](./services/bridge_context_state.py) — event/database retrieval helpers, вынесенные из `BridgeState`
 - [`services/ask_codex_service.py`](./services/ask_codex_service.py) — LLM orchestration wrapper, вынесенный из bridge
 - [`services/text_task_service.py`](./services/text_task_service.py) — text-task execution и recent chat report flow
 - [`services/reply_context_service.py`](./services/reply_context_service.py) — reply-context и active-subject resolver
@@ -107,6 +108,7 @@ sh start_jarvis_on_termux.sh
 - [`services/enterprise_console_webapp.py`](./services/enterprise_console_webapp.py) — owner webapp/console HTML и server
 - [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — Telegram ingress/update dispatch вне monolith entrypoint
 - [`handlers/control_panel_renderer.py`](./handlers/control_panel_renderer.py) — owner/public inline UI и `Jarvis Control`
+- [`handlers/control_panel_aux.py`](./handlers/control_panel_aux.py) — вспомогательные owner/public panel builders, вынесенные из renderer
 - [`models/`](./models) — типизированные контракты: `RouteDecision`, `ContextBundle`, `SelfCheckReport`, `AttachmentBundle`, live records
 - [`router/`](./router) — deterministic routing policy и request classification без Telegram I/O
 - [`pipeline/`](./pipeline) — diagnostics/self-check enrichment и traceable response pipeline
@@ -126,6 +128,7 @@ sh start_jarvis_on_termux.sh
 - owner-only `Jarvis Control` живёт в inline owner-панели и не выводится в обычную пользовательскую панель
 - публичный контур ограничен рейтингами, профилем, топами и апелляциями; свободный диалог и runtime-команды остаются owner-only
 - главный остаточный монолит сейчас: часть `BridgeState`, часть owner/public UI flow и крупный regression suite
+- при этом retrieval helpers и часть control-panel rendering уже вынесены в отдельные модули без переписывания runtime с нуля
 
 ## Модель Доступа
 
@@ -374,6 +377,7 @@ Moderation enforcement не смешивается с search pipeline и prompt 
 - [`handlers/command_dispatch.py`](./handlers/command_dispatch.py) — command dispatcher без смешивания с polling/runtime кодом
 - [`handlers/ui_handlers.py`](./handlers/ui_handlers.py) — inline UI, callback flow и pending-input сценарии
 - [`handlers/control_panel_renderer.py`](./handlers/control_panel_renderer.py) — owner/public control-panel rendering без UI transport-логики
+- [`handlers/control_panel_aux.py`](./handlers/control_panel_aux.py) — вспомогательные блоки owner/public panels, чтобы `control_panel_renderer.py` не тащил весь UI-building в одном файле
 - [`services/live_gateway.py`](./services/live_gateway.py) — live provider gateway и normalized live records
 - [`services/runtime_service.py`](./services/runtime_service.py) — world-state refresh, drive recompute и runtime health rollups
 - [`services/memory_service.py`](./services/memory_service.py) — AI summary refresh для chat/user memory
@@ -390,6 +394,7 @@ Moderation enforcement не смешивается с search pipeline и prompt 
 - `../jarvis_legacy_data/jarvis.db` — legacy-источник для рейтинга, достижений, топов и апелляций
 - внутри основной базы теперь есть `chat_participants` и `chat_runtime_cache` для локального знания об участниках, админах и `member_count`
 - внутри основной базы есть `task_runs` и `task_events` для честного восстановления task flow по фазам, а не только по финальному статусу
+- event/database retrieval для `ContextBundle` теперь собран не внутри entrypoint, а через отдельный `services/bridge_context_state.py`, чтобы `BridgeState` не оставался единственным местом для context assembly glue
 
 ## Как это работает сейчас
 
