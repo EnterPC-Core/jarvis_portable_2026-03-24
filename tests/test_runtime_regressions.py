@@ -26,7 +26,7 @@ from handlers.command_parsers import (
 )
 from handlers.control_panel_renderer import ControlPanelRenderer
 from services.admin_registry import render_admin_command_catalog
-from enterprise_worker import extract_json_answer, get_worker_protected_paths, protect_prompt
+from enterprise_worker import extract_json_answer, format_json_progress_event, get_worker_protected_paths, protect_prompt
 from enterprise_server import PROTECTED_SERVER_CORE_PATHS
 from owner.handlers import OwnerCommandService
 from services.answer_postprocess import postprocess_answer
@@ -418,6 +418,63 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("Свежие новости", answer)
         self.assertIsNotNone(recorded["diagnostic"])
         self.assertEqual(recorded["diagnostic"]["execution_trace"].tools_succeeded, ("live_route",))
+
+    def test_enterprise_worker_extract_json_answer_ignores_internal_worklog_messages(self):
+        stdout = "\n".join(
+            [
+                '{"type":"item.completed","item":{"type":"agent_message","text":"• Ran git status --short\\n└ M services/file.py\\n\\n• Explored\\n└ Read prompt"}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"Короткий итог по задаче без внутреннего лога."}}',
+            ]
+        )
+
+        self.assertEqual(extract_json_answer(stdout), "Короткий итог по задаче без внутреннего лога.")
+
+    def test_enterprise_worker_progress_event_keeps_agent_message_transcript(self):
+        payload = {
+            "type": "item.completed",
+            "item": {
+                "type": "agent_message",
+                "text": "• Ran git status --short",
+            },
+        }
+
+        self.assertIn("Комментарий", format_json_progress_event(payload))
+
+    def test_js_enterprise_progress_renders_agent_message_comments(self):
+        service = JSEnterpriseService(
+            JSEnterpriseServiceDeps(
+                build_codex_command_func=lambda **_kwargs: [],
+                build_subprocess_env_func=lambda: {},
+                heartbeat_guard_factory=lambda: nullcontext(),
+                normalize_whitespace_func=lambda text: " ".join((text or "").split()),
+                postprocess_answer_func=lambda text, _latency: text,
+                build_codex_failure_answer_func=lambda *_args, **_kwargs: "error",
+                extract_usable_codex_stdout_func=lambda text: text,
+                shorten_for_log_func=lambda text, _limit: text,
+                log_func=lambda _message: None,
+                send_chat_action_func=lambda *_args, **_kwargs: None,
+                send_status_message_func=lambda *_args, **_kwargs: None,
+                edit_status_message_func=lambda *_args, **_kwargs: True,
+                update_progress_status_func=lambda *_args, **_kwargs: None,
+                finish_progress_status_func=lambda *_args, **_kwargs: None,
+                codex_timeout=60,
+                progress_update_seconds=1.0,
+                jarvis_offline_text="offline",
+                upgrade_timeout_text="timeout",
+            )
+        )
+
+        payload = {
+            "type": "item.completed",
+            "item": {
+                "type": "agent_message",
+                "text": "• Ran git status --short",
+            },
+        }
+
+        rendered = service._format_json_event(payload)
+        self.assertIsNotNone(rendered)
+        self.assertIn("Комментарий", rendered)
 
     def test_runtime_log_treats_status_edit_429_as_warning_not_severe(self):
         with TemporaryDirectory() as tmp_dir:

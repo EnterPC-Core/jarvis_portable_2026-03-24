@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -48,6 +49,51 @@ def truncate_text(text: str, limit: int) -> str:
     return cleaned[: limit - 3].rstrip() + "..."
 
 
+def _looks_like_internal_worklog(text: str) -> bool:
+    cleaned = normalize_whitespace(text)
+    if not cleaned:
+        return False
+    markers = (
+        "• ran ",
+        "• explored",
+        "• waited for background terminal",
+        "command: /bin/",
+        "process exited with code",
+        "wall time:",
+        "chunk id:",
+        "original token count:",
+        "command: /bin/bash -lc",
+    )
+    lowered = cleaned.lower()
+    hits = sum(1 for marker in markers if marker in lowered)
+    if hits >= 2:
+        return True
+    lines = [line.strip().lower() for line in cleaned.splitlines() if line.strip()]
+    bullet_hits = sum(
+        1
+        for line in lines
+        if line.startswith("• ran ")
+        or line.startswith("• explored")
+        or line.startswith("• waited")
+        or line.startswith("└ command:")
+    )
+    return bullet_hits >= 2
+
+
+def strip_internal_worklog(text: str) -> str:
+    cleaned = normalize_whitespace(text)
+    if not cleaned:
+        return ""
+    if not _looks_like_internal_worklog(cleaned):
+        return cleaned
+    parts = re.split(r"\n[─-]{10,}\n", cleaned)
+    for part in reversed(parts):
+        candidate = normalize_whitespace(part)
+        if candidate and not _looks_like_internal_worklog(candidate):
+            return candidate
+    return ""
+
+
 def extract_json_answer(stdout: str) -> str:
     latest_text = ""
     for raw_line in (stdout or "").splitlines():
@@ -63,7 +109,7 @@ def extract_json_answer(stdout: str) -> str:
         item = payload.get("item") or {}
         if str(item.get("type") or "") != "agent_message":
             continue
-        text = normalize_whitespace(str(item.get("text") or ""))
+        text = strip_internal_worklog(str(item.get("text") or ""))
         if text:
             latest_text = text
     return latest_text
@@ -263,7 +309,7 @@ def run_task(task_path: Path, result_path: Path) -> int:
                     append_stream_event(stream_path, stream_event)
                 item = json_payload.get("item") or {}
                 if str(json_payload.get("type") or "") == "item.completed" and str(item.get("type") or "") == "agent_message":
-                    text = normalize_whitespace(str(item.get("text") or ""))
+                    text = strip_internal_worklog(str(item.get("text") or ""))
                     if text:
                         structured_answer = text
             stderr_text = process.stderr.read() if process.stderr is not None else ""
@@ -360,7 +406,7 @@ def run_task(task_path: Path, result_path: Path) -> int:
         )
         return result.returncode
 
-    answer = structured_answer or stdout or "Пустой ответ. Переформулируй запрос."
+    answer = structured_answer or strip_internal_worklog(stdout) or "Пустой ответ. Переформулируй запрос."
     result_path.write_text(
         json.dumps(
             {
