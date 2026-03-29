@@ -215,6 +215,7 @@ class RuntimeRegressionTests(unittest.TestCase):
             answer="grounded answer",
             flags=(),
             observed_basis=("chat_events",),
+            mode="verified",
         )
 
         enriched = enrich_self_check_report(
@@ -2148,15 +2149,23 @@ class RuntimeRegressionTests(unittest.TestCase):
     def test_pending_enterprise_job_is_persisted_and_cleared(self):
         bridge = TelegramBridge.__new__(TelegramBridge)
         meta = {}
+        task_updates = []
+        task_events = []
         bridge.state = SimpleNamespace(
             get_meta=lambda key, default="": meta.get(key, default),
             set_meta=lambda key, value: meta.__setitem__(key, value),
+            upsert_task_run=lambda **kwargs: task_updates.append(("upsert", kwargs)),
+            get_task_run=lambda _task_id: {"chat_id": 1, "request_trace_id": "req-1"},
+            update_task_run=lambda *args, **kwargs: task_updates.append(("update", args, kwargs)),
+            record_task_event=lambda **kwargs: task_events.append(kwargs),
         )
 
         TelegramBridge.register_pending_enterprise_job(bridge, {"job_id": "abc", "chat_id": 1})
         TelegramBridge.register_pending_enterprise_job(bridge, {"job_id": "def", "chat_id": 2})
         self.assertIn('"job_id": "abc"', meta["pending_enterprise_jobs"])
         self.assertIn('"job_id": "def"', meta["pending_enterprise_jobs"])
+        self.assertEqual(task_updates[0][0], "upsert")
+        self.assertEqual(task_events[0]["phase"], "job_registered")
 
         TelegramBridge.clear_pending_enterprise_job(bridge, "abc")
         self.assertNotIn('"job_id": "abc"', meta["pending_enterprise_jobs"])
@@ -2165,9 +2174,14 @@ class RuntimeRegressionTests(unittest.TestCase):
     def test_pending_enterprise_jobs_can_be_cleared_by_chat_after_delivery(self):
         bridge = TelegramBridge.__new__(TelegramBridge)
         meta = {}
+        task_events = []
         bridge.state = SimpleNamespace(
             get_meta=lambda key, default="": meta.get(key, default),
             set_meta=lambda key, value: meta.__setitem__(key, value),
+            upsert_task_run=lambda **_kwargs: None,
+            get_task_run=lambda _task_id: {"chat_id": 1, "request_trace_id": "req-1"},
+            update_task_run=lambda *args, **_kwargs: None,
+            record_task_event=lambda **kwargs: task_events.append(kwargs),
         )
 
         TelegramBridge.register_pending_enterprise_job(bridge, {"job_id": "abc", "chat_id": 1})
@@ -2179,6 +2193,58 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertNotIn('"job_id": "abc"', meta["pending_enterprise_jobs"])
         self.assertNotIn('"job_id": "ghi"', meta["pending_enterprise_jobs"])
         self.assertIn('"job_id": "def"', meta["pending_enterprise_jobs"])
+        self.assertTrue(any(item["phase"] == "queue_cleanup" for item in task_events))
+
+    def test_record_route_diagnostic_syncs_task_run_with_truth_markers(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        diagnostics_calls = []
+        task_updates = []
+        task_events = []
+        bridge.live_gateway = SimpleNamespace(consume_records=lambda: [])
+        bridge.state = SimpleNamespace(
+            record_request_diagnostic=lambda **kwargs: diagnostics_calls.append(kwargs),
+            update_task_run=lambda task_id, **kwargs: task_updates.append((task_id, kwargs)),
+            record_task_event=lambda **kwargs: task_events.append(kwargs),
+        )
+
+        TelegramBridge.record_route_diagnostic(
+            bridge,
+            chat_id=77,
+            user_id=5,
+            route_decision=RouteDecision(
+                persona="enterprise",
+                intent="project_audit",
+                chat_type="private",
+                route_kind="codex_workspace",
+                source_label="workspace",
+                use_live=False,
+                use_web=False,
+                use_events=True,
+                use_database=True,
+                use_reply=False,
+                use_workspace=True,
+                guardrails=("truth-only",),
+                request_kind="project",
+            ),
+            report=SelfCheckReport(
+                outcome="uncertain",
+                answer="Часть результатов подтверждена, часть требует проверки.",
+                flags=("needs_followup",),
+                observed_basis=("workspace",),
+                uncertain_points=("missing verification",),
+                mode="inferred",
+            ),
+            started_at=time.perf_counter(),
+            query_text="Проведи аудит",
+            request_trace_id="req-42",
+            task_id="task-42",
+        )
+
+        self.assertEqual(diagnostics_calls[0]["task_id"], "task-42")
+        self.assertEqual(task_updates[0][0], "task-42")
+        self.assertEqual(task_updates[0][1]["verification_state"], "inferred")
+        self.assertEqual(task_updates[0][1]["outcome"], "uncertain")
+        self.assertEqual(task_events[0]["phase"], "route_diagnostic")
 
     def test_achievement_announcements_are_deduplicated_per_chat_user_and_code(self):
         bridge = TelegramBridge.__new__(TelegramBridge)

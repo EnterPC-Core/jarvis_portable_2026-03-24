@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -66,6 +67,8 @@ def ask_codex_with_image(
         relation_memory_text=context_bundle.relation_memory_text,
         chat_memory_text=context_bundle.chat_memory_text,
         summary_memory_text=context_bundle.summary_memory_text,
+        task_context_text=context_bundle.task_context_text,
+        memory_trace_text=context_bundle.memory_trace_text,
     )
     return bridge.run_codex(prompt, image_path=image_path)
 
@@ -147,6 +150,8 @@ def ask_codex_with_document(
         relation_memory_text=context_bundle.relation_memory_text,
         chat_memory_text=context_bundle.chat_memory_text,
         summary_memory_text=context_bundle.summary_memory_text,
+        task_context_text=context_bundle.task_context_text,
+        memory_trace_text=context_bundle.memory_trace_text,
     )
     return bridge.run_codex(prompt)
 
@@ -164,6 +169,33 @@ def run_photo_task(
     normalize_whitespace_func,
     truncate_text_func,
 ) -> None:
+    message_id = int((message or {}).get("message_id") or 0) or None
+    sender_user_id = int(((message or {}).get("from") or {}).get("id") or 0) or None
+    task_id = f"media-photo-{chat_id}-{message_id or int(time.time() * 1000)}"
+    bridge.state.upsert_task_run(
+        task_id=task_id,
+        chat_id=chat_id,
+        user_id=sender_user_id,
+        message_id=message_id,
+        delivery_chat_id=chat_id,
+        task_kind="media_photo_analysis",
+        route_kind="attachment_analysis",
+        persona=bridge.state.get_mode(chat_id),
+        request_kind="chat_local_context",
+        source="telegram_media",
+        summary=caption or "photo analysis",
+        status="running",
+        verification_state="pending",
+    )
+    bridge.state.record_task_event(
+        task_id=task_id,
+        chat_id=chat_id,
+        request_trace_id=task_id,
+        phase="attachment_received",
+        status="running",
+        detail="photo queued for attachment analysis",
+        evidence_text=caption or "",
+    )
     try:
         with bridge.temp_workspace() as workspace:
             file_info = bridge.get_file_info(file_id)
@@ -187,8 +219,6 @@ def run_photo_task(
             )
 
         summary = caption or "без подписи"
-        message_id = int((message or {}).get("message_id") or 0)
-        sender_user_id = int(((message or {}).get("from") or {}).get("id") or 0)
         if message_id > 0:
             bridge.state.record_message_subject(
                 chat_id=chat_id,
@@ -209,7 +239,41 @@ def run_photo_task(
         bridge.state.append_history(chat_id, "user", f"[Пользователь отправил фото: caption={summary}]")
         bridge.state.append_history(chat_id, "assistant", answer)
         bridge.state.record_event(chat_id, None, "assistant", "answer", answer)
+        bridge.state.update_task_run(
+            task_id,
+            status="completed",
+            verification_state="tool_observed",
+            outcome="ok",
+            evidence_text=answer,
+        )
+        bridge.state.record_task_event(
+            task_id=task_id,
+            chat_id=chat_id,
+            request_trace_id=task_id,
+            phase="attachment_analysis",
+            status="completed",
+            detail="photo analyzed through attachment route",
+            evidence_text=answer,
+        )
         bridge.safe_send_text(chat_id, answer, reply_to_message_id=(message or {}).get("message_id"))
+    except Exception as error:
+        bridge.state.update_task_run(
+            task_id,
+            status="failed",
+            verification_state="failed",
+            outcome="error",
+            error_text=str(error),
+        )
+        bridge.state.record_task_event(
+            task_id=task_id,
+            chat_id=chat_id,
+            request_trace_id=task_id,
+            phase="attachment_analysis",
+            status="failed",
+            detail="photo analysis failed",
+            evidence_text=str(error),
+        )
+        raise
     finally:
         bridge.state.finish_chat_task(chat_id)
 
@@ -229,6 +293,33 @@ def run_document_task(
     read_document_excerpt_func,
     truncate_text_func,
 ) -> None:
+    message_id = int((message or {}).get("message_id") or 0) or None
+    sender_user_id = int(((message or {}).get("from") or {}).get("id") or 0) or None
+    task_id = f"media-document-{chat_id}-{message_id or int(time.time() * 1000)}"
+    bridge.state.upsert_task_run(
+        task_id=task_id,
+        chat_id=chat_id,
+        user_id=sender_user_id,
+        message_id=message_id,
+        delivery_chat_id=chat_id,
+        task_kind="media_document_analysis",
+        route_kind="attachment_analysis",
+        persona=bridge.state.get_mode(chat_id),
+        request_kind="chat_local_context",
+        source="telegram_media",
+        summary=caption or str(document.get("file_name") or "document analysis"),
+        status="running",
+        verification_state="pending",
+    )
+    bridge.state.record_task_event(
+        task_id=task_id,
+        chat_id=chat_id,
+        request_trace_id=task_id,
+        phase="attachment_received",
+        status="running",
+        detail="document queued for attachment analysis",
+        evidence_text=caption or str(document.get("file_name") or ""),
+    )
     try:
         with bridge.temp_workspace() as workspace:
             file_info = bridge.get_file_info(file_id)
@@ -256,7 +347,41 @@ def run_document_task(
         bridge.state.append_history(chat_id, "user", f"[Пользователь отправил документ: {summary}]")
         bridge.state.append_history(chat_id, "assistant", answer)
         bridge.state.record_event(chat_id, None, "assistant", "answer", answer)
+        bridge.state.update_task_run(
+            task_id,
+            status="completed",
+            verification_state="tool_observed",
+            outcome="ok",
+            evidence_text=answer,
+        )
+        bridge.state.record_task_event(
+            task_id=task_id,
+            chat_id=chat_id,
+            request_trace_id=task_id,
+            phase="attachment_analysis",
+            status="completed",
+            detail="document analyzed through attachment route",
+            evidence_text=answer,
+        )
         bridge.safe_send_text(chat_id, answer, reply_to_message_id=(message or {}).get("message_id"))
+    except Exception as error:
+        bridge.state.update_task_run(
+            task_id,
+            status="failed",
+            verification_state="failed",
+            outcome="error",
+            error_text=str(error),
+        )
+        bridge.state.record_task_event(
+            task_id=task_id,
+            chat_id=chat_id,
+            request_trace_id=task_id,
+            phase="attachment_analysis",
+            status="failed",
+            detail="document analysis failed",
+            evidence_text=str(error),
+        )
+        raise
     finally:
         bridge.state.finish_chat_task(chat_id)
 

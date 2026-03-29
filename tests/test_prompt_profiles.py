@@ -116,14 +116,14 @@ class PromptProfileTests(unittest.TestCase):
         self.assertIn("User: старый контекст 9", prompt)
         self.assertIn("Jarvis: промежуточный ответ 9", prompt)
         self.assertIn("User message:\nПроверь это", prompt)
-        self.assertNotIn("Reply context:", prompt)
+        self.assertIn("Reply context:", prompt)
         self.assertNotIn("Route context:", prompt)
-        self.assertNotIn("Guardrails:", prompt)
+        self.assertIn("Guardrails:", prompt)
         self.assertNotIn("Rolling summary:", prompt)
-        self.assertNotIn("Facts:", prompt)
-        self.assertNotIn("Discussion context:", prompt)
-        self.assertNotIn("Event context:", prompt)
-        self.assertNotIn("Database context:", prompt)
+        self.assertIn("Facts:", prompt)
+        self.assertIn("Discussion context:", prompt)
+        self.assertIn("Event context:", prompt)
+        self.assertIn("Database context:", prompt)
         self.assertNotIn("Relation memory:", prompt)
         self.assertNotIn("Chat memory:", prompt)
         self.assertNotIn("Summary memory:", prompt)
@@ -323,16 +323,56 @@ class PromptProfileTests(unittest.TestCase):
             max_history_item_chars=120,
             reply_context="Ответ на сообщение Дмитрия (owner)",
             discussion_context="current_speaker: Дмитрий (owner)",
+            facts_text="Факт: в чате сейчас обсуждают runtime.",
+            event_context="Событие: owner ответил на алерт.",
+            database_context="DB: найдено 3 релевантных записи.",
+            task_context_text="attachment_analysis: status=tool_observed",
+            memory_trace_text="Memory trace: reply_context -> chat_events -> user_memory",
             relation_memory_text="Дмитрий (owner) часто инициирует техпроверки.",
             chat_memory_text="В чате тестируют Jarvis и проверяют память.",
             summary_memory_text="ai_rollup: owner тестирует reply-aware поведение.",
         )
+        self.assertIn("Facts:", prompt)
+        self.assertIn("Event context:", prompt)
+        self.assertIn("Database context:", prompt)
         self.assertIn("Reply context:", prompt)
         self.assertIn("Discussion context:", prompt)
+        self.assertIn("Task continuity:", prompt)
+        self.assertIn("Memory trace:", prompt)
         self.assertIn("Relation memory:", prompt)
         self.assertIn("Chat memory:", prompt)
         self.assertIn("Summary memory:", prompt)
         self.assertIn("Дмитрий (owner)", prompt)
+
+    def test_prompt_builder_includes_database_event_and_task_blocks_for_enterprise(self):
+        prompt = build_prompt(
+            mode="enterprise",
+            history=[("user", "Проверь runtime"), ("assistant", "Смотрю")],
+            user_text="Покажи, что реально произошло с задачей",
+            mode_prompts={},
+            default_mode_name="jarvis",
+            base_system_prompt="legacy should be ignored",
+            detect_intent_func=lambda _text: "runtime",
+            response_shape_hint_func=lambda _intent: "strict",
+            truncate_text_func=lambda text, limit: text[:limit],
+            max_history_item_chars=120,
+            summary_text="Короткая сводка",
+            facts_text="Факт: task_id=abc",
+            event_context="event: queued -> finished",
+            database_context="db: task_runs row found",
+            reply_context="reply target present",
+            discussion_context="owner requested audit",
+            task_context_text="enterprise_route: status=tool_observed",
+            memory_trace_text="Memory trace: database_context -> task_context",
+            world_state_text="bridge_alive=yes",
+            user_memory_text="owner prefers direct answers",
+        )
+        self.assertIn("Summary:", prompt)
+        self.assertIn("Facts:", prompt)
+        self.assertIn("Event context:", prompt)
+        self.assertIn("Database context:", prompt)
+        self.assertIn("Task continuity:", prompt)
+        self.assertIn("Memory trace:", prompt)
 
     def test_postprocess_rewrites_gpt_identity_leak(self):
         result = postprocess_answer(

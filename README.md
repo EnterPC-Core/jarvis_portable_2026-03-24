@@ -95,10 +95,15 @@ sh start_jarvis_on_termux.sh
 - [`services/bridge_memory_profiles.py`](./services/bridge_memory_profiles.py) — participant/user memory, visual signals, message subjects, active subject
 - [`services/bridge_moderation_state.py`](./services/bridge_moderation_state.py) — moderation state, warnings, welcome, upgrade/task locks, dedupe
 - [`services/bridge_diagnostics_state.py`](./services/bridge_diagnostics_state.py) — request diagnostics, repair journal, self-heal incidents, world-state rows
+- [`services/bridge_task_state.py`](./services/bridge_task_state.py) — persistent task lifecycle, `task_runs`, `task_events`, task continuity rendering
 - [`services/ask_codex_service.py`](./services/ask_codex_service.py) — LLM orchestration wrapper, вынесенный из bridge
 - [`services/text_task_service.py`](./services/text_task_service.py) — text-task execution и recent chat report flow
 - [`services/reply_context_service.py`](./services/reply_context_service.py) — reply-context и active-subject resolver
 - [`services/media_task_service.py`](./services/media_task_service.py) — photo/document/voice task flow и attachment-aware media prompting
+- [`services/context_assembly.py`](./services/context_assembly.py) — сборка retrieval/context bundle без Telegram I/O
+- [`services/text_route_service.py`](./services/text_route_service.py) — prompt/runtime prep для text route
+- [`services/diagnostics_pipeline.py`](./services/diagnostics_pipeline.py) — route-to-diagnostics enrichment, memory/tool derivation
+- [`services/js_enterprise_service.py`](./services/js_enterprise_service.py) — bridge <-> enterprise-server long-running job transport
 - [`services/enterprise_console_webapp.py`](./services/enterprise_console_webapp.py) — owner webapp/console HTML и server
 - [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — Telegram ingress/update dispatch вне monolith entrypoint
 - [`handlers/control_panel_renderer.py`](./handlers/control_panel_renderer.py) — owner/public inline UI и `Jarvis Control`
@@ -272,10 +277,20 @@ Moderation enforcement не смешивается с search pipeline и prompt 
 - `RouteDecision` — жёсткое решение роутера: `live_*`, `codex_chat`, `codex_workspace`
 - `ContextBundle` — единая сборка контекста для prompt layer
 - `SelfCheckReport` — post-response self-check перед финальной диагностикой и выдачей
+- `task_runs` + `task_events` — единый persistent lifecycle для `request_trace_id -> task_id -> phase/status -> evidence`
 
 Это нужно, чтобы routing, prompt-building, diagnostics и guardrails жили по одному контракту, а не по разрозненным dict-эвристикам.
 
 Эти слои не заменяют `chat_history`, а дополняют его и подаются в prompt отдельно.
+
+Теперь retrieval path доведён до prompt layer полностью:
+
+- `facts_text`
+- `event_context`
+- `database_context`
+- `task_context_text`
+- `memory_trace_text`
+- memory-слои (`user/relation/chat/summary`)
 
 Поверх контрактов зафиксированы lessons из реального feedback и operational logs:
 
@@ -284,6 +299,7 @@ Moderation enforcement не смешивается с search pipeline и prompt 
 - запросы про `этот чат`, `тут`, `в чате`, `контекст`, `участников` не должны улетать в live/news; им нужен локальный route через chat memory, relation memory, events и participant registry
 - явный вызов `Enterprise` должен удерживать инженерный режим ответа и не сваливаться в общий `Jarvis`-тон
 - bot не должен заявлять о выполненных действиях без route/tool-подтверждения
+- успешный tool/job exit сам по себе не равен `verified`: для attachment/enterprise flow сначала ставится `tool_observed`, а финальная truth-marker семантика дожимается после diagnostics/self-check
 
 ### Owner / Admin UI
 
@@ -373,6 +389,7 @@ Moderation enforcement не смешивается с search pipeline и prompt 
 - `jarvis_memory.db-wal`, `jarvis_memory.db-shm` — служебные файлы SQLite
 - `../jarvis_legacy_data/jarvis.db` — legacy-источник для рейтинга, достижений, топов и апелляций
 - внутри основной базы теперь есть `chat_participants` и `chat_runtime_cache` для локального знания об участниках, админах и `member_count`
+- внутри основной базы есть `task_runs` и `task_events` для честного восстановления task flow по фазам, а не только по финальному статусу
 
 ## Как это работает сейчас
 
@@ -399,6 +416,12 @@ Moderation enforcement не смешивается с search pipeline и prompt 
 - есть отдельные owner-команды `/gitstatus`, `/gitlast`, `/errors`, `/events`, `/routes`, `/chatdigest`
 - есть отдельные owner memory-inspection команды `/memorychat`, `/memoryuser`, `/memorysummary`
 - есть owner-introspection по persistent entity слоям: `/selfstate`, `/worldstate`, `/drives`, `/autobio`, `/skills`, `/reflections`
+
+Task continuity:
+
+- long-running enterprise jobs сохраняют `request_trace_id`, `task_id`, `status`, `approval_state`, `verification_state`, `outcome`, `tools_used`, `memory_used`
+- поверх этого пишется `task_events`-лента по фазам (`job_registered`, `job_resume`, `job_finished`, `route_diagnostic`, `attachment_analysis`, `queue_cleanup`)
+- это позволяет честно восстановить цепочку `request -> route -> runtime/tool action -> diagnostics -> final outcome`
 
 Health-слой:
 

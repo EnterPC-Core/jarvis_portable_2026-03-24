@@ -9,12 +9,17 @@
 - Request diagnostics tracked route selection, but not response mode, memory use, source set, or tools used.
 - Attachment handling existed, but image/document flow still relied mostly on prompt text instead of a typed attachment contract.
 - Owner/admin commands are powerful, but they still behave more like a wide command surface than a unified operational subsystem.
+- Task persistence existed, but route diagnostics and task lifecycle were not fully stitched into one causal chain.
 
 ## 2. Target Architecture
 
 End-to-end pipeline:
 
 `request -> request_kind -> route policy -> RouteDecision -> ContextBundle / AttachmentBundle -> runtime/live/workspace/local-state execution -> SelfCheckReport -> response contract -> diagnostics`
+
+Current truth-oriented persistence chain:
+
+`request_trace_id -> task_runs -> task_events -> request_diagnostics -> final owner/user outcome`
 
 Primary routing domains:
 
@@ -38,11 +43,15 @@ This blueprint is no longer purely aspirational. The following slices are alread
 - `services/bridge_memory_profiles.py`
 - `services/bridge_moderation_state.py`
 - `services/bridge_diagnostics_state.py`
+- `services/bridge_task_state.py`
 - `services/reply_context_service.py`
 - `services/text_task_service.py`
 - `services/media_task_service.py`
 - `services/ask_codex_service.py`
 - `services/enterprise_console_webapp.py`
+- `services/context_assembly.py`
+- `services/text_route_service.py`
+- `services/js_enterprise_service.py`
 
 Current residual monolith areas:
 
@@ -93,6 +102,8 @@ Current residual monolith areas:
   moderation/warn/welcome/task lock persistence extracted from `BridgeState`
 - `services/bridge_diagnostics_state.py`
   request diagnostics, repair journal, self-heal state and world-state row access
+- `services/bridge_task_state.py`
+  persistent task lifecycle, `task_runs`, `task_events`, task continuity rendering
 - `services/media_task_service.py`
   photo/document/voice task orchestration and attachment-aware media prompting
 - `services/bridge_file_helpers.py`
@@ -101,6 +112,10 @@ Current residual monolith areas:
   stateless git/log/runtime ops helper wrappers used by bridge compatibility wrappers
 - `services/context_assembly.py`
   `ContextBundle` composition for text and attachments
+- `services/text_route_service.py`
+  route-aware prompt/runtime preparation for text requests
+- `services/js_enterprise_service.py`
+  long-running enterprise job transport, progress flow and bridge/server continuity
 - `services/discussion_context.py`
   local discussion and reply-aware context with safe fallback on sparse databases
 - `services/group_reply_policy.py`
@@ -127,7 +142,15 @@ Controlled migration note:
   remain as compatibility layers that re-export or bridge to the new package layout
 - bridge helper wrappers are now progressively backed by `services/bridge_runtime_text.py`, `services/bridge_file_helpers.py` and `services/bridge_ops_helpers.py`
 - storage/state compatibility wrappers are now progressively backed by `services/bridge_state_schema.py`, `services/bridge_chat_state.py`, `services/bridge_memory_profiles.py`, `services/bridge_moderation_state.py` and `services/bridge_diagnostics_state.py`
+- task continuity wrappers are now progressively backed by `services/bridge_task_state.py`
 - this keeps behavior stable while reducing the legacy file incrementally instead of rewriting it in one pass
+
+## 3.1 Truthfulness And Verification Discipline
+
+- `tool_observed` means the system has observed a real tool/runtime completion, but has not yet upgraded that result to a stronger truth claim.
+- final `verified/inferred/insufficient` semantics belong to diagnostics/self-check, not to raw process exit.
+- attachment and enterprise flows therefore write lifecycle first, and truth-marker second.
+- `task_events` preserve causality across restarts and long-running jobs instead of inferring it from a single final row.
 
 ## 4. Improved Data Contracts
 

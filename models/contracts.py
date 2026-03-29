@@ -40,6 +40,8 @@ class ContextBundle:
     relation_memory_text: str = ""
     chat_memory_text: str = ""
     summary_memory_text: str = ""
+    task_context_text: str = ""
+    memory_trace_text: str = ""
     web_context: str = ""
     route_summary: str = ""
     guardrail_note: str = ""
@@ -101,6 +103,14 @@ class AttachmentBundle:
     used_in_response: bool = False
 
 
+@dataclass(frozen=True)
+class MemoryContextItem:
+    layer: str
+    text: str = ""
+    priority: int = 0
+    source: str = ""
+
+
 ROUTER_POLICY_MATRIX: Dict[str, RequestRoutePolicy] = {
     "chat": RequestRoutePolicy(
         request_kind="chat",
@@ -151,4 +161,3 @@ ROUTER_POLICY_MATRIX: Dict[str, RequestRoutePolicy] = {
         answer_contract="строгий owner-ops ответ с operational trace",
     ),
 }
-

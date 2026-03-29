@@ -161,6 +161,8 @@ def build_prompt(
     relation_memory_text: str = "",
     chat_memory_text: str = "",
     summary_memory_text: str = "",
+    task_context_text: str = "",
+    memory_trace_text: str = "",
 ) -> str:
     del mode_prompts, base_system_prompt
     profile = load_runtime_profile(mode, default=default_mode_name)
@@ -175,42 +177,65 @@ def build_prompt(
         )
     if profile.name == "enterprise":
         history_block = format_enterprise_history(history, user_text, truncate_text_func, max_history_item_chars)
+        summary_block = f"Summary:\n{truncate_text_func(summary_text, 700)}\n\n" if summary_text else ""
+        facts_block = f"Facts:\n{truncate_text_func(facts_text, 900)}\n\n" if facts_text else ""
+        event_block = f"Event context:\n{truncate_text_func(event_context, 1300)}\n\n" if event_context else ""
+        database_block = f"Database context:\n{truncate_text_func(database_context, 1000)}\n\n" if database_context else ""
         user_memory_block = f"User profile:\n{truncate_text_func(user_memory_text, 320)}\n\n" if user_memory_text else ""
+        reply_block = f"Reply context:\n{truncate_text_func(reply_context, 900)}\n\n" if reply_context else ""
+        discussion_block = f"Discussion context:\n{truncate_text_func(discussion_context, 1000)}\n\n" if discussion_context else ""
+        task_block = f"Task continuity:\n{truncate_text_func(task_context_text, 1100)}\n\n" if task_context_text else ""
+        world_state_block = f"World state:\n{truncate_text_func(world_state_text, 700)}\n\n" if world_state_text else ""
+        route_block = f"Route contract:\n{truncate_text_func(route_summary, 500)}\n\n" if route_summary else ""
+        guardrail_block = f"Guardrails:\n{truncate_text_func(guardrail_note, 500)}\n\n" if guardrail_note else ""
+        memory_trace_block = f"{truncate_text_func(memory_trace_text, 500)}\n\n" if memory_trace_text else ""
         del (
             attachment_note,
             summary_text,
             facts_text,
             event_context,
             database_context,
-            reply_context,
-            discussion_context,
             identity_label,
             include_identity_prompt,
             persona_note,
             owner_note,
             web_context,
-            route_summary,
-            guardrail_note,
             self_model_text,
             autobiographical_text,
             skill_memory_text,
-            world_state_text,
             drive_state_text,
             relation_memory_text,
             chat_memory_text,
             summary_memory_text,
+            task_context_text,
+            memory_trace_text,
             truncate_text_func,
             max_history_item_chars,
         )
         return (
             f"{system_prefix}"
             f"Response contract:\n{response_shape_hint}\n\n"
+            f"{route_block}"
+            f"{guardrail_block}"
+            f"{summary_block}"
+            f"{facts_block}"
+            f"{reply_block}"
+            f"{event_block}"
+            f"{database_block}"
+            f"{discussion_block}"
+            f"{task_block}"
+            f"{world_state_block}"
+            f"{memory_trace_block}"
             f"{user_memory_block}"
             f"Relevant chat context:\n{history_block}\n\n"
             f"User message:\n{user_text}"
         )
     history_block = format_history(history, user_text, truncate_text_func, max_history_item_chars)
     attachment_block = f"Attachment note:\n{attachment_note}\n\n" if attachment_note else ""
+    summary_block = f"Summary:\n{truncate_text_func(summary_text, 800)}\n\n" if summary_text else ""
+    facts_block = f"Facts:\n{truncate_text_func(facts_text, 1200)}\n\n" if facts_text else ""
+    event_block = f"Event context:\n{truncate_text_func(event_context, 1600)}\n\n" if event_context else ""
+    database_block = f"Database context:\n{truncate_text_func(database_context, 1200)}\n\n" if database_context else ""
     reply_block = f"Reply context:\n{truncate_text_func(reply_context, 2200)}\n\n" if reply_context else ""
     discussion_block = f"Discussion context:\n{truncate_text_func(discussion_context, 2600)}\n\n" if discussion_context else ""
     user_memory_block = f"User profile:\n{truncate_text_func(user_memory_text, 900)}\n\n" if user_memory_text else ""
@@ -221,14 +246,25 @@ def build_prompt(
     summary_memory_block = (
         f"Summary memory:\n{truncate_text_func(summary_memory_text, 1000)}\n\n" if summary_memory_text else ""
     )
-    del route_summary, guardrail_note
+    task_block = f"Task continuity:\n{truncate_text_func(task_context_text, 1200)}\n\n" if task_context_text else ""
+    memory_trace_block = f"{truncate_text_func(memory_trace_text, 500)}\n\n" if memory_trace_text else ""
+    route_block = f"Route contract:\n{truncate_text_func(route_summary, 500)}\n\n" if route_summary else ""
+    guardrail_block = f"Guardrails:\n{truncate_text_func(guardrail_note, 500)}\n\n" if guardrail_note else ""
     del identity_label, include_identity_prompt, persona_note, owner_note
     return (
         f"{system_prefix}"
         f"Response contract:\n{response_shape_hint}\n\n"
+        f"{route_block}"
+        f"{guardrail_block}"
         f"{attachment_block}"
+        f"{summary_block}"
+        f"{facts_block}"
         f"{reply_block}"
+        f"{event_block}"
+        f"{database_block}"
         f"{discussion_block}"
+        f"{task_block}"
+        f"{memory_trace_block}"
         f"{user_memory_block}"
         f"{relation_memory_block}"
         f"{chat_memory_block}"

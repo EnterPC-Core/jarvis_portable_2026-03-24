@@ -1,3 +1,4 @@
+import secrets
 import time
 from typing import Callable, Optional, Type
 
@@ -33,6 +34,7 @@ def ask_codex(
     progress_status_guard_cls: Type["ProgressStatusGuard"],
 ) -> str:
     started_at = time.perf_counter()
+    request_trace_id = f"req-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
     reply_context = bridge.build_reply_context(chat_id, message)
     active_subject_context = bridge.build_active_subject_context(chat_id, user_id, user_text, message)
     if active_subject_context:
@@ -141,6 +143,7 @@ def ask_codex(
             report=report,
             started_at=started_at,
             query_text=user_text,
+            request_trace_id=request_trace_id,
         )
         return report.answer
 
@@ -216,6 +219,14 @@ def ask_codex(
             show_status_message=allow_status_message,
             target_label=progress_target_label,
             delivery_chat_id=delivery_chat_id,
+            request_trace_id=request_trace_id,
+            task_kind="enterprise_route",
+            route_kind=route_decision.route_kind,
+            persona=route_decision.persona,
+            request_kind=route_decision.request_kind,
+            user_id=user_id,
+            message_id=int((message or {}).get("message_id") or 0) or None,
+            summary=user_text,
         )
     else:
         bridge.log(
@@ -233,6 +244,14 @@ def ask_codex(
             timeout_seconds=preparation.route_timeout_seconds,
             target_label=progress_target_label,
             delivery_chat_id=delivery_chat_id,
+            request_trace_id=request_trace_id,
+            task_kind="codex_route",
+            route_kind=route_decision.route_kind,
+            persona=route_decision.persona,
+            request_kind=route_decision.request_kind,
+            user_id=user_id,
+            message_id=int((message or {}).get("message_id") or 0) or None,
+            summary=user_text,
         )
         bridge.log(
             "ask_codex model_end "
@@ -260,6 +279,8 @@ def ask_codex(
         report=report,
         started_at=started_at,
         query_text=user_text,
+        request_trace_id=request_trace_id,
+        task_id=bridge.state.find_latest_task_id_by_request_trace(request_trace_id),
     )
     return report.answer
 

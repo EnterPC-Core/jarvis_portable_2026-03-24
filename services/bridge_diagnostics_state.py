@@ -30,6 +30,8 @@ def record_request_diagnostic(
     notes: str,
     latency_ms: int,
     query_text: str,
+    request_trace_id: str = "",
+    task_id: str = "",
     *,
     truncate_text_func,
     normalize_whitespace_func,
@@ -40,8 +42,8 @@ def record_request_diagnostic(
                 chat_id, user_id, chat_type, persona, intent, route_kind, source_label,
                 used_live, used_web, used_events, used_database, used_reply, used_workspace,
                 guardrails, outcome, request_kind, response_mode, sources, tools_used, memory_used,
-                confidence, freshness, notes, latency_ms, query_text
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                confidence, freshness, notes, latency_ms, query_text, request_trace_id, task_id
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 chat_id,
                 user_id,
@@ -68,6 +70,8 @@ def record_request_diagnostic(
                 truncate_text_func(normalize_whitespace_func(notes), 600),
                 max(0, int(latency_ms)),
                 truncate_text_func(normalize_whitespace_func(query_text), 900),
+                truncate_text_func(request_trace_id, 80),
+                truncate_text_func(task_id, 120),
             ),
         )
         state.db.commit()

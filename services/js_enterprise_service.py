@@ -34,6 +34,7 @@ class JSEnterpriseServiceDeps:
     enterprise_worker_path: Optional[Path] = None
     enterprise_server_base_url: str = "http://127.0.0.1:8766"
     register_pending_job_func: Optional[Callable[[dict], None]] = None
+    update_pending_job_func: Optional[Callable[..., None]] = None
     clear_pending_job_func: Optional[Callable[[str], None]] = None
 
 
@@ -226,6 +227,16 @@ class JSEnterpriseService:
                             status_message_id,
                             f"{initial_status}\n\n⚠ Завершение\n└ Задача потеряна после рестарта",
                         )
+                    if self.deps.update_pending_job_func is not None:
+                        self.deps.update_pending_job_func(
+                            job_id,
+                            status="lost",
+                            verification_state="failed",
+                            outcome="error",
+                            error_text="enterprise job snapshot not found after restart",
+                            phase="job_wait",
+                            detail="enterprise job snapshot missing after restart",
+                        )
                     if clear_pending_on_finish and self.deps.clear_pending_job_func is not None:
                         self.deps.clear_pending_job_func(job_id)
                     return lost_answer
@@ -255,6 +266,16 @@ class JSEnterpriseService:
                         status_message_id,
                         f"{initial_status}\n\nПревышено время ожидания: {effective_timeout} сек.",
                     )
+                if self.deps.update_pending_job_func is not None:
+                    self.deps.update_pending_job_func(
+                        job_id,
+                        status="timed_out",
+                        verification_state="failed",
+                        outcome="timeout",
+                        error_text=f"enterprise wait timeout after {effective_timeout} seconds",
+                        phase="job_wait",
+                        detail="enterprise wait timed out",
+                    )
                 if approval_policy == "never" and sandbox_mode == "workspace-write":
                     return self.deps.upgrade_timeout_text
                 return "Слишком долгий ответ. Повтори короче или уточни запрос."
@@ -271,6 +292,17 @@ class JSEnterpriseService:
             )
         if ok:
             answer = answer if not postprocess else self.deps.postprocess_answer_func(answer, None)
+        if self.deps.update_pending_job_func is not None:
+            self.deps.update_pending_job_func(
+                job_id,
+                status="completed" if ok else "failed",
+                verification_state="tool_observed" if ok else "failed",
+                outcome="ok" if ok else "error",
+                evidence_text=answer if ok else "",
+                error_text=stderr if not ok else "",
+                phase="job_finished",
+                detail="enterprise worker finished with usable answer" if ok else "enterprise worker failed",
+            )
         if progress_style == "enterprise" and status_message_id is not None and not replace_status_with_answer:
             final_snapshot = dict(snapshot)
             raw_events = final_snapshot.get("events") or []
@@ -357,6 +389,14 @@ class JSEnterpriseService:
         show_status_message: bool = True,
         target_label: str = "",
         delivery_chat_id: Optional[int] = None,
+        request_trace_id: str = "",
+        task_kind: str = "",
+        route_kind: str = "",
+        persona: str = "",
+        request_kind: str = "",
+        user_id: Optional[int] = None,
+        message_id: Optional[int] = None,
+        summary: str = "",
     ) -> str:
         progress_chat_id = int(delivery_chat_id or chat_id or 0)
         if progress_chat_id == 0:
@@ -388,6 +428,8 @@ class JSEnterpriseService:
                         {
                             "job_id": job_id,
                             "chat_id": chat_id,
+                            "user_id": int(user_id or 0),
+                            "message_id": int(message_id or 0),
                             "progress_chat_id": progress_chat_id,
                             "status_message_id": status_message_id,
                             "initial_status": initial_status,
@@ -399,6 +441,12 @@ class JSEnterpriseService:
                             "approval_policy": approval_policy or "",
                             "sandbox_mode": sandbox_mode or "",
                             "timeout_seconds": effective_timeout or 0,
+                            "request_trace_id": request_trace_id,
+                            "task_kind": task_kind or "enterprise_job",
+                            "route_kind": route_kind,
+                            "persona": persona,
+                            "request_kind": request_kind,
+                            "summary": summary or self.deps.shorten_for_log_func(prompt, 280),
                         }
                     )
                 return self.wait_for_job(

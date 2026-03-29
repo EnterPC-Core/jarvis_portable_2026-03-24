@@ -1,6 +1,8 @@
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from services.route_contracts import AttachmentBundle, ContextBundle, LiveProviderRecord, RouteDecision, SelfCheckReport
+from services.context_bundle_utils import collect_memory_context_items
+from models.contracts import MemoryContextItem
 
 
 def derive_tools_used(route_decision: RouteDecision) -> Tuple[str, ...]:
@@ -29,23 +31,21 @@ def derive_memory_used(context_bundle: Optional[ContextBundle], route_decision: 
             for source in ("database_context", "reply_context")
             if getattr(route_decision, "use_database" if source == "database_context" else "use_reply", False)
         )
-    layers: List[str] = []
-    precedence_order = (
-        ("database_context", context_bundle.database_context),
-        ("reply_context", context_bundle.reply_context),
-        ("chat_events", context_bundle.event_context),
-        ("world_state", context_bundle.world_state_text),
-        ("user_memory", context_bundle.user_memory_text),
-        ("relation_memory", context_bundle.relation_memory_text),
-        ("chat_memory", context_bundle.chat_memory_text),
-        ("summary_memory", context_bundle.summary_memory_text),
+    collected = collect_memory_context_items(
+        (
+            MemoryContextItem("database_context", context_bundle.database_context, priority=1),
+            MemoryContextItem("reply_context", context_bundle.reply_context, priority=2),
+            MemoryContextItem("chat_events", context_bundle.event_context, priority=3),
+            MemoryContextItem("task_context", context_bundle.task_context_text, priority=4),
+            MemoryContextItem("world_state", context_bundle.world_state_text, priority=5),
+            MemoryContextItem("user_memory", context_bundle.user_memory_text, priority=6),
+            MemoryContextItem("relation_memory", context_bundle.relation_memory_text, priority=7),
+            MemoryContextItem("chat_memory", context_bundle.chat_memory_text, priority=8),
+            MemoryContextItem("summary_memory", context_bundle.summary_memory_text, priority=9),
+        ),
+        max_items=4,
     )
-    for layer_name, layer_value in precedence_order:
-        if layer_value:
-            layers.append(layer_name)
-    if len(layers) > 4:
-        layers = layers[:4]
-    return tuple(layers)
+    return tuple(item.layer for item in collected)
 
 
 def derive_response_mode(outcome: str) -> str:

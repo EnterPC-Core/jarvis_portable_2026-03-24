@@ -87,6 +87,8 @@ class TextRouteService:
             relation_memory_text=context_bundle.relation_memory_text,
             chat_memory_text=context_bundle.chat_memory_text,
             summary_memory_text=context_bundle.summary_memory_text,
+            task_context_text=getattr(context_bundle, "task_context_text", ""),
+            memory_trace_text=getattr(context_bundle, "memory_trace_text", ""),
         )
         history_items = list(bridge.state.get_history(chat_id))
         self.deps.log_func(

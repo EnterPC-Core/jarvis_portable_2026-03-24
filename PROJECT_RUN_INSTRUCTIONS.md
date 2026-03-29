@@ -71,6 +71,7 @@
 - `RouteDecision` — определяет, идёт ли запрос в `live_*`, `codex_chat` или `codex_workspace`
 - `ContextBundle` — собирает memory/context слои для prompt
 - `SelfCheckReport` — финальный self-check после ответа
+- `task_runs` / `task_events` — persistent task lifecycle и causal trace для long-running flow
 
 Это упрощает отладку, делает `/routes` полезнее и снижает риск случайных route-расхождений между модулями.
 
@@ -335,6 +336,12 @@ ps -ef | grep -E 'tg_codex_bridge.py|run_jarvis_supervisor.sh|enterprise_server.
 - `/memorychat [запрос]` — текущий chat memory слой
 - `/memoryuser [@username|user_id]` — текущий user memory слой по участнику
 - relation memory отдельной команды пока не имеет; он автоматически подтягивается в prompt для локальных chat/participant запросов
+
+Task truth markers:
+
+- `pending` — задача стартовала, но не закончила execution/diagnostics
+- `tool_observed` — tool/job реально завершился и это зафиксировано, но truth claim ещё не усилен diagnostics-слоем
+- `verified` / `inferred` / `insufficient` — финальная response truthfulness после `SelfCheckReport` и persisted diagnostics
 
 Отдельно:
 

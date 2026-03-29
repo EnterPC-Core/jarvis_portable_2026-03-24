@@ -464,6 +464,52 @@ def initialize_bridge_state_db(
         )"""
     )
     state.db.execute(
+        """CREATE TABLE IF NOT EXISTS task_runs (
+            task_id TEXT PRIMARY KEY,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER,
+            message_id INTEGER,
+            delivery_chat_id INTEGER,
+            progress_message_id INTEGER,
+            request_trace_id TEXT NOT NULL DEFAULT '',
+            task_kind TEXT NOT NULL DEFAULT '',
+            route_kind TEXT NOT NULL DEFAULT '',
+            persona TEXT NOT NULL DEFAULT '',
+            request_kind TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            approval_state TEXT NOT NULL DEFAULT '',
+            verification_state TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL DEFAULT '',
+            evidence_text TEXT NOT NULL DEFAULT '',
+            error_text TEXT NOT NULL DEFAULT '',
+            tools_used TEXT NOT NULL DEFAULT '',
+            memory_used TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            completed_at INTEGER
+        )"""
+    )
+    state.db.execute(
+        """CREATE TABLE IF NOT EXISTS task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL DEFAULT '',
+            request_trace_id TEXT NOT NULL DEFAULT '',
+            chat_id INTEGER NOT NULL DEFAULT 0,
+            phase TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '',
+            evidence_text TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        )"""
+    )
+    state.db.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_chat_updated ON task_runs(chat_id, updated_at DESC)")
+    state.db.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_request_trace ON task_runs(request_trace_id, updated_at DESC)")
+    state.db.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status, updated_at DESC)")
+    state.db.execute("CREATE INDEX IF NOT EXISTS idx_task_events_task_created ON task_events(task_id, created_at DESC)")
+    state.db.execute("CREATE INDEX IF NOT EXISTS idx_task_events_chat_created ON task_events(chat_id, created_at DESC)")
+    state.db.execute(
         "CREATE TABLE IF NOT EXISTS moderation_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by_user_id INTEGER, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), expires_at INTEGER, active INTEGER NOT NULL DEFAULT 1, completed_at INTEGER)"
     )
     state.db.execute("CREATE INDEX IF NOT EXISTS idx_moderation_actions_active_expires ON moderation_actions(active, expires_at)")
@@ -564,6 +610,8 @@ def ensure_request_diagnostics_columns(state: "BridgeState") -> None:
         "confidence": "REAL NOT NULL DEFAULT 0.0",
         "freshness": "TEXT NOT NULL DEFAULT ''",
         "notes": "TEXT NOT NULL DEFAULT ''",
+        "request_trace_id": "TEXT NOT NULL DEFAULT ''",
+        "task_id": "TEXT NOT NULL DEFAULT ''",
     }
     for name, definition in required.items():
         if name not in columns:

@@ -23,11 +23,14 @@
 - [`services/bridge_memory_profiles.py`](./services/bridge_memory_profiles.py) — memory/visual/subject storage
 - [`services/bridge_moderation_state.py`](./services/bridge_moderation_state.py) — moderation state
 - [`services/bridge_diagnostics_state.py`](./services/bridge_diagnostics_state.py) — diagnostics and self-heal state
+- [`services/bridge_task_state.py`](./services/bridge_task_state.py) — task persistence and task continuity
 - [`services/ask_codex_service.py`](./services/ask_codex_service.py) — codex orchestration
 - [`services/text_task_service.py`](./services/text_task_service.py) — text-task flow
 - [`services/media_task_service.py`](./services/media_task_service.py) — media-task flow
 - [`services/reply_context_service.py`](./services/reply_context_service.py) — reply and active-subject context
 - [`handlers/update_dispatcher.py`](./handlers/update_dispatcher.py) — update ingress
+
+SQLite-слой здесь хранит не только память, но и `task_runs`/`task_events`, чтобы после рестарта можно было честно восстановить длинные owner/enterprise задачи.
 - [`run_jarvis_supervisor.sh`](./run_jarvis_supervisor.sh) — удержание процесса
 - [`run_enterprise_supervisor.sh`](./run_enterprise_supervisor.sh) — удержание `enterprise_server.py`
 - [`restart_jarvis_supervisor.sh`](./restart_jarvis_supervisor.sh) — безопасный рестарт bridge

@@ -339,6 +339,14 @@ from services.bridge_diagnostics_state import (
     update_self_heal_attempt as _update_self_heal_attempt_service,
     update_self_heal_incident_state as _update_self_heal_incident_state_service,
 )
+from services.bridge_task_state import (
+    find_latest_task_id_by_request_trace as _find_latest_task_id_by_request_trace_service,
+    get_task_context as _get_task_context_service,
+    get_task_run as _get_task_run_service,
+    record_task_event as _record_task_event_service,
+    upsert_task_run as _upsert_task_run_service,
+    update_task_run as _update_task_run_service,
+)
 from services.text_task_service import (
     run_recent_chat_report_task as _run_recent_chat_report_task_service,
     run_text_task as _run_text_task_service,
@@ -1487,6 +1495,9 @@ class BridgeState:
 
     def get_mode(self, chat_id: int) -> str:
         return _get_mode_service(self, chat_id, normalize_mode_func=normalize_mode)
+
+    def normalize_whitespace(self, text: str) -> str:
+        return normalize_whitespace(text)
 
     def set_mode(self, chat_id: int, mode: str) -> None:
         _set_mode_service(self, chat_id, mode)
@@ -3214,6 +3225,8 @@ class BridgeState:
         notes: str,
         latency_ms: int,
         query_text: str,
+        request_trace_id: str = "",
+        task_id: str = "",
     ) -> None:
         _record_request_diagnostic_service(
             self,
@@ -3242,6 +3255,8 @@ class BridgeState:
             notes,
             latency_ms,
             query_text,
+            request_trace_id=request_trace_id,
+            task_id=task_id,
             truncate_text_func=truncate_text,
             normalize_whitespace_func=normalize_whitespace,
         )
@@ -3437,6 +3452,121 @@ class BridgeState:
 
     def get_world_state_rows(self, category: str = "", limit: int = 10) -> List[sqlite3.Row]:
         return _get_world_state_rows_service(self, category, limit)
+
+    def upsert_task_run(
+        self,
+        *,
+        task_id: str,
+        chat_id: int,
+        user_id: Optional[int] = None,
+        message_id: Optional[int] = None,
+        delivery_chat_id: Optional[int] = None,
+        progress_message_id: Optional[int] = None,
+        request_trace_id: str = "",
+        task_kind: str = "",
+        route_kind: str = "",
+        persona: str = "",
+        request_kind: str = "",
+        source: str = "",
+        summary: str = "",
+        status: str = "",
+        approval_state: str = "",
+        verification_state: str = "",
+        outcome: str = "",
+        evidence_text: str = "",
+        error_text: str = "",
+        tools_used: str = "",
+        memory_used: str = "",
+    ) -> None:
+        _upsert_task_run_service(
+            self,
+            task_id=task_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            message_id=message_id,
+            delivery_chat_id=delivery_chat_id,
+            progress_message_id=progress_message_id,
+            request_trace_id=request_trace_id,
+            task_kind=task_kind,
+            route_kind=route_kind,
+            persona=persona,
+            request_kind=request_kind,
+            source=source,
+            summary=summary,
+            status=status,
+            approval_state=approval_state,
+            verification_state=verification_state,
+            outcome=outcome,
+            evidence_text=evidence_text,
+            error_text=error_text,
+            tools_used=tools_used,
+            memory_used=memory_used,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
+
+    def update_task_run(
+        self,
+        task_id: str,
+        *,
+        status: str = "",
+        approval_state: str = "",
+        verification_state: str = "",
+        outcome: str = "",
+        evidence_text: str = "",
+        error_text: str = "",
+        progress_message_id: Optional[int] = None,
+        tools_used: str = "",
+        memory_used: str = "",
+    ) -> None:
+        _update_task_run_service(
+            self,
+            task_id,
+            status=status,
+            approval_state=approval_state,
+            verification_state=verification_state,
+            outcome=outcome,
+            evidence_text=evidence_text,
+            error_text=error_text,
+            progress_message_id=progress_message_id,
+            tools_used=tools_used,
+            memory_used=memory_used,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
+
+    def get_task_run(self, task_id: str) -> Optional[sqlite3.Row]:
+        return _get_task_run_service(self, task_id)
+
+    def find_latest_task_id_by_request_trace(self, request_trace_id: str) -> str:
+        return _find_latest_task_id_by_request_trace_service(self, request_trace_id)
+
+    def get_task_context(self, chat_id: int, limit: int = 4) -> str:
+        return _get_task_context_service(self, chat_id, limit, truncate_text_func=truncate_text)
+
+    def record_task_event(
+        self,
+        *,
+        task_id: str,
+        chat_id: int,
+        request_trace_id: str = "",
+        phase: str,
+        status: str,
+        detail: str = "",
+        evidence_text: str = "",
+    ) -> None:
+        _record_task_event_service(
+            self,
+            task_id=task_id,
+            chat_id=chat_id,
+            request_trace_id=request_trace_id,
+            phase=phase,
+            status=status,
+            detail=detail,
+            evidence_text=evidence_text,
+            truncate_text_func=truncate_text,
+            normalize_whitespace_func=normalize_whitespace,
+        )
 
     def get_meta(self, key: str, default: str = "") -> str:
         with self.db_lock:
@@ -3822,6 +3952,7 @@ class TelegramBridge:
                 enterprise_worker_path=self.script_path.with_name("enterprise_worker.py"),
                 enterprise_server_base_url=self.config.enterprise_server_base_url,
                 register_pending_job_func=self.register_pending_enterprise_job,
+                update_pending_job_func=self.update_pending_enterprise_job_state,
                 clear_pending_job_func=self.clear_pending_enterprise_job,
             )
         )
@@ -3869,6 +4000,35 @@ class TelegramBridge:
         jobs = [job for job in jobs if str(job.get("job_id") or "") != str(payload.get("job_id") or "")]
         jobs.append(payload)
         self.state.set_meta("pending_enterprise_jobs", json.dumps(jobs, ensure_ascii=False))
+        job_id = str(payload.get("job_id") or "")
+        if job_id:
+            self.state.upsert_task_run(
+                task_id=job_id,
+                chat_id=int(payload.get("chat_id") or 0),
+                user_id=int(payload.get("user_id") or 0) or None,
+                message_id=int(payload.get("message_id") or 0) or None,
+                delivery_chat_id=int(payload.get("delivery_chat_id") or 0) or None,
+                progress_message_id=int(payload.get("status_message_id") or 0) or None,
+                request_trace_id=str(payload.get("request_trace_id") or ""),
+                task_kind=str(payload.get("task_kind") or "enterprise_job"),
+                route_kind=str(payload.get("route_kind") or ""),
+                persona=str(payload.get("persona") or ""),
+                request_kind=str(payload.get("request_kind") or ""),
+                source="enterprise_server",
+                summary=str(payload.get("summary") or payload.get("initial_status") or ""),
+                status="running",
+                approval_state="not_required",
+                verification_state="pending",
+            )
+            self.state.record_task_event(
+                task_id=job_id,
+                chat_id=int(payload.get("chat_id") or 0),
+                request_trace_id=str(payload.get("request_trace_id") or ""),
+                phase="job_registered",
+                status="running",
+                detail=str(payload.get("initial_status") or "enterprise job registered"),
+                evidence_text=str(payload.get("summary") or ""),
+            )
 
     def clear_pending_enterprise_job(self, job_id: str) -> None:
         raw = self.state.get_meta("pending_enterprise_jobs", "[]")
@@ -3879,14 +4039,70 @@ class TelegramBridge:
         jobs = [job for job in jobs if str(job.get("job_id") or "") != str(job_id or "")]
         self.state.set_meta("pending_enterprise_jobs", json.dumps(jobs, ensure_ascii=False))
 
+    def update_pending_enterprise_job_state(self, job_id: str, **updates: object) -> None:
+        if not (job_id or "").strip():
+            return
+        task_row = self.state.get_task_run(job_id)
+        task_chat_id = 0
+        task_request_trace_id = ""
+        if task_row is not None:
+            try:
+                task_chat_id = int(task_row["chat_id"] or 0)
+            except Exception:
+                task_chat_id = 0
+            try:
+                task_request_trace_id = str(task_row["request_trace_id"] or "")
+            except Exception:
+                task_request_trace_id = ""
+        self.state.update_task_run(
+            job_id,
+            status=str(updates.get("status") or ""),
+            approval_state=str(updates.get("approval_state") or ""),
+            verification_state=str(updates.get("verification_state") or ""),
+            outcome=str(updates.get("outcome") or ""),
+            evidence_text=str(updates.get("evidence_text") or ""),
+            error_text=str(updates.get("error_text") or ""),
+            progress_message_id=int(updates.get("progress_message_id") or 0) or None,
+            tools_used=str(updates.get("tools_used") or ""),
+            memory_used=str(updates.get("memory_used") or ""),
+        )
+        self.state.record_task_event(
+            task_id=job_id,
+            chat_id=task_chat_id,
+            request_trace_id=task_request_trace_id,
+            phase=str(updates.get("phase") or "job_state"),
+            status=str(updates.get("status") or updates.get("verification_state") or "updated"),
+            detail=str(updates.get("detail") or updates.get("outcome") or ""),
+            evidence_text=str(updates.get("evidence_text") or updates.get("error_text") or ""),
+        )
+
     def clear_pending_enterprise_jobs_for_chat(self, chat_id: int) -> None:
         raw = self.state.get_meta("pending_enterprise_jobs", "[]")
         try:
             jobs = json.loads(raw)
         except ValueError:
             jobs = []
+        removed_jobs = [job for job in jobs if int(job.get("chat_id") or 0) == int(chat_id or 0)]
         jobs = [job for job in jobs if int(job.get("chat_id") or 0) != int(chat_id or 0)]
         self.state.set_meta("pending_enterprise_jobs", json.dumps(jobs, ensure_ascii=False))
+        for job in removed_jobs:
+            job_id = str(job.get("job_id") or "")
+            if job_id:
+                self.state.update_task_run(
+                    job_id,
+                    status="cleared",
+                    verification_state="unknown",
+                    outcome="cleared",
+                    evidence_text="pending job removed from in-memory queue for chat",
+                )
+                self.state.record_task_event(
+                    task_id=job_id,
+                    chat_id=int(chat_id or 0),
+                    request_trace_id=str(job.get("request_trace_id") or ""),
+                    phase="queue_cleanup",
+                    status="cleared",
+                    detail="pending enterprise job removed after delivery/cleanup",
+                )
 
     def _filter_new_achievement_announcements(
         self,
@@ -3933,6 +4149,22 @@ class TelegramBridge:
             return
         try:
             log(f"resume pending enterprise job={job_id} chat={chat_id}")
+            if hasattr(self.state, "update_task_run"):
+                self.state.update_task_run(
+                    job_id,
+                    status="resumed",
+                    verification_state="pending",
+                    evidence_text="bridge resumed waiting for pending enterprise job after restart",
+                )
+            if hasattr(self.state, "record_task_event"):
+                self.state.record_task_event(
+                    task_id=job_id,
+                    chat_id=chat_id,
+                    request_trace_id=str(job.get("request_trace_id") or ""),
+                    phase="job_resume",
+                    status="resumed",
+                    detail="bridge resumed pending enterprise job after restart",
+                )
             status_message_id = job.get("status_message_id")
             if status_message_id in {"", None}:
                 status_message_id = None
@@ -3965,6 +4197,14 @@ class TelegramBridge:
                 f"job={job_id} chat={chat_id} delivery_chat={delivery_chat_id} via_status={'yes' if delivered_via_status else 'no'}"
             )
         except Exception as error:
+            if hasattr(self.state, "update_task_run"):
+                self.state.update_task_run(
+                    job_id,
+                    status="failed",
+                    verification_state="failed",
+                    outcome="error",
+                    error_text=str(error),
+                )
             self.clear_pending_enterprise_job(job_id)
             log_exception(f"resume pending enterprise failed job={job_id}", error, limit=10)
 
@@ -6865,6 +7105,8 @@ class TelegramBridge:
         report: SelfCheckReport,
         started_at: float,
         query_text: str,
+        request_trace_id: str = "",
+        task_id: str = "",
     ) -> None:
         persisted_report = build_persisted_self_check_report(
             report,
@@ -6897,7 +7139,27 @@ class TelegramBridge:
             notes=persisted_report.notes,
             latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
             query_text=query_text,
+            request_trace_id=request_trace_id,
+            task_id=task_id,
         )
+        if task_id:
+            self.state.update_task_run(
+                task_id,
+                verification_state=persisted_report.mode,
+                outcome=persisted_report.outcome,
+                evidence_text=persisted_report.answer,
+                tools_used=", ".join(persisted_report.tools_used),
+                memory_used=", ".join(persisted_report.memory_used),
+            )
+            self.state.record_task_event(
+                task_id=task_id,
+                chat_id=chat_id,
+                request_trace_id=request_trace_id,
+                phase="route_diagnostic",
+                status=persisted_report.mode,
+                detail=f"outcome={persisted_report.outcome}; route={route_decision.route_kind}; sources={', '.join(persisted_report.sources)}",
+                evidence_text=persisted_report.notes,
+            )
 
     def request_text_with_retry(
         self,
@@ -7064,6 +7326,14 @@ class TelegramBridge:
         show_status_message: bool = True,
         target_label: str = "",
         delivery_chat_id: Optional[int] = None,
+        request_trace_id: str = "",
+        task_kind: str = "",
+        route_kind: str = "",
+        persona: str = "",
+        request_kind: str = "",
+        user_id: Optional[int] = None,
+        message_id: Optional[int] = None,
+        summary: str = "",
     ) -> str:
         return self.js_enterprise.run_with_progress(
             chat_id=chat_id,
@@ -7081,6 +7351,14 @@ class TelegramBridge:
             show_status_message=show_status_message,
             target_label=target_label,
             delivery_chat_id=delivery_chat_id,
+            request_trace_id=request_trace_id,
+            task_kind=task_kind,
+            route_kind=route_kind,
+            persona=persona,
+            request_kind=request_kind,
+            user_id=user_id,
+            message_id=message_id,
+            summary=summary,
         )
 
     def _update_progress_status(
@@ -9372,6 +9650,8 @@ def build_prompt(
     relation_memory_text: str = "",
     chat_memory_text: str = "",
     summary_memory_text: str = "",
+    task_context_text: str = "",
+    memory_trace_text: str = "",
 ) -> str:
     return _build_prompt(
         mode=mode,
@@ -9407,6 +9687,8 @@ def build_prompt(
         relation_memory_text=relation_memory_text,
         chat_memory_text=chat_memory_text,
         summary_memory_text=summary_memory_text,
+        task_context_text=task_context_text,
+        memory_trace_text=memory_trace_text,
     )
 
 def format_history(history: List[Tuple[str, str]], user_text: str) -> str:
