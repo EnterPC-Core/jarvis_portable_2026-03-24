@@ -1938,6 +1938,62 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         self.assertFalse(preparation.replace_status_with_answer)
 
+    def test_web_chat_route_gets_longer_timeout_budget(self):
+        service = TextRouteService(
+            TextRouteServiceDeps(
+                build_prompt_func=lambda **_kwargs: "p" * 18000,
+                log_func=lambda _message: None,
+                default_chat_route_timeout=60,
+            )
+        )
+
+        bridge = SimpleNamespace(
+            build_text_context_bundle=lambda **_kwargs: SimpleNamespace(
+                reply_context="",
+                web_context="web",
+                user_memory_text="user",
+                relation_memory_text="",
+                chat_memory_text="",
+                summary_memory_text="",
+                summary_text="",
+                facts_text="",
+                event_context="",
+                database_context="",
+                discussion_context="",
+                route_summary="",
+                guardrail_note="",
+                self_model_text="",
+                autobiographical_text="",
+                skill_memory_text="",
+                world_state_text="",
+                drive_state_text="",
+            ),
+            is_group_followup_message=lambda *_args, **_kwargs: False,
+            state=SimpleNamespace(get_history=lambda _chat_id: [("user", "hi")]),
+            config=SimpleNamespace(codex_timeout=180),
+        )
+        route_decision = SimpleNamespace(
+            persona="jarvis",
+            route_kind="codex_chat",
+            use_web=True,
+            use_live=False,
+        )
+
+        preparation = service.prepare(
+            bridge,
+            chat_id=1,
+            user_text="найди какие смартфоны вышли недавно",
+            route_decision=route_decision,
+            user_id=1,
+            message=None,
+            reply_context="",
+            spontaneous_group_reply=False,
+            initial_status_message_id=None,
+            chat_type="group",
+        )
+
+        self.assertEqual(preparation.route_timeout_seconds, 120)
+
     def test_context_assembly_uses_entity_context_keyword_contract(self):
         captured = {}
 

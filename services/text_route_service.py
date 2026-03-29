@@ -98,7 +98,9 @@ class TextRouteService:
             f"history_items={len(history_items)}"
         )
         route_timeout_seconds = min(bridge.config.codex_timeout, self.deps.default_chat_route_timeout)
-        if len(prompt) >= 14000:
+        if getattr(route_decision, "use_web", False) or getattr(route_decision, "use_live", False):
+            route_timeout_seconds = min(bridge.config.codex_timeout, max(self.deps.default_chat_route_timeout, 120))
+        elif len(prompt) >= 14000:
             route_timeout_seconds = min(route_timeout_seconds, 60)
         return TextRoutePreparation(
             context_bundle=context_bundle,
