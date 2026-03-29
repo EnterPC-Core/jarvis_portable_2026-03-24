@@ -415,7 +415,7 @@ class OwnerCommandService:
                 """,
                 (target_user_id,),
             ).fetchall()
-        lines = [f"Профиль участника: {label or f'user_id={target_user_id}'}"]
+        lines = [f"Whois: {label or f'user_id={target_user_id}'}", f"Профиль участника: {label or f'user_id={target_user_id}'}"]
         if behavior_context:
             lines.extend(["", behavior_context])
         if user_memory:
@@ -564,7 +564,7 @@ class OwnerCommandService:
             ).fetchall()
         if not rows:
             return "По этому чату профили риска пока не собраны."
-        lines = [f"Проблемные участники по чату {target_chat_id}:"]
+        lines = [f"Watchlist / Проблемные участники по чату {target_chat_id}:"]
         for row in rows:
             risk_total = int(row["conflict_score"] or 0) + int(row["toxicity_score"] or 0) + int(row["spam_score"] or 0) + int(row["flood_score"] or 0) + int(row["instability_score"] or 0)
             if risk_total <= 0:
@@ -592,7 +592,7 @@ class OwnerCommandService:
             ).fetchall()
         if not rows:
             return "По этому чату профили надёжности пока не собраны."
-        lines = [f"Надёжные участники по чату {target_chat_id}:"]
+        lines = [f"Reliable / Надёжные участники по чату {target_chat_id}:"]
         added = 0
         for row in rows:
             if int(row["credibility_score"] or 0) <= 0 and int(row["helpfulness_score"] or 0) <= 0:

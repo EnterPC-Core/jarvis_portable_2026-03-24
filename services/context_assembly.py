@@ -63,18 +63,19 @@ def build_text_context_bundle(
     relation_memory_text = state.get_relation_memory_context(chat_id, user_id=user_id, reply_to_user_id=reply_to.get("id"), query=user_text)
     chat_memory_text = state.get_chat_memory_context(chat_id, query=user_text)
     summary_memory_text = state.get_summary_memory_context(chat_id, limit=3)
+    request_kind = str(getattr(route_decision, "request_kind", "") or "")
 
-    if route_decision.request_kind == "runtime":
+    if request_kind == "runtime":
         chat_memory_text = ""
         summary_memory_text = ""
         user_memory_text = ""
         relation_memory_text = ""
-    elif route_decision.request_kind == "live":
+    elif request_kind == "live":
         database_context = ""
         event_context = ""
         chat_memory_text = ""
         summary_memory_text = ""
-    elif route_decision.request_kind == "project" and not include_local_context:
+    elif request_kind == "project" and not include_local_context:
         user_memory_text = ""
         relation_memory_text = ""
         summary_memory_text = ""

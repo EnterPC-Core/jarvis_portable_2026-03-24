@@ -51,7 +51,8 @@ def handle_telegram_update(bridge: "TelegramBridge", item: dict) -> None:
     if message.get("text") and bridge.maybe_apply_auto_moderation(chat_id, user_id, message, chat_type):
         return
     if not bridge.has_chat_access(bridge.state.authorized_user_ids, user_id):
-        guest_allowed = bridge.has_public_command_access(raw_text)
+        public_access_func = getattr(bridge, "has_public_command_access", None)
+        guest_allowed = public_access_func(raw_text) if callable(public_access_func) else False
         if not guest_allowed and chat_type in {"group", "supergroup"} and message.get("text"):
             guest_allowed = (
                 bridge.is_group_spontaneous_reply_candidate(chat_id, message, raw_text)

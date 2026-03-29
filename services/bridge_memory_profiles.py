@@ -431,22 +431,29 @@ def get_participant_behavior_context(
         ).fetchall()
     if not global_row and not chat_row:
         return ""
-    lines = ["Поведенческий профиль:"]
+    lines = ["Behavior profile:", "Поведенческий профиль:"]
     if chat_row:
-        flags = ", ".join(translate_risk_flag_func(flag) for flag in json.loads(chat_row["risk_flags_json"] or "[]")) or "нет"
+        raw_flags = json.loads(chat_row["risk_flags_json"] or "[]")
+        flags = ", ".join(translate_risk_flag_func(flag) for flag in raw_flags) or "нет"
         lines.append(
             f"- по чату: сообщений={int(chat_row['message_count'] or 0)}; конфликт={int(chat_row['conflict_score'] or 0)}; токсичность={int(chat_row['toxicity_score'] or 0)}; спам={int(chat_row['spam_score'] or 0)}; флуд={int(chat_row['flood_score'] or 0)}; полезность={int(chat_row['helpfulness_score'] or 0)}; доверие={int(chat_row['credibility_score'] or 0)}; флаги={flags}"
         )
+        if raw_flags:
+            lines.append(f"- raw_flags_chat: {', '.join(raw_flags)}")
         if chat_row["notes_summary"]:
             lines.append(f"- заметки по чату: {chat_row['notes_summary']}")
     if global_row:
-        flags = ", ".join(translate_risk_flag_func(flag) for flag in json.loads(global_row["risk_flags_json"] or "[]")) or "нет"
+        raw_flags = json.loads(global_row["risk_flags_json"] or "[]")
+        flags = ", ".join(translate_risk_flag_func(flag) for flag in raw_flags) or "нет"
         lines.append(
             f"- глобально: сообщений={int(global_row['message_count'] or 0)}; reply={int(global_row['reply_count'] or 0)}; реакций отправлено={int(global_row['reactions_given'] or 0)}; реакций получено={int(global_row['reactions_received'] or 0)}; отношение к владельцу={int(global_row['owner_affinity_score'] or 0)}; флаги={flags}"
         )
+        if raw_flags:
+            lines.append(f"- raw_flags_global: {', '.join(raw_flags)}")
         if global_row["notes_summary"]:
             lines.append(f"- глобальные заметки: {global_row['notes_summary']}")
     if observation_rows:
+        lines.append("Recent signals:")
         lines.append("Последние сигналы:")
         for row in observation_rows[:4]:
             lines.append(f"- {row['signal_type']}: {truncate_text_func(normalize_whitespace_func(row['evidence_text'] or ''), 180)}")
