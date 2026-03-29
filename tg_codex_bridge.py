@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import re
+import selectors
 import signal
 import sqlite3
 import subprocess
@@ -371,6 +372,9 @@ except ImportError:
 
 TELEGRAM_TEXT_LIMIT = 4000
 TELEGRAM_TIMEOUT = 30
+CONSOLE_STREAM_UPDATE_SECONDS = 1.2
+CONSOLE_STREAM_CHUNK_LIMIT = 3500
+CONSOLE_DOCUMENT_THRESHOLD = 12000
 GET_UPDATES_TIMEOUT = 25
 ERROR_BACKOFF_SECONDS = 3
 DEFAULT_CODEX_TIMEOUT = 180
@@ -384,7 +388,7 @@ MAX_HISTORY_ITEM_CHARS = 900
 MAX_CODEX_OUTPUT_CHARS = 12000
 DEFAULT_BRIDGE_CONTEXT_SOFT_LIMIT = 200000
 MAX_BRIDGE_CONTEXT_SOFT_LIMIT = 400000
-CODEX_PROGRESS_UPDATE_SECONDS = 2
+CODEX_PROGRESS_UPDATE_SECONDS = 6
 DEFAULT_STT_BACKEND = "disabled"
 DEFAULT_AUDIO_TRANSCRIBE_MODEL = ""
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -450,11 +454,11 @@ SAFE_MODE_REPLY = (
 UNSUPPORTED_FILE_REPLY = "Пока поддерживаются текст и фото."
 
 UPGRADE_USAGE_TEXT = "Используй: /upgrade <что нужно изменить>"
-UPGRADE_RUNNING_TEXT = "Upgrade принят. Запускаю Enterprise Core..."
+UPGRADE_RUNNING_TEXT = "Upgrade выполняется..."
 UPGRADE_TIMEOUT_TEXT = "Upgrade не завершился вовремя. Попробуй сузить задачу."
 UPGRADE_FAILED_TEXT = "Upgrade завершился с ошибкой."
-OWNER_AGENT_RUNNING_TEXT = "Запрос принят. Запускаю Enterprise..."
-JARVIS_AGENT_RUNNING_TEXT = "Запрос принят. Думаю над ответом..."
+OWNER_AGENT_RUNNING_TEXT = "Выполняю запрос..."
+JARVIS_AGENT_RUNNING_TEXT = "Готовлю ответ..."
 UPGRADE_ALREADY_RUNNING_TEXT = "Upgrade уже выполняется. Дождись завершения текущей задачи."
 UPGRADE_PRIVATE_ONLY_TEXT = "Upgrade выполняется только в личном чате с создателем."
 UPGRADE_APPLIED_TEXT = "Изменения сохранены. Runtime больше не делает self-restart; новый код подхватится только после внешнего перезапуска supervisor."
@@ -3760,6 +3764,14 @@ class TelegramBridge:
                 register_pending_job_func=self.register_pending_enterprise_job,
                 update_pending_job_func=self.update_pending_enterprise_job_state,
                 clear_pending_job_func=self.clear_pending_enterprise_job,
+                send_stream_chunks_func=lambda chat_id, title, text, include_header, reply_to_message_id: self.send_enterprise_stream_chunks(
+                    chat_id,
+                    title,
+                    text,
+                    include_header=include_header,
+                    reply_to_message_id=reply_to_message_id,
+                ),
+                format_stream_entry_func=self.format_console_stream_entry,
             )
         )
         self.ensure_enterprise_server_started()
@@ -4027,8 +4039,65 @@ class TelegramBridge:
         return self.js_enterprise.get_remote_job_snapshot(job_id)
 
     def stop_console_job(self, job_id: str) -> bool:
-        del job_id
-        return False
+        if not (job_id or "").strip():
+            return False
+        self.ensure_enterprise_server_started()
+        return self.js_enterprise.stop_remote_job(job_id)
+
+    def build_console_status_markup(self, chat_id: int, running: bool = True) -> dict:
+        if not running:
+            return {"inline_keyboard": []}
+        return {
+            "inline_keyboard": [
+                [{"text": "Остановить", "callback_data": f"console_stop:{int(chat_id)}"}],
+            ]
+        }
+
+    def register_local_console_process(
+        self,
+        chat_id: int,
+        process: object,
+        *,
+        command: str,
+        status_message_id: Optional[int],
+    ) -> None:
+        with self.console_jobs_lock:
+            self.console_jobs[str(chat_id)] = {
+                "chat_id": int(chat_id),
+                "command": command,
+                "process": process,
+                "status_message_id": int(status_message_id) if status_message_id is not None else None,
+                "started_at": time.time(),
+                "stop_requested": False,
+            }
+
+    def clear_local_console_process(self, chat_id: int) -> None:
+        with self.console_jobs_lock:
+            self.console_jobs.pop(str(chat_id), None)
+
+    def request_stop_local_console_process(self, chat_id: int) -> Tuple[bool, str]:
+        with self.console_jobs_lock:
+            job = self.console_jobs.get(str(chat_id))
+            if not job:
+                return False, "Активная консольная задача не найдена."
+            process = job.get("process")
+            job_id = str(job.get("job_id") or "")
+            if job_id:
+                job["stop_requested"] = True
+            elif not isinstance(process, subprocess.Popen):
+                return False, "Процесс консоли недоступен."
+            elif process.poll() is not None:
+                return False, "Процесс уже завершился."
+            job["stop_requested"] = True
+        if job_id:
+            stopped = self.stop_console_job(job_id)
+            return (True, "Останавливаю задачу Enterprise...") if stopped else (False, "Не удалось остановить задачу Enterprise.")
+        try:
+            process.terminate()
+            return True, "Останавливаю процесс..."
+        except Exception as error:
+            log(f"failed to stop console process chat={chat_id}: {error}")
+            return False, "Не удалось остановить процесс."
 
     def get_enterprise_runtime_status(self) -> Optional[Dict[str, object]]:
         self.ensure_enterprise_server_started()
@@ -4200,7 +4269,7 @@ class TelegramBridge:
       });
       const data = await response.json();
       currentJob = data.job_id;
-      setScreen(`Enterprise\\n\\nЗапрос:\\n${command}\\n\\nСтатус: выполняется\\n\\nПодключаю Enterprise...`);
+      setScreen(`Enterprise\\n\\nЗапрос:\\n${command}\\n\\nСтатус: выполняется`);
       if (timer) clearInterval(timer);
       timer = setInterval(pollJob, 900);
       pollJob();
@@ -5849,6 +5918,34 @@ class TelegramBridge:
         self.safe_send_text(chat_id, ACCESS_DENIED_TEXT)
 
     def handle_callback_query(self, callback_query: dict) -> None:
+        callback_id = str(callback_query.get("id") or "")
+        data = str(callback_query.get("data") or "")
+        message = callback_query.get("message") or {}
+        chat = message.get("chat") or {}
+        from_user = callback_query.get("from") or {}
+        chat_id = int(chat.get("id") or 0)
+        user_id = int(from_user.get("id") or 0)
+        if data.startswith("console_stop:"):
+            target_chat_id = parse_int(data.split(":", 1)[1] if ":" in data else "")
+            if not target_chat_id or target_chat_id != chat_id or not is_owner_private_chat(user_id, chat_id):
+                self.answer_callback_query(callback_id)
+                return
+            stopped, status_text = self.request_stop_local_console_process(chat_id)
+            try:
+                message_id = int(message.get("message_id") or 0)
+                if message_id:
+                    self.edit_inline_message(
+                        chat_id,
+                        message_id,
+                        self.fit_single_telegram_message(
+                            f"Консоль\n\nСтатус: {'останавливаю' if stopped else 'без изменений'}\n\n{status_text}"
+                        ),
+                        self.build_console_status_markup(chat_id, running=False),
+                    )
+            except Exception as error:
+                log(f"failed to update console stop message chat={chat_id}: {error}")
+            self.answer_callback_query(callback_id)
+            return
         self.ui_handlers.handle_callback_query(self, callback_query)
 
     def handle_commands_command(self, chat_id: int, user_id: Optional[int]) -> bool:
@@ -5859,8 +5956,7 @@ class TelegramBridge:
         self.safe_send_text(OWNER_USER_ID, text)
 
     def resolve_enterprise_delivery_chat_id(self, source_chat_id: int, chat_type: str, assistant_persona: str) -> int:
-        if assistant_persona == "enterprise" and chat_type in {"group", "supergroup"}:
-            return OWNER_USER_ID
+        del chat_type, assistant_persona
         return source_chat_id
 
     def process_appeal_release_actions(self, user_id: int, actions: List[dict], event_name: str, resolution: str) -> None:
@@ -6107,8 +6203,8 @@ class TelegramBridge:
         return True
 
     def handle_console_command(self, chat_id: int, user_id: Optional[int], command: str) -> bool:
-        if not is_owner_private_chat(user_id, chat_id):
-            self.safe_send_text(chat_id, "Команда доступна только владельцу в личном чате.")
+        if user_id != OWNER_USER_ID:
+            self.safe_send_text(chat_id, "Команда доступна только владельцу.")
             return True
         command = (command or "").strip()
         if not command:
@@ -6117,7 +6213,11 @@ class TelegramBridge:
         if not self.state.try_start_chat_task(chat_id):
             self.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
             return True
-        status_message_id = self.send_status_message(chat_id, f"Console\n$ {command}\n\nЗапускаю...")
+        status_message_id = self.send_inline_message(
+            chat_id,
+            f"Консоль\n$ {command}\n\nСтатус: запускаю...",
+            self.build_console_status_markup(chat_id, running=True),
+        )
         worker = Thread(
             target=self.run_console_task,
             args=(chat_id, command, status_message_id),
@@ -6130,64 +6230,166 @@ class TelegramBridge:
         started_at = time.perf_counter()
         try:
             self.send_chat_action(chat_id, "typing")
-            with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as output_handle:
-                process = subprocess.Popen(
-                    command,
-                    shell=True,
-                    cwd=str(self.script_path.parent),
-                    stdout=output_handle,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    executable="/bin/bash",
-                    env=build_subprocess_env(),
-                )
-                next_update_at = 0.0
-                while True:
-                    return_code = process.poll()
-                    now = time.perf_counter()
-                    if now >= next_update_at:
-                        self.send_chat_action(chat_id, "typing")
-                        output_handle.seek(0)
-                        current_output = normalize_whitespace(output_handle.read() or "")
-                        preview = truncate_text(current_output, 3200) if current_output else "..."
-                        elapsed = max(1, int(now - started_at))
-                        status_text = (
-                            f"Console\n"
-                            f"$ {command}\n\n"
-                            f"Статус: running ({elapsed}s)\n"
-                            f"CWD: {self.script_path.parent}\n\n"
-                            f"{preview}"
+            job_id = self.start_console_job(command)
+            if not job_id:
+                raise RuntimeError("Enterprise не вернул job_id для console-задачи.")
+            with self.console_jobs_lock:
+                self.console_jobs[str(chat_id)] = {
+                    "chat_id": int(chat_id),
+                    "command": command,
+                    "job_id": job_id,
+                    "status_message_id": int(status_message_id) if status_message_id is not None else None,
+                    "started_at": time.time(),
+                    "stop_requested": False,
+                }
+            next_update_at = 0.0
+            streamed_any = False
+            stop_requested = False
+            seen_events: List[str] = []
+            seen_stream_count = 0
+            final_snapshot: Optional[Dict[str, object]] = None
+            while True:
+                now = time.perf_counter()
+                snapshot = self.get_console_job_snapshot(job_id)
+                if snapshot is None:
+                    raise RuntimeError("Enterprise job не найден. Возможно, сервер перезапустился.")
+                events = [normalize_whitespace(str(item)) for item in (snapshot.get("events") or [])]
+                events = [item for item in events if item]
+                stream_entries = [item for item in (snapshot.get("stream_events") or []) if isinstance(item, dict)]
+                if len(events) > len(seen_events):
+                    new_events = events[len(seen_events):]
+                    self.send_console_stream_chunks(
+                        chat_id,
+                        command,
+                        "\n\n".join(new_events),
+                        include_header=not streamed_any,
+                        reply_to_message_id=status_message_id,
+                    )
+                    seen_events = events
+                    streamed_any = True
+                if len(stream_entries) > seen_stream_count:
+                    rendered_lines = [
+                        self.format_console_stream_entry(item)
+                        for item in stream_entries[seen_stream_count:]
+                    ]
+                    rendered_lines = [line for line in rendered_lines if line]
+                    if rendered_lines:
+                        self.send_console_stream_chunks(
+                            chat_id,
+                            command,
+                            "\n".join(rendered_lines),
+                            include_header=not streamed_any,
+                            reply_to_message_id=status_message_id,
                         )
-                        if status_message_id is not None:
-                            self.edit_status_message(chat_id, status_message_id, status_text)
-                        next_update_at = now + 1.2
-                    if return_code is not None:
-                        break
-                    time.sleep(0.3)
-
-                output_handle.seek(0)
-                final_output = normalize_whitespace(output_handle.read() or "")
-                elapsed_ms = max(1, int((time.perf_counter() - started_at) * 1000))
-                final_text = (
-                    f"Console\n"
-                    f"$ {command}\n\n"
-                    f"Exit: {process.returncode}\n"
-                    f"CWD: {self.script_path.parent}\n"
-                    f"🏓 {elapsed_ms} ms\n\n"
-                    f"{final_output or '[no output]'}"
+                        streamed_any = True
+                    seen_stream_count = len(stream_entries)
+                if now >= next_update_at:
+                    self.send_chat_action(chat_id, "typing")
+                    elapsed = max(1, int(now - started_at))
+                    preview_lines = [
+                        self.format_console_stream_entry(item)
+                        for item in stream_entries[-24:]
+                    ]
+                    preview_lines = [line for line in preview_lines if line]
+                    if preview_lines:
+                        preview = truncate_text("\n".join(preview_lines[-16:]), 1600)
+                    else:
+                        preview = truncate_text("\n\n".join(events[-12:]), 1600) if events else "[пока без событий]"
+                    with self.console_jobs_lock:
+                        job = self.console_jobs.get(str(chat_id)) or {}
+                        stop_requested = bool(job.get("stop_requested"))
+                    status_text = (
+                        f"Enterprise Core | console\n"
+                        f"$ {command}\n\n"
+                        f"Статус: {'останавливаю...' if stop_requested else f'выполняется ({elapsed}s)'}\n"
+                        f"job_id: {job_id}\n"
+                        f"Событий: {len(events)}\n"
+                        f"Stream: {len(stream_entries)}\n"
+                        f"Лента: {'идёт ниже' if streamed_any else 'ожидание'}\n\n"
+                        f"{preview}"
+                    )
+                    if status_message_id is not None:
+                        self.edit_inline_message(
+                            chat_id,
+                            status_message_id,
+                            status_text,
+                            self.build_console_status_markup(chat_id, running=not bool(snapshot.get("done")) and not stop_requested),
+                        )
+                    next_update_at = now + CONSOLE_STREAM_UPDATE_SECONDS
+                if bool(snapshot.get("done")):
+                    final_snapshot = snapshot
+                    break
+                time.sleep(0.4)
+            answer_text = normalize_whitespace(str((final_snapshot or {}).get("answer") or ""))
+            error_text = normalize_whitespace(str((final_snapshot or {}).get("error") or ""))
+            final_stream_entries = [item for item in ((final_snapshot or {}).get("stream_events") or []) if isinstance(item, dict)]
+            completed_stream_messages = [
+                normalize_whitespace(str(item.get("text") or ""))
+                for item in final_stream_entries
+                if str(item.get("kind") or "").strip().lower() == "assistant_text"
+                and str(item.get("state") or "").strip().lower() == "completed"
+                and normalize_whitespace(str(item.get("text") or ""))
+            ]
+            combined_output = "\n\n".join(part for part in [*seen_events[-160:], answer_text, error_text] if part)
+            elapsed_ms = max(1, int((time.perf_counter() - started_at) * 1000))
+            exit_code = int((final_snapshot or {}).get("exit_code") or 0)
+            final_status = "остановлено" if stop_requested and exit_code != 0 else "завершено"
+            final_text = (
+                f"Enterprise Core | console\n"
+                f"$ {command}\n\n"
+                f"Статус: {final_status}\n"
+                f"Код выхода: {exit_code}\n"
+                f"job_id: {job_id}\n"
+                f"Время: {elapsed_ms} ms\n"
+                f"Событий: {len(seen_events)}\n"
+                f"Stream: {len(final_stream_entries)}\n"
+                f"Лента: {'отправлена ниже' if streamed_any else 'событий не было'}"
+            )
+            if answer_text and answer_text not in completed_stream_messages:
+                self.safe_send_text(chat_id, f"Итог Enterprise:\n\n{answer_text}", reply_to_message_id=status_message_id)
+            if error_text:
+                self.safe_send_text(chat_id, f"Ошибка Enterprise:\n\n{error_text}", reply_to_message_id=status_message_id)
+            self.send_console_output_document(
+                chat_id,
+                command,
+                combined_output,
+                exit_code=exit_code,
+                reply_to_message_id=status_message_id,
+            )
+            self.send_console_stream_copy_document(
+                chat_id,
+                command,
+                final_stream_entries,
+                reply_to_message_id=status_message_id,
+            )
+            if status_message_id is not None:
+                self.edit_inline_message(
+                    chat_id,
+                    status_message_id,
+                    final_text,
+                    self.build_console_status_markup(chat_id, running=False),
                 )
-                if status_message_id is not None and self.edit_status_message(chat_id, status_message_id, final_text):
-                    self.mark_answer_delivered_via_status(chat_id)
-                else:
-                    self.safe_send_text(chat_id, final_text)
+                self.mark_answer_delivered_via_status(chat_id)
+            else:
+                self.safe_send_text(chat_id, final_text)
         except Exception as error:
             log_exception(f"console task failed chat={chat_id}", error, limit=8)
-            error_text = f"Console\n$ {command}\n\nОшибка запуска:\n{error}"
-            if status_message_id is not None and self.edit_status_message(chat_id, status_message_id, error_text):
-                self.mark_answer_delivered_via_status(chat_id)
+            error_text = f"Консоль\n$ {command}\n\nОшибка запуска:\n{error}"
+            if status_message_id is not None:
+                try:
+                    self.edit_inline_message(
+                        chat_id,
+                        status_message_id,
+                        error_text,
+                        self.build_console_status_markup(chat_id, running=False),
+                    )
+                    self.mark_answer_delivered_via_status(chat_id)
+                except Exception:
+                    self.safe_send_text(chat_id, error_text)
             else:
                 self.safe_send_text(chat_id, error_text)
         finally:
+            self.clear_local_console_process(chat_id)
             self.state.finish_chat_task(chat_id)
 
     def handle_resources_command(self, chat_id: int, user_id: Optional[int]) -> bool:
@@ -7391,13 +7593,173 @@ class TelegramBridge:
         cleaned = text or ""
         if len(cleaned) <= limit:
             return cleaned
-        truncation_note = "\n\n[message truncated for Telegram]"
+        truncation_note = "\n\n[сообщение обрезано под лимит Telegram]"
         cutoff = max(0, limit - len(truncation_note))
         candidate = cleaned[:cutoff].rstrip()
         split_at = max(candidate.rfind("\n\n"), candidate.rfind("\n"))
         if split_at >= max(0, cutoff - 800):
             candidate = candidate[:split_at].rstrip()
         return (candidate or cleaned[:cutoff]).rstrip() + truncation_note
+
+    def split_console_stream_chunks(self, text: str, limit: int = CONSOLE_STREAM_CHUNK_LIMIT) -> List[str]:
+        raw = (text or "").replace("\r", "")
+        if not raw:
+            return []
+        chunks: List[str] = []
+        remaining = raw
+        bounded_limit = max(256, min(limit, TELEGRAM_TEXT_LIMIT - 64))
+        while remaining:
+            if len(remaining) <= bounded_limit:
+                chunks.append(remaining.rstrip("\n"))
+                break
+            split_at = remaining.rfind("\n", 0, bounded_limit)
+            if split_at < bounded_limit // 3:
+                split_at = bounded_limit
+            chunk = remaining[:split_at].rstrip("\n")
+            if chunk:
+                chunks.append(chunk)
+            remaining = remaining[split_at:].lstrip("\n")
+        return [chunk for chunk in chunks if chunk]
+
+    def send_console_stream_chunks(
+        self,
+        chat_id: int,
+        command: str,
+        text: str,
+        *,
+        include_header: bool = True,
+        reply_to_message_id: Optional[int] = None,
+    ) -> int:
+        total_sent = 0
+        for index, chunk in enumerate(self.split_console_stream_chunks(text)):
+            if include_header and index == 0:
+                body = f"Enterprise Core | console\n$ {command}\n\n{chunk}"
+            else:
+                body = chunk
+            rendered = f"<pre>{html.escape(body)}</pre>"
+            payload = {"chat_id": chat_id, "text": rendered, "parse_mode": "HTML"}
+            if reply_to_message_id is not None:
+                payload["reply_to_message_id"] = int(reply_to_message_id)
+            self.telegram_api("sendMessage", data=payload)
+            total_sent += len(chunk)
+        return total_sent
+
+    def send_enterprise_stream_chunks(
+        self,
+        chat_id: int,
+        title: str,
+        text: str,
+        *,
+        include_header: bool = True,
+        reply_to_message_id: Optional[int] = None,
+    ) -> int:
+        total_sent = 0
+        for index, chunk in enumerate(self.split_console_stream_chunks(text)):
+            if include_header and index == 0:
+                body = f"Enterprise Core\n{title}\n\n{chunk}"
+            else:
+                body = chunk
+            rendered = f"<pre>{html.escape(body)}</pre>"
+            payload = {"chat_id": chat_id, "text": rendered, "parse_mode": "HTML"}
+            if reply_to_message_id is not None:
+                payload["reply_to_message_id"] = int(reply_to_message_id)
+            self.telegram_api("sendMessage", data=payload)
+            total_sent += len(chunk)
+        return total_sent
+
+    def format_console_stream_entry(self, entry: Dict[str, object]) -> str:
+        kind = str(entry.get("kind") or "").strip().lower()
+        allowed_kinds = {"assistant_text", "codex_json"}
+        if kind not in allowed_kinds:
+            return ""
+        if kind == "assistant_text":
+            text = str(entry.get("text") or "").strip()
+            if not text:
+                return ""
+            state = str(entry.get("state") or "").strip().lower()
+            if state != "completed":
+                return ""
+            return f"# {text}"
+        if kind == "codex_json":
+            payload = entry.get("payload") or {}
+            if not isinstance(payload, dict):
+                return ""
+            event_type = str(payload.get("type") or "").strip()
+            if event_type != "item.completed":
+                return ""
+            item = payload.get("item") or {}
+            item_type = str(item.get("type") or "").strip()
+            allowed_item_types = {"exec_command", "command_execution", "agent_message"}
+            if item_type not in allowed_item_types:
+                return ""
+            if item_type in {"exec_command", "command_execution"}:
+                command = normalize_whitespace(str(item.get("command") or item.get("title") or ""))
+                return f"$ {truncate_text(command, 220)}" if command else ""
+            if item_type == "agent_message":
+                return ""
+            return ""
+        return ""
+
+    def send_console_stream_copy_document(
+        self,
+        chat_id: int,
+        command: str,
+        stream_entries: List[Dict[str, object]],
+        *,
+        reply_to_message_id: Optional[int] = None,
+    ) -> None:
+        if not stream_entries:
+            return
+        raw = "\n".join(json.dumps(item, ensure_ascii=False) for item in stream_entries)
+        if not raw.strip():
+            return
+        temp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".jsonl", prefix="enterprise_stream_", delete=False) as handle:
+                handle.write(raw)
+                temp_path = Path(handle.name)
+            caption = truncate_text(f"Копия stream-ленты Enterprise Core\n$ {command}", 900)
+            with temp_path.open("rb") as handle:
+                response = self.session.post(
+                    f"{self.config.base_url}/sendDocument",
+                    data={"chat_id": chat_id, "caption": caption, **({"reply_to_message_id": int(reply_to_message_id)} if reply_to_message_id is not None else {})},
+                    files={"document": (temp_path.name, handle, "application/json")},
+                    timeout=180,
+                )
+            ensure_telegram_ok(response)
+        finally:
+            if temp_path is not None:
+                cleanup_temp_file(temp_path)
+
+    def send_console_output_document(
+        self,
+        chat_id: int,
+        command: str,
+        output_text: str,
+        *,
+        exit_code: int,
+        reply_to_message_id: Optional[int] = None,
+    ) -> None:
+        raw = (output_text or "").replace("\r", "")
+        if len(raw) < CONSOLE_DOCUMENT_THRESHOLD:
+            return
+        temp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".log", prefix="console_", delete=False) as handle:
+                handle.write(raw)
+                temp_path = Path(handle.name)
+            caption = truncate_text(f"Полный лог консоли\n$ {command}\nКод выхода: {exit_code}", 900)
+            with temp_path.open("rb") as handle:
+                response = self.session.post(
+                    f"{self.config.base_url}/sendDocument",
+                    data={"chat_id": chat_id, "caption": caption, **({"reply_to_message_id": int(reply_to_message_id)} if reply_to_message_id is not None else {})},
+                    files={"document": (temp_path.name, handle, "text/plain")},
+                    timeout=180,
+                )
+            ensure_telegram_ok(response)
+        finally:
+            if temp_path is not None:
+                cleanup_temp_file(temp_path)
 
     def send_status_message(self, chat_id: int, text: str) -> Optional[int]:
         try:
@@ -7450,15 +7812,20 @@ class TelegramBridge:
         return int(message_id) if message_id is not None else None
 
     def edit_inline_message(self, chat_id: int, message_id: int, text: str, reply_markup: dict) -> None:
-        self.telegram_api(
-            "editMessageText",
-            data={
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "text": self.fit_single_telegram_message(text),
-                "reply_markup": json.dumps(reply_markup),
-            },
-        )
+        try:
+            self.telegram_api(
+                "editMessageText",
+                data={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": self.fit_single_telegram_message(text),
+                    "reply_markup": json.dumps(reply_markup),
+                },
+            )
+        except RequestException as error:
+            if "message is not modified" in str(error).lower():
+                return
+            raise
 
     def answer_callback_query(self, callback_query_id: str) -> None:
         self.telegram_api("answerCallbackQuery", data={"callback_query_id": callback_query_id})
@@ -8684,6 +9051,18 @@ def is_model_identity_query(text: str) -> bool:
     lowered = normalize_whitespace(text).lower()
     if not lowered:
         return False
+    direct_variants = {
+        "enterprise",
+        "enterprise?",
+        "enterprise core",
+        "enterprise core?",
+        "кто ты",
+        "кто ты?",
+        "ты кто",
+        "ты кто?",
+    }
+    if lowered in direct_variants:
+        return True
     markers = (
         "на какой ты модели",
         "какая у тебя модель",
@@ -8719,18 +9098,13 @@ def is_prompt_meta_query(text: str) -> bool:
 
 def build_meta_identity_answer(user_text: str, *, persona: str) -> str:
     if is_model_identity_query(user_text):
-        if persona == "enterprise":
-            return ""
-        return (
-            "Я работаю как Enterprise Core v194.95., модель Дмитрия.\n\n"
-            "Если нужно, могу ответить как Jarvis или перейти в инженерный режим Enterprise."
-        )
+        del persona
+        return "Я Enterprise."
     if is_prompt_meta_query(user_text):
-        if persona == "enterprise":
-            return ""
+        del persona
         return (
             "Служебный промт целиком не показываю.\n\n"
-            "По сути там зафиксированы роль Jarvis, краткий стиль ответа и запрет на вывод внутренней кухни наружу."
+            "По сути там зафиксированы роль Enterprise, краткий стиль ответа и запрет на вывод внутренней кухни наружу."
         )
     return ""
 
@@ -8740,11 +9114,7 @@ def build_owner_contact_reply(user_text: str, *, persona: str) -> str:
     if not _is_simple_greeting(lowered):
         return ""
     if persona == "enterprise":
-        variants = (
-            "На связи, Дмитрий.",
-            "Enterprise на линии, Дмитрий.",
-            "Здесь. Готов к работе.",
-        )
+        variants = ("На связи, Дмитрий.",)
     else:
         variants = (
             "Привет, Дмитрий. На связи.",
@@ -8857,43 +9227,13 @@ def build_progress_status(
     style: str = "jarvis",
     target_label: str = "",
 ) -> str:
-    if style == "enterprise":
-        steps, spinners, _jokes, long_notes = progress_style_config(style)
-        phase, note = steps[phase_index % len(steps)]
-        spinner = spinners[phase_index % len(spinners)]
-        elapsed_text = format_progress_elapsed(elapsed_seconds)
-        long_note = select_long_progress_note(elapsed_seconds, long_notes)
-        target_line = f"\nСобеседник: {truncate_text(target_label, 28)}" if target_label else ""
-        extra_block = f"\n\n{long_note}" if long_note else ""
-        return (
-            f"{initial_status}\n\n"
-            f"{spinner} {phase}\n"
-            f"{note}\n"
-            f"Прошло: {elapsed_text}"
-            f"{target_line}"
-            f"{extra_block}"
-        )
-    steps, spinners, jokes, long_notes = progress_style_config(style)
-    phase, note = steps[phase_index % len(steps)]
-    spinner = spinners[phase_index % len(spinners)]
-    joke = jokes[(phase_index + max(1, elapsed_seconds // 12)) % len(jokes)]
     elapsed_text = format_progress_elapsed(elapsed_seconds)
-    progress_bar = build_progress_bar(phase_index, elapsed_seconds, width=12)
-    stage_text = f"Этап {phase_index + 1}"
-    long_note = select_long_progress_note(elapsed_seconds, long_notes)
-    target_line = f"│ Собеседник: {truncate_text(target_label, 22)}\n" if target_label else ""
-    extra_block = f"\n{long_note}" if long_note else ""
+    target_line = f"\nСобеседник: {truncate_text(target_label, 28)}" if target_label else ""
     return (
         f"{initial_status}\n\n"
-        f"{spinner} {phase}\n"
-        f"{note}\n\n"
-        f"┌ {'─' * 18}\n"
-        f"│ [{progress_bar}] {stage_text}\n"
+        f"Выполняю...\n"
+        f"Прошло: {elapsed_text}"
         f"{target_line}"
-        f"│ Прошло: {elapsed_text}\n"
-        f"└ {'─' * 18}\n"
-        f"{joke}"
-        f"{extra_block}"
     )
 
 

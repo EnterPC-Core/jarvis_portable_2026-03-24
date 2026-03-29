@@ -84,9 +84,28 @@ class TextRouteService:
             f"user_mem={len(context_bundle.user_memory_text)} rel_mem={len(context_bundle.relation_memory_text)} "
             f"chat_mem={len(context_bundle.chat_memory_text)} summary_mem={len(context_bundle.summary_memory_text)}"
         )
-        prompt_inputs = select_prompt_inputs(route_decision, context_bundle)
         history_items = list(bridge.state.get_history(chat_id))
         prompt_history = history_items
+        if getattr(route_decision, "persona", "") == "enterprise":
+            prompt_history = []
+            prompt = user_text.strip()
+            prompt_len = len(prompt)
+            self.deps.log_func(
+                "ask_codex prompt "
+                f"chat={chat_id} route={route_decision.route_kind} prompt_len={prompt_len} "
+                f"history_items=0 raw_enterprise=yes"
+            )
+            route_timeout_seconds = min(bridge.config.codex_timeout, self.deps.default_chat_route_timeout)
+            return TextRoutePreparation(
+                context_bundle=context_bundle,
+                prompt=prompt,
+                progress_style=progress_style,
+                route_timeout_seconds=route_timeout_seconds,
+                replace_status_with_answer=False,
+                prompt_len=prompt_len,
+                history_items=0,
+            )
+        prompt_inputs = select_prompt_inputs(route_decision, context_bundle)
         if (
             (getattr(route_decision, "use_web", False) or getattr(route_decision, "use_live", False))
             and str(getattr(route_decision, "request_kind", "") or "") not in {"chat_local_context", "runtime"}
@@ -115,6 +134,8 @@ class TextRouteService:
             progress_style=progress_style,
             route_timeout_seconds=route_timeout_seconds,
             replace_status_with_answer=(
+                getattr(route_decision, "persona", "") != "enterprise"
+                and
                 initial_status_message_id is not None
                 and chat_type in {"group", "supergroup"}
             ),

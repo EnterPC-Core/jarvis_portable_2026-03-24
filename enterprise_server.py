@@ -6,7 +6,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 
@@ -16,6 +16,7 @@ DEFAULT_HEARTBEAT_PATH = "enterprise_server.heartbeat"
 DEFAULT_LOG_PATH = "enterprise_server.log"
 DEFAULT_JOBS_DIR = "enterprise_jobs"
 DEFAULT_SESSIONS_DIR = "enterprise_sessions"
+GLOBAL_ENTERPRISE_SESSION_KEY = "enterprise_core_global"
 DEFAULT_RUNTIME_CONFIG_PATH = "enterprise_runtime_config.json"
 JOB_RETENTION_SECONDS = 3600
 SESSION_HISTORY_LIMIT = 12
@@ -110,6 +111,22 @@ def build_session_summary(entries: list) -> str:
     if decisions:
         lines.append("Последние выводы: " + " | ".join(decisions[-3:]))
     return "\n".join(lines).strip()
+
+
+def build_memory_note(entries: list) -> str:
+    if not entries:
+        return ""
+    lines = []
+    for entry in entries[-3:]:
+        user_text = truncate_text(str(entry.get("user") or ""), 180)
+        answer_text = truncate_text(str(entry.get("assistant") or ""), 220)
+        if user_text:
+            lines.append(f"- задача: {user_text}")
+        if answer_text:
+            lines.append(f"- итог: {answer_text}")
+    if not lines:
+        return ""
+    return "Краткая память:\n" + "\n".join(lines)
 
 
 def load_env(script_dir: Path) -> None:
@@ -301,20 +318,47 @@ class EnterpriseJobManager:
     def _job_state_path(self, job_id: str) -> Path:
         return self._job_dir(job_id) / "state.json"
 
-    def _session_state_path(self, chat_id: int) -> Path:
-        return self.sessions_dir / f"{int(chat_id)}.json"
+    def _job_stream_path(self, job_id: str) -> Path:
+        return self._job_dir(job_id) / "stream.jsonl"
 
-    def _load_session_entries(self, chat_id: int) -> list:
-        path = self._session_state_path(chat_id)
+    def _session_state_path(self, chat_id: int) -> Path:
+        del chat_id
+        return self.sessions_dir / f"{GLOBAL_ENTERPRISE_SESSION_KEY}.json"
+
+    def _legacy_session_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        for path in sorted(self.sessions_dir.glob("*.json")):
+            if path.name == f"{GLOBAL_ENTERPRISE_SESSION_KEY}.json":
+                continue
+            paths.append(path)
+        return paths
+
+    def _read_session_payload(self, path: Path) -> list:
         if not path.exists():
             return []
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return []
-        if not isinstance(payload, list):
+        return payload if isinstance(payload, list) else []
+
+    def _load_session_entries(self, chat_id: int) -> list:
+        path = self._session_state_path(chat_id)
+        payload = self._read_session_payload(path)
+        if payload:
+            return payload
+        merged: list = []
+        for legacy_path in self._legacy_session_paths():
+            merged.extend(self._read_session_payload(legacy_path))
+        if not merged:
             return []
-        return payload
+        merged.sort(key=lambda item: float((item or {}).get("ts") or 0.0))
+        merged = merged[-SESSION_HISTORY_LIMIT:]
+        try:
+            path.write_text(json.dumps(merged, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass
+        return merged
 
     def _append_session_entry(self, chat_id: int, user_text: str, answer_text: str) -> None:
         if int(chat_id or 0) == 0:
@@ -332,6 +376,26 @@ class EnterpriseJobManager:
             json.dumps(entries, ensure_ascii=False, sort_keys=True),
             encoding="utf-8",
         )
+
+    def _read_stream_entries(self, job_id: str, limit: int = 160) -> List[dict]:
+        path = self._job_stream_path(job_id)
+        if not path.exists():
+            return []
+        entries: List[dict] = []
+        try:
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    payload = json.loads(raw_line)
+                except ValueError:
+                    continue
+                if isinstance(payload, dict):
+                    entries.append(payload)
+        except OSError:
+            return []
+        return entries[-max(1, int(limit)) :]
 
     def _persist_job_unlocked(self, job: Dict[str, object]) -> None:
         job_id = str(job.get("id") or "")
@@ -398,11 +462,6 @@ class EnterpriseJobManager:
             job["error"] = error
             job["updated_at"] = now_ts()
             events = list(job.get("events") or [])
-            events = append_event(events, server_event("Завершаю", "Выполнение завершено"))
-            if answer:
-                events = append_event(events, server_event("Финал", "Готовлю итоговое сообщение"))
-            elif error:
-                events = append_event(events, server_event("Финал", "Готовлю описание ошибки"))
             job["events"] = events[-160:]
             self._persist_job_unlocked(job)
 
@@ -419,6 +478,38 @@ class EnterpriseJobManager:
             events = append_event(events, server_event("Ошибка", message))
             job["events"] = events[-160:]
             self._persist_job_unlocked(job)
+
+    def stop_job(self, job_id: str) -> bool:
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return False
+            if bool(job.get("done")):
+                return True
+            worker_pid = job.get("worker_pid")
+            events = list(job.get("events") or [])
+            job["events"] = append_event(events, server_event("Останавливаю", "Получен запрос на остановку"))
+            job["updated_at"] = now_ts()
+            self._persist_job_unlocked(job)
+        try:
+            pid = int(worker_pid or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0 and self._is_pid_alive(pid):
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
+            deadline = now_ts() + 5
+            while now_ts() < deadline and self._is_pid_alive(pid):
+                time.sleep(0.1)
+            if self._is_pid_alive(pid):
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
+        self._mark_job_interrupted(job_id, "Задача остановлена вручную.")
+        return True
 
     def _monitor_existing_job(self, job_id: str) -> None:
         progress_path = self._job_dir(job_id) / "progress.log"
@@ -473,10 +564,7 @@ class EnterpriseJobManager:
             "exit_code": None,
             "answer": "",
             "error": "",
-            "events": [
-                server_event("Старт", "Запрос принят"),
-                server_event("Подключаю", "Подключаю Enterprise"),
-            ],
+            "events": [],
             "cwd": str(self.script_dir),
         }
         with self.lock:
@@ -491,42 +579,31 @@ class EnterpriseJobManager:
                 job = self.jobs.get(job_id)
                 if job is None:
                     return
-                job["events"] = [
-                    server_event("Старт", "Запрос принят"),
-                    server_event("Подключаю", "Подключаю Enterprise"),
-                    server_event("Готовлю", "Готовлю изолированную среду"),
-                    server_event("Передаю", "Передаю задачу в движок"),
-                ]
+                job["events"] = []
                 job["updated_at"] = now_ts()
                 self._persist_job_unlocked(job)
             chat_id = int(payload.get("chat_id") or 0)
             session_entries = self._load_session_entries(chat_id)
-            session_context = build_session_context(session_entries)
-            session_summary = build_session_summary(session_entries)
             effective_prompt = payload.get("prompt") or ""
-            prefix_parts = [part for part in (session_summary, session_context) if part]
-            if prefix_parts:
-                effective_prompt = f"{chr(10).join(prefix_parts)}\n\nТекущая задача:\n{effective_prompt}"
+            memory_note = build_memory_note(session_entries)
 
             job_dir = self._job_dir(job_id)
             job_dir.mkdir(parents=True, exist_ok=True)
             task_path = job_dir / "task.json"
             result_path = job_dir / "result.json"
             progress_path = job_dir / "progress.log"
+            stream_path = job_dir / "stream.jsonl"
             if progress_path.exists():
                 progress_path.unlink()
+            if stream_path.exists():
+                stream_path.unlink()
             if result_path.exists():
                 result_path.unlink()
-            with self.lock:
-                job = self.jobs.get(job_id)
-                if job is not None:
-                    events = list(job.get("events") or [])
-                    job["events"] = append_event(events, server_event("Запускаю", "Среда запущена"))
-                    job["updated_at"] = now_ts()
-                    self._persist_job_unlocked(job)
             worker_payload = dict(payload)
             worker_payload["prompt"] = effective_prompt
+            worker_payload["memory_note"] = memory_note
             worker_payload["progress_path"] = str(progress_path)
+            worker_payload["stream_path"] = str(stream_path)
             worker_payload["protected_paths"] = list(PROTECTED_SERVER_CORE_PATHS)
             task_path.write_text(json.dumps(worker_payload, ensure_ascii=False), encoding="utf-8")
             process = subprocess.Popen(
@@ -627,6 +704,7 @@ class EnterpriseJobManager:
                 "cwd": str(job.get("cwd") or ""),
                 "output": str(job.get("answer") or "") or "\n".join(job.get("events") or []),
                 "command": str(job.get("prompt") or ""),
+                "stream_events": self._read_stream_entries(str(job.get("id") or "")),
             }
 
     def cleanup(self) -> None:
@@ -711,6 +789,20 @@ def build_handler(job_manager: EnterpriseJobManager, runtime_control: RuntimeCon
                     return
                 job_id = job_manager.create_job(payload)
                 self._write_json({"ok": True, "job_id": job_id})
+                return
+            if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/stop"):
+                job_id = parsed.path.split("/api/jobs/", 1)[-1].rsplit("/stop", 1)[0].strip("/")
+                if not job_id:
+                    self._write_json({"ok": False, "error": "empty job id"}, status=400)
+                    return
+                stopped = job_manager.stop_job(job_id)
+                if not stopped:
+                    self._write_json({"ok": False, "error": "not found"}, status=404)
+                    return
+                snapshot = job_manager.get_job(job_id) or {"id": job_id}
+                snapshot["ok"] = True
+                snapshot["stopped"] = True
+                self._write_json(snapshot)
                 return
             if parsed.path == "/api/runtime/restart_bridge":
                 try:

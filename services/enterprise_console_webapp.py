@@ -160,10 +160,10 @@ def build_enterprise_console_html(
           const data = JSON.parse(xhr.responseText || "{}");
           if (!data.ok) return;
           pollFailures = 0;
-          const header = `[codex live]\\n> ${data.command || ""}\\n[status] ${data.done ? "done" : "running"}${data.exit_code !== null && data.exit_code !== undefined ? ` | exit=${data.exit_code}` : ""}\\n\\n`;
+          const header = `Enterprise Core | console\\n$ ${data.command || ""}\\nСтатус: ${data.done ? "завершено" : "выполняется"}${data.exit_code !== null && data.exit_code !== undefined ? ` | код=${data.exit_code}` : ""}\\n\\n`;
           let text = header + ((data.events || []).join("\\n") || "[ожидание событий]");
-          if (data.answer) text += `\\n\\n[final]\\n${data.answer}`;
-          if (data.stderr) text += `\\n\\nSTDERR:\\n${data.stderr}`;
+          if (data.answer) text += `\\n\\n[итог]\\n${data.answer}`;
+          if (data.error) text += `\\n\\n[ошибка]\\n${data.error}`;
           updateScreen(text);
           if (data.done && pollTimer) {
             clearInterval(pollTimer);

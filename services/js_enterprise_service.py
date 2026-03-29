@@ -36,6 +36,8 @@ class JSEnterpriseServiceDeps:
     register_pending_job_func: Optional[Callable[[dict], None]] = None
     update_pending_job_func: Optional[Callable[..., None]] = None
     clear_pending_job_func: Optional[Callable[[str], None]] = None
+    send_stream_chunks_func: Optional[Callable[[int, str, str, bool, Optional[int]], int]] = None
+    format_stream_entry_func: Optional[Callable[[Dict[str, object]], str]] = None
 
 
 class JSEnterpriseService:
@@ -132,6 +134,14 @@ class JSEnterpriseService:
             return None
         return dict(payload)
 
+    def stop_remote_job(self, job_id: str) -> bool:
+        try:
+            payload = self._post_json(f"/api/jobs/{job_id}/stop", {}, 15)
+        except Exception as error:
+            self.deps.log_func(f"не удалось остановить Enterprise job={job_id}: {error}")
+            return False
+        return bool(payload.get("ok"))
+
     def _read_remote_result(self, payload: dict) -> Tuple[bool, str]:
         answer = self.deps.normalize_whitespace_func(str(payload.get("answer") or ""))
         ok = bool(payload.get("ok"))
@@ -139,15 +149,22 @@ class JSEnterpriseService:
             return True, answer or "Пустой ответ. Переформулируй запрос."
         return False, answer or self.deps.jarvis_offline_text
 
-    def _render_remote_events_text(self, initial_status: str, snapshot: Dict[str, object]) -> str:
+    def _render_remote_events_text(self, initial_status: str, snapshot: Dict[str, object], *, elapsed_seconds: int = 0) -> str:
         events = snapshot.get("events") or []
+        prefix = initial_status.strip()
+        heartbeat = f"Статус: выполняется ({max(1, int(elapsed_seconds or 0))}s)"
         if not isinstance(events, list) or not events:
-            return initial_status
+            if prefix:
+                return f"{prefix}\n\n{heartbeat}\nЖду события Enterprise..."
+            return f"{heartbeat}\nЖду события Enterprise..."
         lines = [self.deps.normalize_whitespace_func(str(item)) for item in events[-24:]]
         lines = [line for line in lines if line]
         if not lines:
-            return initial_status
-        return f"{initial_status}\n\n" + "\n".join(lines)
+            if prefix:
+                return f"{prefix}\n\n{heartbeat}\nЖду события Enterprise..."
+            return f"{heartbeat}\nЖду события Enterprise..."
+        head = f"{prefix}\n\n{heartbeat}" if prefix else heartbeat
+        return f"{head}\n\n" + "\n".join(lines)
 
     def _render_remote_completion_text(
         self,
@@ -215,6 +232,8 @@ class JSEnterpriseService:
         started_at = time.perf_counter()
         snapshot: Dict[str, object] = {}
         displayed_events: List[str] = []
+        streamed_any = False
+        seen_stream_count = 0
         while True:
             elapsed = int(max(1, time.perf_counter() - started_at))
             try:
@@ -252,6 +271,29 @@ class JSEnterpriseService:
                 raise
             if bool(snapshot.get("done")):
                 break
+            stream_entries = snapshot.get("stream_events") or []
+            if (
+                self.deps.send_stream_chunks_func is not None
+                and self.deps.format_stream_entry_func is not None
+                and isinstance(stream_entries, list)
+                and len(stream_entries) > seen_stream_count
+            ):
+                rendered_lines = [
+                    self.deps.format_stream_entry_func(item)
+                    for item in stream_entries[seen_stream_count:]
+                    if isinstance(item, dict)
+                ]
+                rendered_lines = [line for line in rendered_lines if line]
+                if rendered_lines and any(line.startswith("$ ") for line in rendered_lines):
+                    self.deps.send_stream_chunks_func(
+                        progress_chat_id,
+                        "Enterprise",
+                        "\n".join(rendered_lines),
+                        not streamed_any,
+                        status_message_id,
+                    )
+                    streamed_any = True
+                seen_stream_count = len(stream_entries)
             now = time.perf_counter()
             if now >= next_update_at:
                 self.deps.send_chat_action_func(progress_chat_id, "typing")
@@ -260,7 +302,7 @@ class JSEnterpriseService:
                     self.deps.edit_status_message_func(
                         progress_chat_id,
                         status_message_id,
-                        self._render_remote_events_text(initial_status, render_snapshot),
+                        self._render_remote_events_text(initial_status, render_snapshot, elapsed_seconds=elapsed),
                     )
                 phase_index += 1
                 next_update_at = now + self.deps.progress_update_seconds

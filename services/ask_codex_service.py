@@ -80,11 +80,14 @@ def ask_codex(
     active_subject_context = bridge.build_active_subject_context(chat_id, user_id, user_text, message)
     if active_subject_context:
         reply_context = f"{reply_context}\n\n{active_subject_context}" if reply_context else active_subject_context
-    meta_identity_answer = build_meta_identity_answer_func(user_text, persona=assistant_persona or "jarvis")
-    if meta_identity_answer:
+    effective_persona = assistant_persona or "jarvis"
+    meta_identity_answer = build_meta_identity_answer_func(user_text, persona=effective_persona)
+    if meta_identity_answer and effective_persona != "enterprise":
         return postprocess_answer_func(meta_identity_answer, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
     if user_id == owner_user_id and not reply_context:
-        owner_contact_reply = build_owner_contact_reply_func(user_text, persona=assistant_persona or "jarvis")
+        owner_contact_reply = build_owner_contact_reply_func(user_text, persona=effective_persona)
+        if owner_contact_reply and effective_persona == "enterprise":
+            owner_contact_reply = ""
         if owner_contact_reply:
             return postprocess_answer_func(owner_contact_reply, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
     initial_route_decision = analyze_request_route_func(
@@ -134,93 +137,7 @@ def ask_codex(
     if detect_local_chat_query_func(user_text) and drive_scores.get("stale_memory_pressure", 0.0) >= 35.0:
         bridge.state.refresh_relation_memory(chat_id)
 
-    if (
-        route_decision.persona == "enterprise"
-        and route_decision.intent == "runtime_status"
-        and route_decision.use_workspace
-        and is_explicit_runtime_probe_request_func(user_text)
-    ):
-        runtime_snapshot = bridge.get_enterprise_runtime_status()
-        if runtime_snapshot:
-            direct_answer = (
-                "Состояние runtime через Enterprise server:\n"
-                f"- supervisor PID: {runtime_snapshot.get('supervisor_pid') or '-'}\n"
-                f"- supervisor alive: {'yes' if runtime_snapshot.get('supervisor_alive') else 'no'}\n"
-                f"- bridge PID: {runtime_snapshot.get('bridge_pid') or '-'}\n"
-                f"- bridge alive: {'yes' if runtime_snapshot.get('bridge_alive') else 'no'}\n"
-                f"- enterprise PID: {runtime_snapshot.get('enterprise_pid') or '-'}\n"
-                f"- enterprise alive: {'yes' if runtime_snapshot.get('enterprise_alive') else 'no'}"
-            )
-        else:
-            direct_answer = render_enterprise_runtime_report_func()
-        direct_execution_trace = build_execution_trace(
-            route_decision,
-            raw_answer=direct_answer,
-            permission_checked=(user_id == owner_user_id),
-            direct_tools=("direct_runtime_probe",),
-        )
-        report = enrich_self_check_report_func(
-            apply_self_check_contract_func(
-                direct_answer,
-                route_decision,
-                execution_trace=direct_execution_trace,
-            ),
-            route_decision=route_decision,
-            execution_trace=direct_execution_trace,
-            notes="runtime route requires direct local probe",
-        )
-        bridge.state.update_self_model_state(last_outcome=report.outcome)
-        bridge.run_post_task_reflection(
-            chat_id=chat_id,
-            user_id=user_id,
-            route_decision=route_decision,
-            user_text=user_text,
-            report=report,
-            source="enterprise_runtime_probe",
-        )
-        if allow_status_message:
-            status_message_id = early_status_message_id
-            if status_message_id is None:
-                status_message_id = bridge.send_status_message(chat_id, f"{owner_agent_running_text}\n\nСнимаю прямой runtime probe...")
-            if status_message_id is not None:
-                bridge.edit_status_message(
-                    chat_id,
-                    status_message_id,
-                    f"{owner_agent_running_text}\n\n✔ Готово.\nРезультат отправлен отдельным сообщением.",
-                )
-        bridge.record_route_diagnostic(
-            chat_id=chat_id,
-            user_id=user_id,
-            route_decision=route_decision,
-            report=report,
-            started_at=started_at,
-            query_text=user_text,
-            request_trace_id=request_trace_id,
-            execution_trace=direct_execution_trace,
-            live_records=(),
-        )
-        return report.answer
-
     lowered_user_text = bridge.normalize_whitespace(user_text).lower()
-    if (
-        route_decision.persona == "enterprise"
-        and route_decision.use_workspace
-        and is_explicit_runtime_restart_request_func(lowered_user_text)
-    ):
-        restart_result = bridge.restart_bridge_via_enterprise_server()
-        if restart_result:
-            runtime = restart_result.get("runtime") or {}
-            ok = bool(restart_result.get("ok"))
-            direct_answer = (
-                ("Рестарт bridge через Enterprise server выполнен.\n" if ok else "Рестарт bridge через Enterprise server завершился с ошибкой.\n")
-                + f"- returncode: {restart_result.get('returncode')}\n"
-                + f"- stdout: {bridge.truncate_text(str(restart_result.get('stdout') or '-'), 200)}\n"
-                + f"- stderr: {bridge.truncate_text(str(restart_result.get('stderr') or '-'), 200)}\n"
-                + f"- supervisor PID: {runtime.get('supervisor_pid') or '-'}\n"
-                + f"- bridge PID: {runtime.get('bridge_pid') or '-'}\n"
-                + f"- enterprise PID: {runtime.get('enterprise_pid') or '-'}"
-            )
-            return postprocess_answer_func(direct_answer, latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)))
 
     if route_decision.use_live and not route_decision.use_workspace:
         direct_answer, live_records = _build_direct_live_answer(bridge, route_decision, user_text)
@@ -396,6 +313,13 @@ def ask_codex(
         execution_trace=execution_trace,
         live_records=live_records,
     )
+    if meta_identity_answer and effective_persona == "enterprise":
+        return postprocess_answer_func(
+            meta_identity_answer,
+            latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+        )
+    if effective_persona == "enterprise":
+        return raw_answer
     return report.answer
 
 

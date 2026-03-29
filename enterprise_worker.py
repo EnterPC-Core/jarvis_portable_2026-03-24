@@ -140,21 +140,14 @@ def append_stream_event(stream_path: Optional[Path], payload: Dict[str, object])
 
 def format_json_progress_event(payload: dict) -> str:
     event_type = str(payload.get("type") or "")
-    if event_type == "thread.started":
-        return "• Старт\n└ Сессия Enterprise Core запущена"
-    if event_type == "turn.started":
-        return "• Начинаю\n└ Запрос принят в работу"
-    if event_type == "turn.completed":
-        return "• Завершаю\n└ Ход выполнения завершён"
+    if event_type in {"thread.started", "turn.started", "turn.completed"}:
+        return ""
     item = payload.get("item") or {}
     item_type = str(item.get("type") or "")
-    if event_type == "item.completed" and item_type == "agent_message":
-        text = normalize_whitespace(str(item.get("text") or ""))
-        return f"• Комментарий\n└ {text[:240]}" if text else ""
     if event_type == "item.completed" and item_type == "command_execution":
         command = normalize_whitespace(str(item.get("command") or ""))
         if command:
-            return f"• Действие\n└ {truncate_text(command, 180)}"
+            return f"$ {truncate_text(command, 180)}"
     return ""
 
 
@@ -221,26 +214,14 @@ def get_worker_protected_paths(payload: Optional[dict] = None) -> tuple[str, ...
 
 
 def protect_prompt(prompt: str, payload: Optional[dict] = None) -> str:
-    protected_paths = get_worker_protected_paths(payload)
-    protected = "\n".join(f"- {path}" for path in protected_paths)
-    runtime_prompt = normalize_whitespace(str((payload or {}).get("runtime_prompt") or ""))
-    runtime_prefix = (
-        "Отдельные инструкции Enterprise Runtime:\n"
-        f"{runtime_prompt}\n\n"
-        if runtime_prompt
-        else ""
-    )
-    return (
-        "ВАЖНО: этот worker работает почти по всему проекту, но не имеет права менять server-core.\n"
-        "Через задачу можно свободно работать с кодом проекта, тестами, docs, обычными scripts, диагностикой, git-операциями по репо и файлами workspace.\n"
-        "Запрещено изменять только защищённые управляющие пути server-core.\n"
-        "Если задача просит трогать именно их, откажись и объясни, что это server-core и он меняется только через специальные server-side endpoints.\n\n"
-        "Защищённые server-core пути:\n"
-        f"{protected}\n\n"
-        "Всё остальное в repo/workspace разрешено в рамках задачи.\n\n"
-        f"{runtime_prefix}"
-        f"{prompt}"
-    )
+    parts = [
+        "Ты Enterprise.",
+        "Пользователь: Дмитрий.",
+    ]
+    clean_prompt = normalize_whitespace(prompt)
+    if clean_prompt:
+        parts.append(clean_prompt)
+    return "\n\n".join(part for part in parts if part).strip()
 
 
 def run_task(task_path: Path, result_path: Path) -> int:

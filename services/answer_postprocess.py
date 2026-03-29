@@ -84,6 +84,30 @@ def rewrite_model_identity_leak(text: str) -> str:
     return cleaned
 
 
+def collapse_structured_runtime_meta(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    if "observed:" not in lowered and "inferred:" not in lowered and "unknown:" not in lowered:
+        return cleaned
+    compact_lines = []
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered_line = line.lower()
+        if lowered_line in {"jarvis ai:", "enterprise core:"}:
+            continue
+        if lowered_line.startswith(("observed:", "inferred:", "unknown:")):
+            continue
+        if lowered_line.startswith("коротко:"):
+            summary = line.split(":", 1)[1].strip()
+            return summary or cleaned
+        compact_lines.append(line)
+    return compact_lines[0] if compact_lines else cleaned
+
+
 def strip_markdown_emphasis(text: str) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -108,6 +132,7 @@ def postprocess_answer(
     cleaned = strip_meta_reply_wrapper(cleaned)
     cleaned = strip_banned_openers(cleaned)
     cleaned = collapse_duplicate_answer_blocks(cleaned)
+    cleaned = collapse_structured_runtime_meta(cleaned)
     cleaned = rewrite_model_identity_leak(cleaned)
     cleaned = strip_markdown_emphasis(cleaned)
     cleaned = trim_generic_followup_func(cleaned)

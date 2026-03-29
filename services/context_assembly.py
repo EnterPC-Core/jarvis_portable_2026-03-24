@@ -95,24 +95,52 @@ def build_text_context_bundle(
         max_items=6,
     )
 
+    if route_decision.persona == "enterprise":
+        # Enterprise keeps a direct runtime path. Avoid Telegram-side persona memory/context.
+        summary_memory_text = ""
+        chat_memory_text = ""
+        user_memory_text = ""
+        relation_memory_text = ""
+        discussion_context = ""
+        world_state_text = ""
+        task_context_text = ""
+        if request_kind != "chat_local_context":
+            event_context = ""
+            database_context = ""
+        enterprise_self_model_text = ""
+        enterprise_autobiographical_text = ""
+        enterprise_skill_memory_text = ""
+        enterprise_drive_state_text = ""
+        enterprise_summary_text = ""
+        enterprise_facts_text = ""
+        enterprise_memory_trace_text = ""
+    else:
+        enterprise_self_model_text = state.get_self_model_context(route_decision.persona) if include_entity_context else ""
+        enterprise_autobiographical_text = state.get_autobiographical_context(chat_id, query=user_text, limit=4) if include_entity_context else ""
+        enterprise_skill_memory_text = state.get_skill_memory_context(user_text, route_kind=route_decision.route_kind, limit=3) if include_entity_context else ""
+        enterprise_drive_state_text = state.get_drive_context() if include_entity_context else ""
+        enterprise_summary_text = state.get_summary(chat_id)
+        enterprise_facts_text = state.render_facts(chat_id, query=user_text, limit=8)
+        enterprise_memory_trace_text = render_memory_trace(memory_items)
+
     return context_bundle_factory(
-        summary_text=state.get_summary(chat_id),
-        facts_text=state.render_facts(chat_id, query=user_text, limit=8),
+        summary_text=enterprise_summary_text,
+        facts_text=enterprise_facts_text,
         event_context=event_context,
         database_context=database_context,
         reply_context=reply_context,
         discussion_context=discussion_context,
-        self_model_text=state.get_self_model_context(route_decision.persona) if include_entity_context else "",
-        autobiographical_text=state.get_autobiographical_context(chat_id, query=user_text, limit=4) if include_entity_context else "",
-        skill_memory_text=state.get_skill_memory_context(user_text, route_kind=route_decision.route_kind, limit=3) if include_entity_context else "",
+        self_model_text=enterprise_self_model_text,
+        autobiographical_text=enterprise_autobiographical_text,
+        skill_memory_text=enterprise_skill_memory_text,
         world_state_text=world_state_text,
-        drive_state_text=state.get_drive_context() if include_entity_context else "",
+        drive_state_text=enterprise_drive_state_text,
         user_memory_text=user_memory_text,
         relation_memory_text=relation_memory_text,
         chat_memory_text=chat_memory_text,
         summary_memory_text=summary_memory_text,
         task_context_text=task_context_text,
-        memory_trace_text=render_memory_trace(memory_items),
+        memory_trace_text=enterprise_memory_trace_text,
         web_context="",
         route_summary=route_summary,
         guardrail_note=guardrail_note,

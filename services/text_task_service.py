@@ -287,10 +287,37 @@ def run_text_task(
 ) -> None:
     user_history_saved = False
     try:
+        normalized_text = _fallback_normalize_whitespace(text).lower()
+        enterprise_identity_variants = {
+            "enterprise",
+            "enterprise?",
+            "enterprise core",
+            "enterprise core?",
+            "кто ты",
+            "кто ты?",
+            "ты кто",
+            "ты кто?",
+        }
         bridge.log(
             f"run_text_task start chat={chat_id} type={chat_type} user={user_id} "
             f"persona={assistant_persona or '-'} text={bridge.shorten_for_log(text)}"
         )
+        if assistant_persona != "enterprise" and normalized_text in enterprise_identity_variants:
+            answer = "Я Enterprise Core. Отдельный серверный runtime Дмитрия."
+            bridge.state.append_history(chat_id, "user", text)
+            user_history_saved = True
+            bridge.state.append_history(chat_id, "assistant", answer)
+            bridge.state.record_event(chat_id, None, "assistant", "answer", answer)
+            delivered_via_status = bridge.consume_answer_delivered_via_status(chat_id)
+            if not delivered_via_status:
+                delivery_chat_id = bridge.resolve_enterprise_delivery_chat_id(chat_id, chat_type, assistant_persona)
+                reply_to_message_id = None
+                if delivery_chat_id == chat_id and chat_type in {"group", "supergroup"}:
+                    reply_to_message_id = (message or {}).get("message_id")
+                bridge.safe_send_text(delivery_chat_id, answer, reply_to_message_id=reply_to_message_id)
+            bridge.clear_pending_enterprise_jobs_for_chat(chat_id)
+            bridge.log(f"run_text_task sent chat={chat_id} answer_len={len(answer or '')} direct_identity=yes")
+            return
         bridge.state.append_history(chat_id, "user", text)
         user_history_saved = True
         answer = bridge.ask_codex(
