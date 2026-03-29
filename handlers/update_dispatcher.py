@@ -31,10 +31,6 @@ def handle_telegram_update(bridge: "TelegramBridge", item: dict) -> None:
         bridge.log(f"duplicate skipped chat={chat_id} message_id={message_id}")
         return
 
-    if message.get("video"):
-        bridge.log(f"video ignored chat={chat_id} user={user_id} message_id={message_id}")
-        return
-
     if bridge.should_record_incoming_event(chat_id, user_id, message, chat_type):
         bridge.record_incoming_event(chat_id, user_id, message)
     if chat_type in {"group", "supergroup"} and message.get("photo") and user_id is not None and not (from_user.get("is_bot") or False):
@@ -85,9 +81,19 @@ def handle_telegram_update(bridge: "TelegramBridge", item: dict) -> None:
         if message.get("audio"):
             bridge.handle_audio_message(chat_id, user_id, message)
             return
-        if message.get("animation"):
+        if message.get("video"):
+            bridge.handle_video_message(chat_id, user_id, message)
             return
-        if any(message.get(key) for key in ["sticker", "document", "video", "video_note", "contact", "location", "new_chat_members", "left_chat_member", "pinned_message", "new_chat_title", "new_chat_photo"]):
+        if message.get("video_note"):
+            bridge.handle_video_note_message(chat_id, user_id, message)
+            return
+        if message.get("animation"):
+            bridge.handle_animation_message(chat_id, user_id, message)
+            return
+        if message.get("sticker"):
+            bridge.handle_sticker_message(chat_id, user_id, message)
+            return
+        if any(message.get(key) for key in ["contact", "location", "new_chat_members", "left_chat_member", "pinned_message", "new_chat_title", "new_chat_photo"]):
             return
         bridge.safe_send_text(chat_id, bridge.UNSUPPORTED_FILE_REPLY)
     except RequestException as error:

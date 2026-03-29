@@ -15,6 +15,10 @@ class TelegramMessageHandlers:
             return bool(resolver(user_id))
         return user_id == self.owner_user_id
 
+    def _extract_preview_file_id(self, media: dict) -> str:
+        preview = (media or {}).get("thumbnail") or (media or {}).get("thumb") or {}
+        return str(preview.get("file_id") or "").strip()
+
     def handle_text_message(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], message: dict, chat_type: str = "private") -> None:
         raw_text = (message.get("text") or "").strip()
         text = bridge.normalize_incoming_text(raw_text, bridge.bot_username)
@@ -303,6 +307,99 @@ class TelegramMessageHandlers:
         except Exception as error:
             bridge.log_exception(f"audio handler failed chat={chat_id}", error, limit=8)
             bridge.safe_send_text(chat_id, "Ошибка при обработке аудио. Детали записаны в лог.")
+
+    def handle_video_message(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], message: dict) -> None:
+        video = message.get("video") or {}
+        file_id = self._extract_preview_file_id(video)
+        caption = (message.get("caption") or "").strip()
+        duration = video.get("duration")
+        width = video.get("width")
+        height = video.get("height")
+        meta_caption = (caption + "\n\n" if caption else "") + f"Видео: duration={duration}, size={width}x{height}. Разбери превью и метаданные."
+        bridge.log(f"incoming video chat={chat_id} user={user_id} caption={bridge.shorten_for_log(meta_caption)}")
+        chat = message.get("chat") or {}
+        chat_type = (chat.get("type") or "private").lower()
+        is_owner = self._is_owner(bridge, user_id)
+        if chat_type in {"group", "supergroup"} and not is_owner:
+            bridge.log(f"group non-owner video ignored chat={chat_id} user={user_id}")
+            return
+        if not file_id:
+            bridge.safe_send_text(chat_id, "У видео нет доступного превью для разбора.")
+            return
+        if not bridge.state.try_start_chat_task(chat_id):
+            bridge.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
+            return
+        bridge.safe_send_status(chat_id, "Смотрю видео...")
+        Thread(target=bridge.run_photo_task, args=(chat_id, file_id, meta_caption, message), daemon=True).start()
+
+    def handle_video_note_message(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], message: dict) -> None:
+        video_note = message.get("video_note") or {}
+        file_id = self._extract_preview_file_id(video_note)
+        duration = video_note.get("duration")
+        length = video_note.get("length")
+        caption = f"Кружок: duration={duration}, size={length}x{length}. Разбери превью и метаданные."
+        bridge.log(f"incoming video_note chat={chat_id} user={user_id}")
+        chat = message.get("chat") or {}
+        chat_type = (chat.get("type") or "private").lower()
+        is_owner = self._is_owner(bridge, user_id)
+        if chat_type in {"group", "supergroup"} and not is_owner:
+            bridge.log(f"group non-owner video_note ignored chat={chat_id} user={user_id}")
+            return
+        if not file_id:
+            bridge.safe_send_text(chat_id, "У кружка нет доступного превью для разбора.")
+            return
+        if not bridge.state.try_start_chat_task(chat_id):
+            bridge.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
+            return
+        bridge.safe_send_status(chat_id, "Смотрю кружок...")
+        Thread(target=bridge.run_photo_task, args=(chat_id, file_id, caption, message), daemon=True).start()
+
+    def handle_animation_message(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], message: dict) -> None:
+        animation = message.get("animation") or {}
+        file_id = self._extract_preview_file_id(animation)
+        caption = (message.get("caption") or "").strip()
+        duration = animation.get("duration")
+        width = animation.get("width")
+        height = animation.get("height")
+        meta_caption = (caption + "\n\n" if caption else "") + f"GIF/анимация: duration={duration}, size={width}x{height}. Разбери превью и метаданные."
+        bridge.log(f"incoming animation chat={chat_id} user={user_id} caption={bridge.shorten_for_log(meta_caption)}")
+        chat = message.get("chat") or {}
+        chat_type = (chat.get("type") or "private").lower()
+        is_owner = self._is_owner(bridge, user_id)
+        if chat_type in {"group", "supergroup"} and not is_owner:
+            bridge.log(f"group non-owner animation ignored chat={chat_id} user={user_id}")
+            return
+        if not file_id:
+            bridge.safe_send_text(chat_id, "У анимации нет доступного превью для разбора.")
+            return
+        if not bridge.state.try_start_chat_task(chat_id):
+            bridge.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
+            return
+        bridge.safe_send_status(chat_id, "Смотрю анимацию...")
+        Thread(target=bridge.run_photo_task, args=(chat_id, file_id, meta_caption, message), daemon=True).start()
+
+    def handle_sticker_message(self, bridge: "TelegramBridge", chat_id: int, user_id: Optional[int], message: dict) -> None:
+        sticker = message.get("sticker") or {}
+        file_id = self._extract_preview_file_id(sticker)
+        emoji = sticker.get("emoji") or ""
+        set_name = sticker.get("set_name") or ""
+        kind = "видеостикер" if sticker.get("is_video") else "анимированный стикер" if sticker.get("is_animated") else "стикер"
+        caption = f"{kind}: emoji={emoji or '-'}, set={set_name or '-'}. Разбери смысл и настроение по превью и метаданным."
+        bridge.log(f"incoming sticker chat={chat_id} user={user_id} caption={bridge.shorten_for_log(caption)}")
+        chat = message.get("chat") or {}
+        chat_type = (chat.get("type") or "private").lower()
+        is_owner = self._is_owner(bridge, user_id)
+        if chat_type in {"group", "supergroup"} and not is_owner:
+            bridge.log(f"group non-owner sticker ignored chat={chat_id} user={user_id}")
+            return
+        if not file_id:
+            bridge.safe_send_text(chat_id, f"Стикер получен: {emoji or kind}. Полного превью для разбора нет.")
+            return
+        if not bridge.state.try_start_chat_task(chat_id):
+            bridge.safe_send_text(chat_id, "Предыдущий запрос ещё обрабатывается.")
+            return
+        bridge.safe_send_status(chat_id, "Смотрю стикер...")
+        Thread(target=bridge.run_photo_task, args=(chat_id, file_id, caption, message), daemon=True).start()
 
     def build_voice_initial_prompt(self, bridge: "TelegramBridge", chat_id: int, strict_trigger: bool = False) -> str:
         terms = bridge.state.get_voice_prompt_terms(chat_id, limit=28)
