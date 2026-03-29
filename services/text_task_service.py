@@ -114,18 +114,82 @@ def _normalize_chat_watch_list(value: object, *, limit: int) -> List[str]:
     return normalized
 
 
+def _sanitize_chat_watch_text(value: object, *, max_sentences: int = 2, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    text = text.replace("Jarvis", "бот").replace("jarvis", "бот")
+    replacements = (
+        ("по текущему окну", ""),
+        ("в текущем окне", ""),
+        ("в этом окне", ""),
+        ("в этой выборке", ""),
+        ("по этой выборке", ""),
+        ("Это описание относится только к текущему окну сообщений.", ""),
+        ("Это описание относится только к этой выборке.", ""),
+        ("Время: окно заканчивается сообщением", ""),
+        ("practically", "по сути"),
+    )
+    for source, target in replacements:
+        text = text.replace(source, target)
+    text = re.sub(r"`[^`]*`", "", text)
+    text = re.sub(r"\b\d+\s+сообщени(?:й|я|е)\b", "", text)
+    text = re.sub(r"\bтекущ(?:его|ем|их)\s+окн[аеоу]\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bтолько к этой выборке\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bотносится только к этой выборке\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bотносится только к текущему окну сообщений\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" .,:;")
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+    if parts:
+        text = " ".join(parts[:max_sentences]).strip()
+    if len(text) > 220:
+        text = text[:217].rstrip(" ,;:") + "..."
+    text = re.sub(r"\s+", " ", text).strip(" .,:;")
+    return text or fallback
+
+
 def _render_chat_watch_report(
     *,
     payload: Dict[str, object],
     participant_counts: Dict[str, int],
     footer: str,
 ) -> str:
-    status = str(payload.get("status") or "чат выглядит как локальное обсуждение без явного большого конфликта").strip()
-    main_topic = str(payload.get("main_topic") or "Основная тема не выделена уверенно.").strip()
-    disagreements = str(payload.get("disagreements") or "Явного содержательного расхождения не видно.").strip()
-    practical = str(payload.get("practical") or "В конце обсуждают текущую ситуацию в чате и последние сообщения.").strip()
-    confirmed = _normalize_chat_watch_list(payload.get("confirmed"), limit=5)
-    assumptions = _normalize_chat_watch_list(payload.get("assumptions"), limit=3)
+    status = _sanitize_chat_watch_text(
+        payload.get("status"),
+        max_sentences=1,
+        fallback="чат выглядит как локальное обсуждение без явного большого конфликта",
+    )
+    main_topic = _sanitize_chat_watch_text(
+        payload.get("main_topic"),
+        max_sentences=2,
+        fallback="Основная тема не выделена уверенно.",
+    )
+    disagreements = _sanitize_chat_watch_text(
+        payload.get("disagreements"),
+        max_sentences=2,
+        fallback="Явного содержательного расхождения не видно.",
+    )
+    practical = _sanitize_chat_watch_text(
+        payload.get("practical"),
+        max_sentences=2,
+        fallback="В конце обсуждают текущую ситуацию в чате и последние сообщения.",
+    )
+    confirmed = [
+        item
+        for item in (
+            _sanitize_chat_watch_text(part, max_sentences=1, fallback="")
+            for part in _normalize_chat_watch_list(payload.get("confirmed"), limit=5)
+        )
+        if item
+    ]
+    assumptions = [
+        item
+        for item in (
+            _sanitize_chat_watch_text(part, max_sentences=1, fallback="")
+            for part in _normalize_chat_watch_list(payload.get("assumptions"), limit=3)
+        )
+        if item
+    ]
     lines = [f"Статус: {status}", "", "1. Главная тема обсуждения", main_topic, "", "2. Самые активные участники"]
     for actor, count in sorted(participant_counts.items(), key=lambda item: (-item[1], item[0]))[:8]:
         lines.append(f"- {actor} — {count}")

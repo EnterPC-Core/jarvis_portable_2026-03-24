@@ -31,6 +31,7 @@ from owner.handlers import OwnerCommandService
 from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
 from services.runtime_service import RuntimeService, RuntimeServiceDeps
 from services.text_route_service import TextRouteService, TextRouteServiceDeps
+from services.text_task_service import _render_chat_watch_report
 from services.context_assembly import build_attachment_context_bundle, build_text_context_bundle
 from services.diagnostics_pipeline import derive_memory_used, enrich_self_check_report
 from models.contracts import ContextBundle, ExecutionTrace, RouteDecision, SelfCheckReport
@@ -1129,6 +1130,33 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("Основано только на текущем окне сообщений", sent_messages[0][1])
         self.assertIn("🕒", sent_messages[0][1])
         self.assertEqual(finished, [-100])
+
+    def test_structured_chat_watch_renderer_strips_water_and_bot_centric_phrasing(self):
+        report = _render_chat_watch_report(
+            payload={
+                "status": "по текущему окну это тестовый и частично бытовой диалог с проверками реакций, фото и повторяющимися вопросами о том, что происходит.",
+                "main_topic": "В этом окне в основном проверяют поведение чата и отклики Jarvis, активно используют реакции и голосовые, затем разговор смещается к фото и вопросам о содержимом снимков. Это описание относится только к текущему окну сообщений.",
+                "disagreements": "Явного содержательного спора по одной теме не видно. Есть локальное трение вокруг того, как Jarvis отвечает, и вокруг манеры общения.",
+                "confirmed": [
+                    "по этой выборке несколько раз спрашивают, что происходит",
+                    "Jarvis отвечает по чату и по фото",
+                ],
+                "assumptions": [
+                    "общий фон похож на обкатку поведения чата и Jarvis в живом общении",
+                ],
+                "practical": "По сути здесь обсуждают текущее состояние чата, отклики Jarvis и содержимое присланных фото. Время: окно заканчивается сообщением 2026-03-29 02:42.",
+            },
+            participant_counts={"Дмитрий (owner)": 33, "@jan23_DEino id=1923199753": 20},
+            footer="\n\n🕒 `2026-03-29 05:46:46 MSK`",
+        )
+
+        self.assertNotIn("Jarvis", report)
+        self.assertNotIn("по текущему окну", report)
+        self.assertNotIn("в этом окне", report)
+        self.assertNotIn("Это описание относится только к текущему окну сообщений", report)
+        self.assertNotIn("Время: окно заканчивается", report)
+        self.assertIn("бот", report)
+        self.assertIn("🕒", report)
 
     def test_who_said_appends_scope_boundaries(self):
         sent_messages = []
