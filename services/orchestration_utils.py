@@ -120,7 +120,9 @@ def apply_self_check_contract(
     if route_decision.use_live or route_decision.use_web:
         observed_basis.append("external-sources")
         lowered = cleaned.lower()
-        if "источник:" not in lowered and "http" not in lowered:
+        synthetic_internal_sources = {"enterprise", "enterprise runtime"}
+        source_label_clean = str(route_decision.source_label or "").strip().lower()
+        if "источник:" not in lowered and "http" not in lowered and source_label_clean not in synthetic_internal_sources:
             final_answer = final_answer + f"\n\nИсточник: {route_decision.source_label}."
             flags.append("added-source-marker")
             lowered = final_answer.lower()
