@@ -435,7 +435,14 @@ def run_voice_task(
             return
 
         bridge.send_chat_action(chat_id, "typing")
-        answer = bridge.ask_codex(chat_id, transcript)
+        answer = bridge.ask_codex(
+            chat_id,
+            transcript,
+            user_id=user_id,
+            chat_type=chat_type,
+            assistant_persona="jarvis",
+            message=message,
+        )
         bridge.state.append_history(chat_id, "user", f"[Голосовое сообщение: {transcript}]")
         bridge.state.append_history(chat_id, "assistant", answer)
         bridge.state.record_event(chat_id, None, "assistant", "answer", answer)
@@ -496,7 +503,14 @@ def run_audio_task(
             return
 
         bridge.send_chat_action(chat_id, "typing")
-        answer = bridge.ask_codex(chat_id, transcript)
+        answer = bridge.ask_codex(
+            chat_id,
+            transcript,
+            user_id=user_id,
+            chat_type=chat_type,
+            assistant_persona="jarvis",
+            message=message,
+        )
         bridge.state.append_history(chat_id, "user", f"[Аудио: {transcript}]")
         bridge.state.append_history(chat_id, "assistant", answer)
         bridge.state.record_event(chat_id, None, "assistant", "answer", answer)

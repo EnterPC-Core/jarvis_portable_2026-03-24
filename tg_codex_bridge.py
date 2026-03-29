@@ -7626,6 +7626,7 @@ class TelegramBridge:
         model_name = (self.config.audio_transcribe_model or "").strip()
         if model_name.startswith("gpt-") or not model_name:
             model_name = "small"
+        log(f"offline voice transcription start model={model_name} file={source_path.name}")
         try:
             model = getattr(self, "_offline_whisper_model", None)
             current_name = getattr(self, "_offline_whisper_model_name", "")
@@ -7649,6 +7650,7 @@ class TelegramBridge:
         if not transcript:
             log("offline voice transcription returned empty text")
             return ""
+        log(f"offline voice transcription done model={model_name} text={shorten_for_log(transcript)}")
         return transcript
 
     def send_chat_action(self, chat_id: int, action: str) -> None:
