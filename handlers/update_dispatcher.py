@@ -65,6 +65,9 @@ def handle_telegram_update(bridge: "TelegramBridge", item: dict) -> None:
             else:
                 bridge.log(f"blocked user_id={user_id} chat_id={chat_id}")
             return
+        message["_access_granted"] = True
+    else:
+        message["_access_granted"] = True
 
     try:
         if message.get("text"):

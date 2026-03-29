@@ -86,6 +86,23 @@ def _build_chat_watch_truthfulness_footer(*, rows: List[tuple], from_stamp: str,
     )
 
 
+def _normalize_chat_watch_report_answer(answer: str) -> str:
+    cleaned = (answer or "").strip()
+    if not cleaned:
+        return ""
+    replacements = (
+        ("1. Что происходит", "1. Главная тема обсуждения"),
+        ("2. Кто самый активный", "2. Самые активные участники"),
+        ("3. Конфликты/риски", "3. Где мнения расходятся"),
+        ("4. Кто гонит беса", "4. Что подтверждено / что пока только предположение"),
+        ("5. Что важно прямо сейчас", "5. Что сейчас обсуждают practically"),
+    )
+    for source, target in replacements:
+        cleaned = cleaned.replace(source, target)
+    cleaned = cleaned.replace("Кто гонит беса", "Что подтверждено / что пока только предположение")
+    return cleaned
+
+
 def run_text_task(
     bridge: "TelegramBridge",
     chat_id: int,
@@ -221,7 +238,8 @@ def run_recent_chat_report_task(
                 message=message,
                 suppress_status_messages=True,
             )
-            answer = (answer or "").rstrip() + _build_chat_watch_truthfulness_footer(
+            answer = _normalize_chat_watch_report_answer(answer)
+            answer = answer.rstrip() + _build_chat_watch_truthfulness_footer(
                 rows=rows,
                 from_stamp=from_stamp,
                 to_stamp=to_stamp,

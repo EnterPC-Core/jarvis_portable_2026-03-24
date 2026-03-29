@@ -33,7 +33,7 @@ from services.runtime_service import RuntimeService, RuntimeServiceDeps
 from services.text_route_service import TextRouteService, TextRouteServiceDeps
 from services.context_assembly import build_attachment_context_bundle, build_text_context_bundle
 from services.diagnostics_pipeline import derive_memory_used, enrich_self_check_report
-from models.contracts import ContextBundle, RouteDecision, SelfCheckReport
+from models.contracts import ContextBundle, ExecutionTrace, RouteDecision, SelfCheckReport
 from legacy_jarvis_adapter import LegacyJarvisAdapter
 from rating_service import RatingService
 from tg_codex_bridge import (
@@ -228,6 +228,46 @@ class RuntimeRegressionTests(unittest.TestCase):
             enriched.memory_used,
             ("database_context", "reply_context", "chat_events", "world_state"),
         )
+
+    def test_live_current_fact_report_stays_inferred_even_with_live_records(self):
+        route_decision = RouteDecision(
+            persona="jarvis",
+            intent="short_question",
+            chat_type="private",
+            route_kind="live_current_fact",
+            source_label="duckduckgo+Enterprise",
+            use_live=True,
+            use_web=False,
+            use_events=False,
+            use_database=False,
+            use_reply=False,
+            use_workspace=False,
+            guardrails=("freshness", "cite-source"),
+            request_kind="live",
+            required_tools=("live_route",),
+        )
+        report = SelfCheckReport(
+            outcome="ok",
+            answer="Поиск дал внешние совпадения.",
+            flags=(),
+            observed_basis=("external-sources",),
+        )
+        trace = ExecutionTrace(
+            tools_attempted=("live_route",),
+            tools_succeeded=("live_route",),
+            source_kinds=("live_provider",),
+            source_records=("DuckDuckGo HTML",),
+            contract_satisfied=True,
+        )
+
+        enriched = enrich_self_check_report(
+            report,
+            route_decision=route_decision,
+            execution_trace=trace,
+        )
+
+        self.assertEqual(enriched.mode, "inferred")
+        self.assertIn("current-fact-snippets-not-direct-proof", enriched.notes)
 
     def test_runtime_log_treats_status_edit_429_as_warning_not_severe(self):
         with TemporaryDirectory() as tmp_dir:

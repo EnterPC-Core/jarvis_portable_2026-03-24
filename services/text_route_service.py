@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Optional
 
 from models.contracts import ContextBundle, RouteDecision
+from services.external_research_service import build_external_research_context
+from services.prompt_input_policy import select_prompt_inputs
 
 
 @dataclass(frozen=True)
@@ -44,7 +46,7 @@ class TextRouteService:
         initial_status_message_id: Optional[int],
         chat_type: str,
     ) -> TextRoutePreparation:
-        progress_style = "enterprise" if route_decision.persona == "enterprise" else "jarvis"
+        progress_style = "enterprise" if getattr(route_decision, "persona", "") == "enterprise" else "jarvis"
         context_bundle = bridge.build_text_context_bundle(
             chat_id=chat_id,
             user_text=user_text,
@@ -58,6 +60,23 @@ class TextRouteService:
                 (message or {}).get("text") or user_text,
             ),
         )
+        if getattr(route_decision, "use_web", False) and not context_bundle.web_context:
+            web_context = build_external_research_context(
+                query=user_text,
+                route_decision=route_decision,
+                live_gateway=bridge.live_gateway,
+                request_text_with_retry_func=bridge.request_text_with_retry,
+                normalize_whitespace_func=bridge.normalize_whitespace,
+                truncate_text_func=bridge.truncate_text,
+                detect_news_query_func=bridge.detect_news_query,
+                detect_current_fact_query_func=bridge.detect_current_fact_query,
+                detect_weather_location_func=bridge.detect_weather_location,
+                detect_currency_pair_func=bridge.detect_currency_pair,
+                detect_crypto_asset_func=bridge.detect_crypto_asset,
+                detect_stock_symbol_func=bridge.detect_stock_symbol,
+            )
+            if web_context:
+                context_bundle = replace(context_bundle, web_context=web_context)
         self.deps.log_func(
             "ask_codex context "
             f"chat={chat_id} route={route_decision.route_kind} "
@@ -65,30 +84,12 @@ class TextRouteService:
             f"user_mem={len(context_bundle.user_memory_text)} rel_mem={len(context_bundle.relation_memory_text)} "
             f"chat_mem={len(context_bundle.chat_memory_text)} summary_mem={len(context_bundle.summary_memory_text)}"
         )
+        prompt_inputs = select_prompt_inputs(route_decision, context_bundle)
         prompt = self.deps.build_prompt_func(
             mode=route_decision.persona,
             history=list(bridge.state.get_history(chat_id)),
             user_text=user_text,
-            summary_text=context_bundle.summary_text,
-            facts_text=context_bundle.facts_text,
-            event_context=context_bundle.event_context,
-            database_context=context_bundle.database_context,
-            reply_context=context_bundle.reply_context,
-            discussion_context=context_bundle.discussion_context,
-            web_context=context_bundle.web_context,
-            route_summary=context_bundle.route_summary,
-            guardrail_note=context_bundle.guardrail_note,
-            self_model_text=context_bundle.self_model_text,
-            autobiographical_text=context_bundle.autobiographical_text,
-            skill_memory_text=context_bundle.skill_memory_text,
-            world_state_text=context_bundle.world_state_text,
-            drive_state_text=context_bundle.drive_state_text,
-            user_memory_text=context_bundle.user_memory_text,
-            relation_memory_text=context_bundle.relation_memory_text,
-            chat_memory_text=context_bundle.chat_memory_text,
-            summary_memory_text=context_bundle.summary_memory_text,
-            task_context_text=getattr(context_bundle, "task_context_text", ""),
-            memory_trace_text=getattr(context_bundle, "memory_trace_text", ""),
+            **prompt_inputs,
         )
         history_items = list(bridge.state.get_history(chat_id))
         self.deps.log_func(

@@ -30,7 +30,7 @@ class TelegramMessageHandlers:
         direct_group_help_request = False
         bridge.log(f"incoming text chat={chat_id} type={chat_type} user={user_id} text={bridge.shorten_for_log(raw_text)}")
 
-        if chat_type in {"group", "supergroup"} and not is_owner:
+        if chat_type in {"group", "supergroup"} and not is_owner and not message.get("_access_granted"):
             bridge.log(
                 f"group non-owner ignored chat={chat_id} user={user_id} "
                 f"text={bridge.shorten_for_log(raw_text)}"

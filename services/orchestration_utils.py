@@ -1,4 +1,7 @@
-from typing import Any, Callable, List, Sequence
+from typing import Any, Callable, List, Optional, Sequence
+
+from models.contracts import ExecutionTrace
+from services.route_enforcer import enforce_route_contract
 
 
 def validate_route_decision(decision: Any, allowed_route_kinds: Sequence[str]) -> None:
@@ -93,6 +96,7 @@ def apply_self_check_contract(
     answer: str,
     route_decision: Any,
     *,
+    execution_trace: Optional[ExecutionTrace] = None,
     normalize_whitespace_func: Callable[[str], str],
     freshness_markers: Sequence[str],
     has_freshness_marker_func: Callable[[str, Sequence[str]], bool],
@@ -142,15 +146,25 @@ def apply_self_check_contract(
         observed_basis.append("workspace-runtime")
     if route_decision.use_events or route_decision.use_database or route_decision.use_reply:
         observed_basis.append("local-memory")
+    if execution_trace is not None:
+        observed_basis.extend(execution_trace.source_records)
+        if execution_trace.contract_violations:
+            uncertain_points.extend(execution_trace.contract_violations)
     if "heightened-uncertainty" in route_decision.guardrails:
         uncertain_points.append("system-uncertainty-pressure-high")
     if "runtime-risk-attention" in route_decision.guardrails:
         uncertain_points.append("runtime-risk-pressure-high")
+    enforced_mode, violations = enforce_route_contract(route_decision, execution_trace)
+    uncertain_points.extend(violations)
+    outcome = classify_answer_outcome_func(final_answer)
+    if enforced_mode == "insufficient" and outcome == "ok":
+        outcome = "uncertain"
 
     return self_check_factory(
-        outcome=classify_answer_outcome_func(final_answer),
+        outcome=outcome,
         answer=final_answer,
         flags=tuple(flags),
         observed_basis=tuple(dict.fromkeys(observed_basis)),
         uncertain_points=tuple(dict.fromkeys(uncertain_points)),
+        mode=enforced_mode,
     )

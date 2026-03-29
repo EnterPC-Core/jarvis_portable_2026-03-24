@@ -462,11 +462,14 @@ class LiveGateway:
             return f"По запросу «{normalized_query}» не нашёл надёжных внешних результатов.", self._store_records(
                 self._build_record("DuckDuckGo HTML", "current_fact", normalized_query, "stale", "degraded", 0.2, False)
             )
-        synthesized = self.deps.summarize_current_fact_results_func(normalized_query, items)
-        lines = []
-        if synthesized:
-            lines.append(synthesized)
-            lines.append("")
+        lines = [
+            (
+                f"По запросу «{normalized_query}» нашёл внешние совпадения, но это только сниппеты поиска, "
+                "а не прямое подтверждение факта."
+            ),
+            "Статус: inferred по внешним источникам; ниже результаты для ручной проверки.",
+            "",
+        ]
         lines.append(f"Источники по запросу «{normalized_query}»:")
         for title, snippet, url in items:
             line = f"• {self.deps.truncate_text_func(title, 180)}"
@@ -475,7 +478,7 @@ class LiveGateway:
             line += f"\n  {self.deps.truncate_text_func(url, 280)}"
             lines.append(line)
         return "\n".join(lines), self._store_records(
-            self._build_record("DuckDuckGo HTML", "current_fact", normalized_query, "live", "ok", 0.68, True)
+            self._build_record("DuckDuckGo HTML", "current_fact", normalized_query, "live", "ok", 0.55, True)
         )
 
     def collect_external_research_sections(
@@ -500,6 +503,8 @@ class LiveGateway:
                 result, _ = self.fetch_exchange_rate_answer(base, quote)
             elif task.kind == "crypto":
                 result, _ = self.fetch_crypto_price_answer(task.payload)
+            elif task.kind == "stocks":
+                result, _ = self.fetch_stock_price_answer(task.payload)
             elif task.kind == "web_search":
                 result = build_web_search_context_func(task.payload)
             else:

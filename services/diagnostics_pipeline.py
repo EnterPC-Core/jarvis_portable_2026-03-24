@@ -1,11 +1,14 @@
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from services.route_contracts import AttachmentBundle, ContextBundle, LiveProviderRecord, RouteDecision, SelfCheckReport
+from services.route_contracts import AttachmentBundle, ContextBundle, ExecutionTrace, LiveProviderRecord, RouteDecision, SelfCheckReport
 from services.context_bundle_utils import collect_memory_context_items
 from models.contracts import MemoryContextItem
+from services.route_enforcer import enforce_route_contract
 
 
-def derive_tools_used(route_decision: RouteDecision) -> Tuple[str, ...]:
+def derive_tools_used(route_decision: RouteDecision, execution_trace: Optional[ExecutionTrace] = None) -> Tuple[str, ...]:
+    if execution_trace is not None and execution_trace.tools_succeeded:
+        return execution_trace.tools_succeeded
     tools: List[str] = []
     if route_decision.use_workspace:
         tools.append("workspace_exec")
@@ -24,7 +27,13 @@ def derive_tools_used(route_decision: RouteDecision) -> Tuple[str, ...]:
     return tuple(dict.fromkeys(tools))
 
 
-def derive_memory_used(context_bundle: Optional[ContextBundle], route_decision: RouteDecision) -> Tuple[str, ...]:
+def derive_memory_used(
+    context_bundle: Optional[ContextBundle],
+    route_decision: RouteDecision,
+    execution_trace: Optional[ExecutionTrace] = None,
+) -> Tuple[str, ...]:
+    if execution_trace is not None and execution_trace.memory_layers_read:
+        return execution_trace.memory_layers_read
     if context_bundle is None:
         return tuple(
             source
@@ -48,8 +57,15 @@ def derive_memory_used(context_bundle: Optional[ContextBundle], route_decision: 
     return tuple(item.layer for item in collected)
 
 
-def derive_response_mode(outcome: str) -> str:
+def derive_response_mode(outcome: str, route_decision: RouteDecision, execution_trace: Optional[ExecutionTrace] = None) -> str:
+    enforced_mode, _violations = enforce_route_contract(route_decision, execution_trace)
+    if enforced_mode == "insufficient":
+        return "insufficient"
+    if enforced_mode == "verified" and (outcome or "").strip().lower() == "ok":
+        return "verified"
     normalized = (outcome or "").strip().lower()
+    if normalized == "ok" and route_decision.request_kind != "chat":
+        return "inferred"
     if normalized == "ok":
         return "verified"
     if normalized == "uncertain":
@@ -57,13 +73,20 @@ def derive_response_mode(outcome: str) -> str:
     return "insufficient"
 
 
-def derive_confidence(report: SelfCheckReport, route_decision: RouteDecision) -> float:
-    if report.outcome == "ok":
-        base = 0.88 if route_decision.use_live or route_decision.use_workspace else 0.76
-    elif report.outcome == "uncertain":
+def derive_confidence(
+    report: SelfCheckReport,
+    route_decision: RouteDecision,
+    response_mode: str,
+    execution_trace: Optional[ExecutionTrace] = None,
+) -> float:
+    if response_mode == "verified":
+        base = 0.9 if route_decision.use_live or route_decision.use_workspace else 0.82
+    elif response_mode == "inferred":
         base = 0.52
     else:
         base = 0.18
+    if execution_trace is not None and execution_trace.contract_violations:
+        base = min(base, 0.24)
     penalty = min(0.35, 0.08 * len(report.uncertain_points))
     return max(0.0, min(1.0, base - penalty))
 
@@ -81,24 +104,41 @@ def enrich_self_check_report(
     *,
     route_decision: RouteDecision,
     context_bundle: Optional[ContextBundle] = None,
+    execution_trace: Optional[ExecutionTrace] = None,
     notes: str = "",
 ) -> SelfCheckReport:
     sources = [route_decision.source_label] if route_decision.source_label else []
     sources.extend(report.observed_basis)
+    if execution_trace is not None:
+        sources.extend(execution_trace.source_records)
+    response_mode, enforcement_notes = enforce_route_contract(route_decision, execution_trace)
+    normalized_outcome = (report.outcome or "").strip().lower()
+    if response_mode == "verified" and normalized_outcome != "ok":
+        response_mode = derive_response_mode(report.outcome, route_decision, execution_trace)
+    elif response_mode not in {"verified", "inferred", "insufficient"}:
+        response_mode = derive_response_mode(report.outcome, route_decision, execution_trace)
+    evidence_notes = []
+    if execution_trace is not None:
+        if execution_trace.tools_attempted:
+            evidence_notes.append(f"attempted={', '.join(execution_trace.tools_attempted)}")
+        if execution_trace.contract_violations:
+            evidence_notes.append(f"violations={', '.join(execution_trace.contract_violations)}")
+    if enforcement_notes:
+        evidence_notes.append(f"enforcement={', '.join(enforcement_notes)}")
     return SelfCheckReport(
         outcome=report.outcome,
         answer=report.answer,
         flags=report.flags,
         observed_basis=report.observed_basis,
         uncertain_points=report.uncertain_points,
-        mode=derive_response_mode(report.outcome),
+        mode=response_mode,
         route=route_decision.route_kind,
         sources=tuple(dict.fromkeys(source for source in sources if source)),
-        tools_used=derive_tools_used(route_decision),
-        memory_used=derive_memory_used(context_bundle, route_decision),
-        confidence=derive_confidence(report, route_decision),
+        tools_used=derive_tools_used(route_decision, execution_trace),
+        memory_used=derive_memory_used(context_bundle, route_decision, execution_trace),
+        confidence=derive_confidence(report, route_decision, response_mode, execution_trace),
         freshness=derive_freshness(route_decision),
-        notes=notes or route_decision.answer_contract,
+        notes="; ".join(part for part in (notes or route_decision.answer_contract, "; ".join(evidence_notes)) if part),
     )
 
 

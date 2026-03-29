@@ -374,6 +374,8 @@ def initialize_bridge_state_db(
             notes TEXT NOT NULL DEFAULT '',
             latency_ms INTEGER NOT NULL DEFAULT 0,
             query_text TEXT NOT NULL DEFAULT '',
+            tools_attempted TEXT NOT NULL DEFAULT '',
+            contract_satisfied INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
         )"""
     )
@@ -612,6 +614,8 @@ def ensure_request_diagnostics_columns(state: "BridgeState") -> None:
         "notes": "TEXT NOT NULL DEFAULT ''",
         "request_trace_id": "TEXT NOT NULL DEFAULT ''",
         "task_id": "TEXT NOT NULL DEFAULT ''",
+        "tools_attempted": "TEXT NOT NULL DEFAULT ''",
+        "contract_satisfied": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in required.items():
         if name not in columns:

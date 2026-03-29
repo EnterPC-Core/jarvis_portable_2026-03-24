@@ -2,6 +2,8 @@ import secrets
 import time
 from typing import Callable, Optional, Type
 
+from services.route_enforcer import build_execution_trace
+
 
 def ask_codex(
     bridge: "TelegramBridge",
@@ -112,9 +114,20 @@ def ask_codex(
             )
         else:
             direct_answer = render_enterprise_runtime_report_func()
+        direct_execution_trace = build_execution_trace(
+            route_decision,
+            raw_answer=direct_answer,
+            permission_checked=(user_id == owner_user_id),
+            direct_tools=("direct_runtime_probe",),
+        )
         report = enrich_self_check_report_func(
-            apply_self_check_contract_func(direct_answer, route_decision),
+            apply_self_check_contract_func(
+                direct_answer,
+                route_decision,
+                execution_trace=direct_execution_trace,
+            ),
             route_decision=route_decision,
+            execution_trace=direct_execution_trace,
             notes="runtime route requires direct local probe",
         )
         bridge.state.update_self_model_state(last_outcome=report.outcome)
@@ -144,6 +157,8 @@ def ask_codex(
             started_at=started_at,
             query_text=user_text,
             request_trace_id=request_trace_id,
+            execution_trace=direct_execution_trace,
+            live_records=(),
         )
         return report.answer
 
@@ -258,10 +273,23 @@ def ask_codex(
             f"chat={chat_id} route={route_decision.route_kind} answer_len={len(raw_answer or '')}"
         )
 
+    live_records = bridge.live_gateway.consume_records()
+    execution_trace = build_execution_trace(
+        route_decision,
+        context_bundle=context_bundle,
+        raw_answer=raw_answer,
+        live_records=live_records,
+        permission_checked=(user_id == owner_user_id),
+    )
     report = enrich_self_check_report_func(
-        apply_self_check_contract_func(raw_answer, route_decision),
+        apply_self_check_contract_func(
+            raw_answer,
+            route_decision,
+            execution_trace=execution_trace,
+        ),
         route_decision=route_decision,
         context_bundle=context_bundle,
+        execution_trace=execution_trace,
     )
     bridge.state.update_self_model_state(last_outcome=report.outcome)
     bridge.run_post_task_reflection(
@@ -281,6 +309,8 @@ def ask_codex(
         query_text=user_text,
         request_trace_id=request_trace_id,
         task_id=bridge.state.find_latest_task_id_by_request_trace(request_trace_id),
+        execution_trace=execution_trace,
+        live_records=live_records,
     )
     return report.answer
 

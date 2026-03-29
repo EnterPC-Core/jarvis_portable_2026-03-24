@@ -195,6 +195,7 @@ from services.answer_postprocess import (
 from models.contracts import (
     AttachmentBundle,
     ContextBundle,
+    ExecutionTrace,
     LiveProviderRecord,
     RequestRoutePolicy,
     RouteDecision,
@@ -3029,6 +3030,8 @@ class BridgeState:
         query_text: str,
         request_trace_id: str = "",
         task_id: str = "",
+        tools_attempted: str = "",
+        contract_satisfied: int = 0,
     ) -> None:
         _record_request_diagnostic_service(
             self,
@@ -3059,6 +3062,8 @@ class BridgeState:
             query_text,
             request_trace_id=request_trace_id,
             task_id=task_id,
+            tools_attempted=tools_attempted,
+            contract_satisfied=contract_satisfied,
             truncate_text_func=truncate_text,
             normalize_whitespace_func=normalize_whitespace,
         )
@@ -6915,11 +6920,13 @@ class TelegramBridge:
         query_text: str,
         request_trace_id: str = "",
         task_id: str = "",
+        execution_trace: Optional[ExecutionTrace] = None,
+        live_records: Optional[Sequence[LiveProviderRecord]] = None,
     ) -> None:
         persisted_report = build_persisted_self_check_report(
             report,
             route_decision=route_decision,
-            live_records=self.live_gateway.consume_records(),
+            live_records=tuple(live_records) if live_records is not None else self.live_gateway.consume_records(),
         )
         self.state.record_request_diagnostic(
             chat_id=chat_id,
@@ -6949,6 +6956,8 @@ class TelegramBridge:
             query_text=query_text,
             request_trace_id=request_trace_id,
             task_id=task_id,
+            tools_attempted=", ".join(execution_trace.tools_attempted) if execution_trace else "",
+            contract_satisfied=(1 if execution_trace and execution_trace.contract_satisfied else 0),
         )
         if task_id:
             self.state.update_task_run(
@@ -10022,10 +10031,16 @@ def has_freshness_marker(text: str) -> bool:
     return _has_freshness_marker(text, FRESHNESS_MARKERS)
 
 
-def apply_self_check_contract(answer: str, route_decision: RouteDecision) -> SelfCheckReport:
+def apply_self_check_contract(
+    answer: str,
+    route_decision: RouteDecision,
+    *,
+    execution_trace: Optional[ExecutionTrace] = None,
+) -> SelfCheckReport:
     return _apply_self_check_contract(
         answer,
         route_decision,
+        execution_trace=execution_trace,
         normalize_whitespace_func=normalize_whitespace,
         freshness_markers=FRESHNESS_MARKERS,
         has_freshness_marker_func=_has_freshness_marker,

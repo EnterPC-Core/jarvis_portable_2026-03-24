@@ -65,6 +65,17 @@ class SelfCheckReport:
 
 
 @dataclass(frozen=True)
+class ExecutionTrace:
+    tools_attempted: Tuple[str, ...] = ()
+    tools_succeeded: Tuple[str, ...] = ()
+    memory_layers_read: Tuple[str, ...] = ()
+    source_kinds: Tuple[str, ...] = ()
+    source_records: Tuple[str, ...] = ()
+    contract_satisfied: bool = False
+    contract_violations: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ExternalResearchTask:
     kind: str
     label: str
