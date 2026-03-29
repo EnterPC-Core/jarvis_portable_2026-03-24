@@ -84,6 +84,16 @@ def rewrite_model_identity_leak(text: str) -> str:
     return cleaned
 
 
+def strip_markdown_emphasis(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = cleaned.replace("**", "")
+    cleaned = re.sub(r"(?<!_)__(?!_)", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def postprocess_answer(
     text: str,
     *,
@@ -99,6 +109,7 @@ def postprocess_answer(
     cleaned = strip_banned_openers(cleaned)
     cleaned = collapse_duplicate_answer_blocks(cleaned)
     cleaned = rewrite_model_identity_leak(cleaned)
+    cleaned = strip_markdown_emphasis(cleaned)
     cleaned = trim_generic_followup_func(cleaned)
     timestamp = datetime.now(display_timezone).strftime("%Y-%m-%d %H:%M:%S MSK")
     footer = f"🕒 {timestamp}"

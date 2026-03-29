@@ -3,11 +3,7 @@ import re
 from datetime import datetime
 from typing import List, Optional
 
-from utils.message_utils import (
-    build_service_actor_name,
-    describe_message_media_kind,
-    summarize_message_for_pin,
-)
+from utils.message_utils import describe_message_media_kind, summarize_message_for_pin
 from utils.text_utils import normalize_whitespace, truncate_text
 
 
@@ -20,12 +16,12 @@ def build_reply_context(bridge: "TelegramBridge", chat_id: int, message: Optiona
     lines: List[str] = []
     reply_message_id = reply_to.get("message_id")
     reply_user = reply_to.get("from") or {}
-    actor = build_service_actor_name(reply_user) if reply_user else "участник"
+    actor = bridge.build_service_actor_name(reply_user) if reply_user else "участник"
     lines.append("Важно: это reply-target, а не текущий автор сообщения.")
     if reply_message_id is not None:
         lines.append(f"Reply target message_id: {reply_message_id}")
     lines.append(f"Reply target author: {actor}")
-    summary = summarize_message_for_pin(reply_to)
+    summary = summarize_message_for_pin(reply_to, truncate_text)
     if summary:
         lines.append(f"Reply target summary: {truncate_text(summary, 220)}")
     if reply_to.get("text"):

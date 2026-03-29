@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from handlers.telegram_handlers import TelegramMessageHandlers
 from handlers.ui_handlers import UIHandlers
@@ -28,7 +29,10 @@ from services.admin_registry import render_admin_command_catalog
 from enterprise_worker import extract_json_answer, get_worker_protected_paths, protect_prompt
 from enterprise_server import PROTECTED_SERVER_CORE_PATHS
 from owner.handlers import OwnerCommandService
+from services.answer_postprocess import postprocess_answer
 from services.js_enterprise_service import JSEnterpriseService, JSEnterpriseServiceDeps
+from services.prompt_input_policy import select_prompt_inputs
+from services.reply_context_service import build_reply_context
 from services.runtime_service import RuntimeService, RuntimeServiceDeps
 from services.text_route_service import TextRouteService, TextRouteServiceDeps
 from services.text_task_service import _render_chat_watch_report
@@ -229,6 +233,44 @@ class RuntimeRegressionTests(unittest.TestCase):
             enriched.memory_used,
             ("database_context", "reply_context", "chat_events", "world_state"),
         )
+
+    def test_prompt_input_policy_trims_memory_for_web_factual_route(self):
+        route_decision = RouteDecision(
+            persona="jarvis",
+            intent="general_dialog",
+            chat_type="group",
+            route_kind="codex_chat",
+            source_label="Jarvis",
+            use_live=False,
+            use_web=True,
+            use_events=False,
+            use_database=False,
+            use_reply=False,
+            use_workspace=False,
+            guardrails=(),
+            request_kind="general",
+        )
+        context_bundle = ContextBundle(
+            summary_text="summary",
+            event_context="events",
+            database_context="database",
+            reply_context="reply",
+            discussion_context="discussion",
+            web_context="web",
+            user_memory_text="user memory",
+            relation_memory_text="relation memory",
+            chat_memory_text="chat memory",
+            summary_memory_text="summary memory",
+            task_context_text="task",
+        )
+
+        selected = select_prompt_inputs(route_decision, context_bundle)
+
+        self.assertEqual(selected["web_context"], "web")
+        self.assertEqual(selected["user_memory_text"], "")
+        self.assertEqual(selected["chat_memory_text"], "")
+        self.assertEqual(selected["reply_context"], "")
+        self.assertEqual(selected["discussion_context"], "")
 
     def test_live_current_fact_report_stays_inferred_even_with_live_records(self):
         route_decision = RouteDecision(
@@ -1918,7 +1960,7 @@ class RuntimeRegressionTests(unittest.TestCase):
                 drive_state_text="",
             ),
             is_group_followup_message=lambda *_args, **_kwargs: False,
-            state=SimpleNamespace(get_history=lambda _chat_id: [("user", "hi")]),
+            state=SimpleNamespace(get_history=lambda _chat_id: [("user", f"msg-{idx}") for idx in range(20)]),
             config=SimpleNamespace(codex_timeout=180),
         )
         route_decision = SimpleNamespace(persona="enterprise", route_kind="codex_workspace")
@@ -1969,7 +2011,7 @@ class RuntimeRegressionTests(unittest.TestCase):
                 drive_state_text="",
             ),
             is_group_followup_message=lambda *_args, **_kwargs: False,
-            state=SimpleNamespace(get_history=lambda _chat_id: [("user", "hi")]),
+            state=SimpleNamespace(get_history=lambda _chat_id: [("user", f"msg-{idx}") for idx in range(20)]),
             config=SimpleNamespace(codex_timeout=180),
         )
         route_decision = SimpleNamespace(
@@ -1977,6 +2019,7 @@ class RuntimeRegressionTests(unittest.TestCase):
             route_kind="codex_chat",
             use_web=True,
             use_live=False,
+            request_kind="general",
         )
 
         preparation = service.prepare(
@@ -1993,6 +2036,7 @@ class RuntimeRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(preparation.route_timeout_seconds, 120)
+        self.assertEqual(preparation.history_items, 12)
 
     def test_context_assembly_uses_entity_context_keyword_contract(self):
         captured = {}
@@ -2146,6 +2190,46 @@ class RuntimeRegressionTests(unittest.TestCase):
                             assistant_persona="jarvis",
                             message={"reply_to_message": {"message_id": 1}},
                         )
+
+    def test_reply_context_uses_bridge_service_actor_name_wrapper(self):
+        bridge = TelegramBridge.__new__(TelegramBridge)
+        bridge.state = SimpleNamespace(
+            get_visual_signal_for_message=lambda *_args, **_kwargs: None,
+            get_thread_context=lambda *_args, **_kwargs: [],
+        )
+        bridge.build_actor_name = lambda user_id, username, first_name, last_name, role: (
+            username or first_name or last_name or str(user_id or role)
+        )
+        bridge.build_service_actor_name = lambda payload: TelegramBridge.build_service_actor_name(bridge, payload)
+
+        text = build_reply_context(
+            bridge,
+            chat_id=-100,
+            message={
+                "reply_to_message": {
+                    "message_id": 55,
+                    "from": {"id": 7, "username": "reply_user", "first_name": "Reply", "last_name": "User"},
+                    "text": "исходное сообщение",
+                }
+            },
+        )
+
+        self.assertIn("Reply target author: reply_user", text)
+        self.assertIn("Reply target text: исходное сообщение", text)
+
+    def test_postprocess_answer_strips_markdown_emphasis(self):
+        text = postprocess_answer(
+            "Если по правде: **это не рекордная мощность**. **Нормальный класс**.",
+            latency_ms=None,
+            normalize_whitespace_func=lambda value: value,
+            trim_generic_followup_func=lambda value: value,
+            truncate_text_func=lambda value, _limit: value,
+            display_timezone=ZoneInfo("Europe/Moscow"),
+            max_output_chars=4000,
+        )
+
+        self.assertNotIn("**", text)
+        self.assertIn("это не рекордная мощность", text)
 
     def test_owner_cross_chat_memory_context_lists_active_chats_and_summaries(self):
         with TemporaryDirectory() as tmp_dir:

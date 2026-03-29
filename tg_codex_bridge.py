@@ -4054,7 +4054,7 @@ class TelegramBridge:
         return render_chat_troublemaker_summary(rows, top_limit=top_limit)
 
     def build_service_actor_name(self, payload: dict) -> str:
-        return build_service_actor_name(payload)
+        return _build_service_actor_name(payload, self.build_actor_name)
 
     def log(self, message: str) -> None:
         log(message)

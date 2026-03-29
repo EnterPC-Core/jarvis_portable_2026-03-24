@@ -85,17 +85,24 @@ class TextRouteService:
             f"chat_mem={len(context_bundle.chat_memory_text)} summary_mem={len(context_bundle.summary_memory_text)}"
         )
         prompt_inputs = select_prompt_inputs(route_decision, context_bundle)
+        history_items = list(bridge.state.get_history(chat_id))
+        prompt_history = history_items
+        if (
+            (getattr(route_decision, "use_web", False) or getattr(route_decision, "use_live", False))
+            and str(getattr(route_decision, "request_kind", "") or "") not in {"chat_local_context", "runtime"}
+            and len(prompt_history) > 12
+        ):
+            prompt_history = prompt_history[-12:]
         prompt = self.deps.build_prompt_func(
             mode=route_decision.persona,
-            history=list(bridge.state.get_history(chat_id)),
+            history=prompt_history,
             user_text=user_text,
             **prompt_inputs,
         )
-        history_items = list(bridge.state.get_history(chat_id))
         self.deps.log_func(
             "ask_codex prompt "
             f"chat={chat_id} route={route_decision.route_kind} prompt_len={len(prompt)} "
-            f"history_items={len(history_items)}"
+            f"history_items={len(prompt_history)}"
         )
         route_timeout_seconds = min(bridge.config.codex_timeout, self.deps.default_chat_route_timeout)
         if getattr(route_decision, "use_web", False) or getattr(route_decision, "use_live", False):
@@ -112,7 +119,7 @@ class TextRouteService:
                 and chat_type in {"group", "supergroup"}
             ),
             prompt_len=len(prompt),
-            history_items=len(history_items),
+            history_items=len(prompt_history),
         )
 
 
